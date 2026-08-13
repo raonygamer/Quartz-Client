@@ -4,5 +4,7 @@
     <mapping directory="" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/protocol" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/vendor/glfw" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/vendor/imgui" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/vendor/libusb" vcs="Git" />
   </component>
 </project>
