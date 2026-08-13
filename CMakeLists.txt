@@ -13,6 +13,7 @@ set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+set(OpenGL_GL_PREFERENCE GLVND)
 
 add_subdirectory(protocol)
 add_subdirectory(vendor/glad)
@@ -29,8 +30,10 @@ file(GLOB_RECURSE QUARTZ_CLIENT_HEADERS CONFIGURE_DEPENDS
 )
 
 add_executable(QuartzClient
-    ${QUARTZ_CLIENT_SOURCES}
-    ${QUARTZ_CLIENT_HEADERS}
+        ${QUARTZ_CLIENT_SOURCES}
+        vendor/ImGuiColorTextEdit/TextDiff.cpp
+        vendor/ImGuiColorTextEdit/TextEditor.cpp
+        ${QUARTZ_CLIENT_HEADERS}
 )
 
 set_target_properties(QuartzClient PROPERTIES
@@ -40,14 +43,15 @@ set_target_properties(QuartzClient PROPERTIES
 target_include_directories(QuartzClient PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/ImGuiColorTextEdit
 )
 
 target_link_libraries(QuartzClient PRIVATE
-    QuartzProtocol
-    glad
-    glfw
-    usb-1.0
-    imgui
+        QuartzProtocol
+        glad
+        glfw
+        usb-1.0
+        imgui
 )
 
 target_compile_features(QuartzClient PRIVATE cxx_std_20)

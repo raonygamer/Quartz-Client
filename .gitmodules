@@ -10,3 +10,6 @@
 [submodule "vendor/imgui"]
 	path = vendor/imgui
 	url = https://github.com/ocornut/imgui
+[submodule "vendor/ImGuiColorTextEdit"]
+	path = vendor/ImGuiColorTextEdit
+	url = https://github.com/goossens/ImGuiColorTextEdit
