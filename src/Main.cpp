@@ -12,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <complex>
@@ -26,6 +27,7 @@
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -42,22 +44,22 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <deque>
+#include <map>
+#include <set>
+#include <numeric>
+#include <sys/uio.h>
+#include <sys/ptrace.h>
+#include <sys/user.h>
 
 #include <fcntl.h>
 #include <linux/input.h>
-#include <signal.h>
+#include <csignal>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-
-// clang-format off
-#define GLAD_GL_IMPLEMENTATION
-#include <glad/gl.h>
-#undef GLAD_GL_IMPLEMENTATION
-#include <GLFW/glfw3.h>
-// clang-format on
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -72,6 +74,14 @@
 #define QUARTZ_HAS_STB_IMAGE 0
 #endif
 
+// clang-format off
+#define GLAD_GL_IMPLEMENTATION
+#include <glad/gl.h>
+#undef GLAD_GL_IMPLEMENTATION
+#include <GLFW/glfw3.h>
+// clang-format on
+
+
 namespace
 {
     using quartz::rpc::PacketDirection;
@@ -84,6 +94,11 @@ namespace
 
     constexpr std::uint16_t VendorId = 0xB147;
     constexpr std::uint16_t ProductId = 0x4131;
+    constexpr std::uint8_t ProtocolVersion = 1;
+    constexpr int RPCInterfaceNumber = 1;
+    constexpr std::uint8_t RPCOutEndpoint = 0x03;
+    constexpr std::uint8_t RPCInEndpoint = 0x84;
+    constexpr const char* FirmwareVersion = "0.0.1.rev1";
     constexpr std::size_t Rows = 7;
     constexpr std::size_t Columns = 16;
     constexpr std::size_t MatrixSize = Rows * Columns;
@@ -253,6 +268,8 @@ uniform vec3 uCapsLockColor;
 uniform vec3 uScrollLockColor;
 uniform int uCapsLockColorEnabled;
 uniform int uScrollLockColorEnabled;
+uniform float uPatternSpeed; // @ui min=0.0 max=3.0 step=0.01 default=0.9 label="Pattern speed" id=plasma.speed
+uniform float uPatternBrightness; // @ui min=0.0 max=2.0 step=0.01 default=1.0 label="Brightness" id=plasma.brightness
 
 vec3 applyKeyIndicators(vec3 color)
 {
@@ -282,7 +299,7 @@ void main()
     }
 
     vec2 p = vUV * 6.0 - 3.0;
-    float t = uTime * 0.9;
+    float t = uTime * uPatternSpeed;
     float value = sin(p.x * 1.7 + t)
         + sin(p.y * 2.1 - t * 1.3)
         + sin((p.x + p.y) * 1.4 + t * 0.7)
@@ -291,7 +308,7 @@ void main()
 
     vec3 color = hsv2rgb(vec3(fract(value + t * 0.035), 0.95, 1.0));
     color = mix(color, uMediaColor, uMediaAmount * 0.55);
-    FragColor = vec4(applyKeyIndicators(color), 1.0);
+    FragColor = vec4(applyKeyIndicators(clamp(color * uPatternBrightness, 0.0, 1.0)), 1.0);
 }
 )GLSL";
 
@@ -1591,10 +1608,70 @@ void main()
         return source;
     }
 
+    static std::string shaderPresetId(const std::string_view name)
+    {
+        std::string result;
+        result.reserve(name.size());
+        for (const unsigned char c : name)
+        {
+            if (std::isalnum(c)) result += static_cast<char>(std::tolower(c));
+            else if (!result.empty() && result.back() != '_') result += '_';
+        }
+        while (!result.empty() && result.back() == '_') result.pop_back();
+        return result.empty() ? "preset" : result;
+    }
+
+    static void parameterizeShaderPreset(ShaderPreset& preset)
+    {
+        auto& source = preset.FragmentSource;
+        const std::string id = shaderPresetId(preset.Name);
+        const std::size_t output = source.find("out vec4 FragColor;");
+        if (output == std::string::npos) return;
+        const std::size_t insertion = source.find('\n', output);
+        if (insertion == std::string::npos) return;
+
+        std::string declarations;
+        if (source.find("uMaterialBrightness") == std::string::npos)
+            declarations += "\nuniform float uMaterialBrightness; // @ui min=0.0 max=2.0 step=0.01 default=1.0 label=\"Brightness\" id=" + id + ".brightness";
+        if (source.find("uMaterialSaturation") == std::string::npos)
+            declarations += "\nuniform float uMaterialSaturation; // @ui min=0.0 max=2.0 step=0.01 default=1.0 label=\"Saturation\" id=" + id + ".saturation";
+        if (source.find("uMaterialContrast") == std::string::npos)
+            declarations += "\nuniform float uMaterialContrast; // @ui min=0.0 max=2.0 step=0.01 default=1.0 label=\"Contrast\" id=" + id + ".contrast";
+        const std::size_t timeDeclaration = source.find("uniform float uTime;");
+        if (timeDeclaration != std::string::npos && source.find("uMaterialTimeScale") == std::string::npos)
+        {
+            declarations += "\nuniform float uMaterialTimeScale; // @ui min=-3.0 max=3.0 step=0.01 default=1.0 label=\"Animation speed\" id=" + id + ".speed";
+            const std::size_t afterTime = source.find('\n', timeDeclaration);
+            if (afterTime != std::string::npos)
+            {
+                std::size_t position = afterTime + 1;
+                while ((position = source.find("uTime", position)) != std::string::npos)
+                {
+                    source.replace(position, 5, "uMaterialTime");
+                    position += 13;
+                }
+                declarations += "\n#define uMaterialTime (uTime * uMaterialTimeScale)";
+            }
+        }
+        source.insert(insertion + 1, declarations + "\n");
+
+        const std::size_t finalBrace = source.find_last_of('}');
+        if (finalBrace != std::string::npos)
+            source.insert(finalBrace, "    float uMaterialLuma = dot(FragColor.rgb, vec3(0.2126, 0.7152, 0.0722));\n    FragColor.rgb = mix(vec3(uMaterialLuma), FragColor.rgb, uMaterialSaturation);\n    FragColor.rgb = (FragColor.rgb - vec3(0.5)) * uMaterialContrast + vec3(0.5);\n    FragColor.rgb = clamp(FragColor.rgb * uMaterialBrightness, 0.0, 1.0);\n");
+    }
+
+    static std::string makeSourceShader(const std::string_view declaration, const std::string_view body)
+    {
+        std::string source = makeGeneratedShader(body);
+        const std::size_t marker = source.find("uniform float uTime;");
+        if (marker != std::string::npos) source.insert(marker, std::string(declaration) + "\n");
+        return source;
+    }
+
     static std::vector<ShaderPreset> buildShaderPresets()
     {
         std::vector<ShaderPreset> presets;
-        presets.reserve(57);
+        presets.reserve(96);
         presets.push_back({"Rainbow equalizer", std::string(DefaultFragmentShaderSource)});
         presets.push_back({"Plasma", std::string(PlasmaFragmentShaderSource)});
         presets.push_back({"Neon rings", std::string(NeonRingsFragmentShaderSource)});
@@ -1998,6 +2075,195 @@ void main()
         color += hsv2rgb(vec3(fract(event.x / 16.0 + age * 0.04), 0.8, 1.0)) * exp(-dist * 10.0) * exp(-age * 1.4) * 0.5;
     }
     FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - health bar", makeSourceShader(
+            "uniform float uHealth; // @ui min=0.0 max=1.0 step=0.001 default=1.0 label=\"Health\" id=source.health",
+            R"GLSL(    float health = clamp(uHealth, 0.0, 1.0);
+    float filled = step(uv.x, health);
+    vec3 low = vec3(1.0, 0.02, 0.01);
+    vec3 high = vec3(0.05, 1.0, 0.22);
+    vec3 color = mix(low, high, smoothstep(0.0, 1.0, health)) * filled;
+    color += vec3(0.025) * (1.0 - filled);
+    FragColor = vec4(applyIndicators(color, row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - process reactor", makeSourceShader(
+            "uniform float uProcessValue; // @ui min=0.0 max=1.0 step=0.001 default=0.0 label=\"Process value\" id=process.value",
+            R"GLSL(    float value = clamp(uProcessValue, 0.0, 1.0);
+    float wave = 0.5 + 0.5 * sin((p.x * 8.0 + p.y * 4.0) - uTime * (1.0 + value * 8.0));
+    float core = exp(-length(p) * (2.0 + value * 4.0));
+    vec3 color = hsv2rgb(vec3(fract(0.58 + value * 0.35 + wave * 0.08), 0.95, clamp(core + wave * value, 0.0, 1.0)));
+    FragColor = vec4(applyIndicators(color, row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - binding status", makeSourceShader(
+            "uniform float uBindingStatus; // @ui min=0.0 max=1.0 step=0.001 default=0.0 label=\"Binding status\" id=binding.status",
+            R"GLSL(    float value = clamp(uBindingStatus, 0.0, 1.0);
+    float pulse = 0.65 + 0.35 * sin(uTime * (1.5 + value * 5.0) - length(p) * 10.0);
+    vec3 offline = vec3(0.10, 0.01, 0.015);
+    vec3 online = vec3(0.05, 0.85, 1.0);
+    vec3 color = mix(offline, online, value) * (0.20 + pulse * (0.35 + value * 0.65));
+    FragColor = vec4(applyIndicators(color, row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - telemetry gauge", makeSourceShader(
+            "uniform float uTelemetryValue; // @ui min=0.0 max=1.0 step=0.001 default=0.0 label=\"Telemetry\" id=telemetry.value",
+            R"GLSL(    float value = clamp(uTelemetryValue, 0.0, 1.0);
+    float meter = step(uv.y, value);
+    vec3 color = hsv2rgb(vec3(0.34 - value * 0.34, 0.95, 0.12 + 0.88 * meter));
+    color *= 0.7 + 0.3 * sin(float(column) * 0.9 + uTime * 3.0 * value);
+    FragColor = vec4(applyIndicators(color, row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - external audio pulse", makeSourceShader(
+            "uniform float uExternalAudio; // @ui min=0.0 max=1.0 step=0.001 default=0.0 label=\"External audio\" id=audio.external",
+            R"GLSL(    float level = clamp(uExternalAudio, 0.0, 1.0);
+    float radius = length(p);
+    float ring = exp(-pow((radius - 0.15 - level * 0.7) * 12.0, 2.0));
+    vec3 color = hsv2rgb(vec3(fract(uv.x + uTime * 0.05), 0.9, clamp(level * 0.55 + ring, 0.0, 1.0)));
+    FragColor = vec4(applyIndicators(color, row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - runtime dashboard", makeSourceShader(
+            R"GLSL(uniform float uNative; // @ui min=0.0 max=1.0 step=0.001 default=0.0 label="Native process" id=runtime.native
+uniform float uBindingStatus; // @ui min=0.0 max=1.0 step=0.001 default=0.0 label="Binding status" id=runtime.status
+uniform float uAudioData; // @ui min=0.0 max=1.0 step=0.001 default=0.0 label="Audio" id=runtime.audio
+uniform float uSystemData; // @ui min=0.0 max=1.0 step=0.001 default=0.0 label="Telemetry" id=runtime.system)GLSL",
+            R"GLSL(    float nativeValue = clamp(uNative, 0.0, 1.0);
+    float statusValue = clamp(uBindingStatus, 0.0, 1.0);
+    float audioValue = clamp(uAudioData, 0.0, 1.0);
+    float systemValue = clamp(uSystemData, 0.0, 1.0);
+    float quadrant = step(0.5, uv.x) + step(0.5, uv.y) * 2.0;
+    float value = quadrant < 0.5 ? nativeValue : quadrant < 1.5 ? statusValue : quadrant < 2.5 ? audioValue : systemValue;
+    vec3 baseColor = quadrant < 0.5 ? vec3(0.08, 0.75, 1.0) : quadrant < 1.5 ? vec3(0.10, 0.75, 1.0) : quadrant < 2.5 ? vec3(0.10, 1.0, 0.35) : vec3(1.0, 0.28, 0.06);
+    float scan = 0.65 + 0.35 * sin((uv.x + uv.y) * 16.0 - uTime * (1.0 + value * 5.0));
+    float separator = smoothstep(0.02, 0.0, min(abs(uv.x - 0.5), abs(uv.y - 0.5)));
+    vec3 color = baseColor * (0.05 + value * scan) + vec3(separator * 0.18);
+    FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - health tri-color", makeSourceShader(
+            R"GLSL(uniform float uHealthValue; // @ui min=0.0 max=10000.0 step=1.0 default=100.0 label="Health" id=health.value
+uniform float uHealthMaximum; // @ui min=0.001 max=10000.0 step=1.0 default=100.0 label="Maximum health" id=health.maximum
+uniform vec3 uHealthHighColor; // @ui color default=0.05,1.0,0.12 label="Healthy color" id=health.color.high
+uniform vec3 uHealthMidColor; // @ui color default=1.0,0.72,0.02 label="Half health color" id=health.color.mid
+uniform vec3 uHealthLowColor; // @ui color default=1.0,0.02,0.01 label="Critical color" id=health.color.low
+uniform float uHealthCriticalPulse; // @ui min=0.0 max=2.0 step=0.01 default=0.65 label="Critical pulse" id=health.critical_pulse)GLSL",
+            R"GLSL(    float health = clamp(uHealthValue / max(uHealthMaximum, 0.001), 0.0, 1.0);
+    vec3 color = health < 0.5
+        ? mix(uHealthLowColor, uHealthMidColor, smoothstep(0.0, 0.5, health))
+        : mix(uHealthMidColor, uHealthHighColor, smoothstep(0.5, 1.0, health));
+    float critical = 1.0 - smoothstep(0.08, 0.25, health);
+    float pulse = mix(1.0, 0.55 + 0.45 * sin(uTime * 8.0), critical * uHealthCriticalPulse);
+    float fill = mix(0.28, 1.0, step(uv.x, health));
+    color *= pulse * fill;
+    FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - threshold bands", makeSourceShader(
+            R"GLSL(uniform float uRuntimeValue; // @ui min=0.0 max=1.0 step=0.001 default=0.5 label="Value" id=runtime.value
+uniform float uThresholdLow; // @ui min=0.0 max=1.0 step=0.001 default=0.35 label="Low threshold" id=runtime.threshold.low
+uniform float uThresholdHigh; // @ui min=0.0 max=1.0 step=0.001 default=0.70 label="High threshold" id=runtime.threshold.high
+uniform vec3 uThresholdLowColor; // @ui color default=0.05,1.0,0.18 label="Low band" id=runtime.color.low
+uniform vec3 uThresholdMidColor; // @ui color default=1.0,0.75,0.02 label="Middle band" id=runtime.color.mid
+uniform vec3 uThresholdHighColor; // @ui color default=1.0,0.03,0.02 label="High band" id=runtime.color.high)GLSL",
+            R"GLSL(    float value = clamp(uRuntimeValue, 0.0, 1.0);
+    float low = min(uThresholdLow, uThresholdHigh);
+    float high = max(uThresholdLow, uThresholdHigh);
+    vec3 color = value < low ? uThresholdLowColor : value < high ? uThresholdMidColor : uThresholdHighColor;
+    float marker = exp(-abs(uv.x - value) * 70.0);
+    float band = 0.35 + 0.65 * step(uv.x, value);
+    color *= band + marker * 0.4;
+    FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - dual meter", makeSourceShader(
+            R"GLSL(uniform float uRuntimePrimary; // @ui min=0.0 max=1.0 step=0.001 default=0.7 label="Primary" id=runtime.primary
+uniform float uRuntimeSecondary; // @ui min=0.0 max=1.0 step=0.001 default=0.35 label="Secondary" id=runtime.secondary
+uniform vec3 uPrimaryColor; // @ui color default=0.05,0.65,1.0 label="Primary color" id=runtime.primary.color
+uniform vec3 uSecondaryColor; // @ui color default=1.0,0.15,0.65 label="Secondary color" id=runtime.secondary.color)GLSL",
+            R"GLSL(    float a = clamp(uRuntimePrimary, 0.0, 1.0);
+    float b = clamp(uRuntimeSecondary, 0.0, 1.0);
+    bool upper = uv.y >= 0.5;
+    float value = upper ? a : b;
+    vec3 base = upper ? uPrimaryColor : uSecondaryColor;
+    float fill = step(uv.x, value);
+    float edge = exp(-abs(uv.x - value) * 55.0);
+    vec3 color = base * (0.08 + fill * 0.82 + edge * 0.45);
+    FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - telemetry lanes", makeSourceShader(
+            R"GLSL(uniform float uRuntimeA; // @ui min=0.0 max=1.0 step=0.001 default=0.2 label="Lane A" id=runtime.a
+uniform float uRuntimeB; // @ui min=0.0 max=1.0 step=0.001 default=0.4 label="Lane B" id=runtime.b
+uniform float uRuntimeC; // @ui min=0.0 max=1.0 step=0.001 default=0.6 label="Lane C" id=runtime.c
+uniform float uRuntimeD; // @ui min=0.0 max=1.0 step=0.001 default=0.8 label="Lane D" id=runtime.d)GLSL",
+            R"GLSL(    float lane = floor(uv.x * 4.0);
+    float value = lane < 0.5 ? uRuntimeA : lane < 1.5 ? uRuntimeB : lane < 2.5 ? uRuntimeC : uRuntimeD;
+    value = clamp(value, 0.0, 1.0);
+    vec3 laneColor = lane < 0.5 ? vec3(0.05,0.7,1.0) : lane < 1.5 ? vec3(0.45,0.2,1.0) : lane < 2.5 ? vec3(0.1,1.0,0.4) : vec3(1.0,0.35,0.04);
+    float level = step(uv.y, value);
+    float scan = 0.72 + 0.28 * sin(uTime * (1.5 + value * 5.0) + uv.y * 18.0);
+    vec3 color = laneColor * (0.035 + level * scan);
+    FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - balance scanner", makeSourceShader(
+            R"GLSL(uniform float uRuntimeLeft; // @ui min=0.0 max=1.0 step=0.001 default=0.5 label="Left" id=runtime.left
+uniform float uRuntimeRight; // @ui min=0.0 max=1.0 step=0.001 default=0.5 label="Right" id=runtime.right
+uniform vec3 uBalanceLeftColor; // @ui color default=0.05,0.55,1.0 label="Left color" id=runtime.left.color
+uniform vec3 uBalanceRightColor; // @ui color default=1.0,0.12,0.45 label="Right color" id=runtime.right.color)GLSL",
+            R"GLSL(    float left = max(uRuntimeLeft, 0.0);
+    float right = max(uRuntimeRight, 0.0);
+    float total = max(left + right, 0.0001);
+    float balance = clamp(right / total, 0.0, 1.0);
+    float energy = clamp(total * 0.5, 0.0, 1.0);
+    float scanner = exp(-abs(uv.x - balance) * 48.0);
+    vec3 gradient = mix(uBalanceLeftColor, uBalanceRightColor, uv.x);
+    vec3 color = gradient * (0.03 + energy * 0.28 + scanner * (0.6 + 0.4 * energy));
+    FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - runtime wave", makeSourceShader(
+            R"GLSL(uniform float uRuntimeWaveValue; // @ui min=0.0 max=1.0 step=0.001 default=0.5 label="Wave value" id=runtime.wave.value
+uniform float uRuntimeWaveDrive; // @ui min=0.0 max=1.0 step=0.001 default=0.5 label="Drive" id=runtime.wave.drive
+uniform vec3 uRuntimeWaveColor; // @ui color default=0.1,0.75,1.0 label="Wave color" id=runtime.wave.color)GLSL",
+            R"GLSL(    float value = clamp(uRuntimeWaveValue, 0.0, 1.0);
+    float drive = clamp(uRuntimeWaveDrive, 0.0, 1.0);
+    float center = 0.5 + sin(uv.x * (7.0 + drive * 16.0) - uTime * (1.0 + drive * 8.0)) * (0.05 + value * 0.35);
+    float line = exp(-abs(uv.y - center) * (26.0 + drive * 34.0));
+    float glow = exp(-abs(uv.y - center) * 7.0);
+    vec3 color = uRuntimeWaveColor * (line + glow * (0.05 + value * 0.35));
+    FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - segmented gauge", makeSourceShader(
+            R"GLSL(uniform float uGaugeValue; // @ui min=0.0 max=1.0 step=0.001 default=0.65 label="Gauge" id=runtime.gauge
+uniform vec3 uGaugeHighColor; // @ui color default=0.05,1.0,0.16 label="High color" id=runtime.gauge.high
+uniform vec3 uGaugeMidColor; // @ui color default=1.0,0.72,0.02 label="Middle color" id=runtime.gauge.mid
+uniform vec3 uGaugeLowColor; // @ui color default=1.0,0.03,0.02 label="Low color" id=runtime.gauge.low)GLSL",
+            R"GLSL(    float value = clamp(uGaugeValue, 0.0, 1.0);
+    float segment = (float(column) + 1.0) / 16.0;
+    float lit = step(segment, value + 0.0001);
+    vec3 tone = value < 0.5 ? mix(uGaugeLowColor, uGaugeMidColor, value * 2.0) : mix(uGaugeMidColor, uGaugeHighColor, (value - 0.5) * 2.0);
+    float rowPulse = 0.82 + 0.18 * sin(uTime * 2.5 + float(row) * 0.7);
+    vec3 color = tone * (0.025 + lit * rowPulse);
+    FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - source crossfade", makeSourceShader(
+            R"GLSL(uniform float uRuntimeMix; // @ui min=0.0 max=1.0 step=0.001 default=0.5 label="Crossfade" id=runtime.mix
+uniform float uRuntimeIntensity; // @ui min=0.0 max=1.0 step=0.001 default=1.0 label="Intensity" id=runtime.intensity
+uniform vec3 uRuntimeColorA; // @ui color default=0.03,0.45,1.0 label="Color A" id=runtime.mix.color_a
+uniform vec3 uRuntimeColorB; // @ui color default=1.0,0.08,0.55 label="Color B" id=runtime.mix.color_b)GLSL",
+            R"GLSL(    float blend = clamp(uRuntimeMix, 0.0, 1.0);
+    float intensity = clamp(uRuntimeIntensity, 0.0, 1.0);
+    float spatial = smoothstep(blend - 0.18, blend + 0.18, uv.x);
+    vec3 color = mix(uRuntimeColorA, uRuntimeColorB, spatial);
+    float edge = exp(-abs(uv.x - blend) * 32.0);
+    color *= intensity * (0.35 + 0.65 * (0.7 + 0.3 * sin(uTime * 2.0 + uv.y * 8.0))) + edge * 0.25;
+    FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - alert beacon", makeSourceShader(
+            R"GLSL(uniform float uAlertValue; // @ui min=0.0 max=1.0 step=0.001 default=0.2 label="Alert value" id=runtime.alert
+uniform float uAlertWarning; // @ui min=0.0 max=1.0 step=0.001 default=0.55 label="Warning threshold" id=runtime.alert.warning
+uniform float uAlertCritical; // @ui min=0.0 max=1.0 step=0.001 default=0.82 label="Critical threshold" id=runtime.alert.critical
+uniform vec3 uAlertSafeColor; // @ui color default=0.05,0.9,0.22 label="Safe color" id=runtime.alert.safe_color
+uniform vec3 uAlertWarningColor; // @ui color default=1.0,0.68,0.02 label="Warning color" id=runtime.alert.warning_color
+uniform vec3 uAlertCriticalColor; // @ui color default=1.0,0.02,0.01 label="Critical color" id=runtime.alert.critical_color)GLSL",
+            R"GLSL(    float value = clamp(uAlertValue, 0.0, 1.0);
+    float warning = min(uAlertWarning, uAlertCritical);
+    float critical = max(uAlertWarning, uAlertCritical);
+    vec3 color = value < warning ? uAlertSafeColor : value < critical ? uAlertWarningColor : uAlertCriticalColor;
+    float severity = value < warning ? 0.0 : value < critical ? 0.5 : 1.0;
+    float flash = severity <= 0.0 ? 1.0 : 0.48 + 0.52 * sin(uTime * mix(4.0, 10.0, severity));
+    float sweep = 0.72 + 0.28 * sin((uv.x + uv.y) * 15.0 - uTime * (2.0 + severity * 5.0));
+    color *= mix(0.45 + value * 0.55, flash * sweep, severity);
+    FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
+        presets.push_back({"Data - four-corner field", makeSourceShader(
+            R"GLSL(uniform float uCornerA; // @ui min=0.0 max=1.0 step=0.001 default=0.15 label="Top left" id=runtime.corner.a
+uniform float uCornerB; // @ui min=0.0 max=1.0 step=0.001 default=0.40 label="Top right" id=runtime.corner.b
+uniform float uCornerC; // @ui min=0.0 max=1.0 step=0.001 default=0.65 label="Bottom left" id=runtime.corner.c
+uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bottom right" id=runtime.corner.d)GLSL",
+            R"GLSL(    float top = mix(clamp(uCornerA,0.0,1.0), clamp(uCornerB,0.0,1.0), uv.x);
+    float bottom = mix(clamp(uCornerC,0.0,1.0), clamp(uCornerD,0.0,1.0), uv.x);
+    float value = mix(bottom, top, uv.y);
+    float contour = 0.65 + 0.35 * sin(value * 28.0 - uTime * (1.0 + value * 4.0));
+    vec3 color = hsv2rgb(vec3(mix(0.66, 0.0, value), 0.95, 0.08 + value * contour));
+    FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
+        for (auto& preset : presets) parameterizeShaderPreset(preset);
         return presets;
     }
 
@@ -2462,7 +2728,15 @@ void main()
         int BassEndBand = 16;
         int FullRow = 5;
         float OverallGain = 1.62f;
+        bool AutomaticOverallGain = false;
+        float AutoGainBaseline = 1.62f;
+        float AutoGainTargetRms = 0.10f;
+        float AutoGainAdaptation = 0.35f;
+        float AutoGainMinCorrection = 0.45f;
+        float AutoGainMaxCorrection = 3.00f;
+        float AutoGainSilenceGate = 0.0025f;
         float GlobalBrightness = 1.0f;
+        float LiveOutputInterpolation = 0.35f;
         float WaveSpeed = 0.40f;
         float FeatherRows = 2.5f;
         float Saturation = 2.0f;
@@ -2479,6 +2753,7 @@ void main()
         float StatisticsInterval = 0.20f;
         float MediaPollInterval = 0.50f;
         float ShaderEditorZoom = 1.0f;
+        float ShaderTransitionSeconds = 0.35f;
         std::array<float, 3> SolidColor{1.0f, 0.0f, 0.0f};
         std::array<float, 3> ShaderCapsLockColor{0.10f, 0.80f, 1.00f};
         std::array<float, 3> ShaderScrollLockColor{1.00f, 0.20f, 0.55f};
@@ -2566,6 +2841,11 @@ void main()
         return settingsPath().parent_path() / "visualizer.frag";
     }
 
+    static std::filesystem::path shaderMaterialPath()
+    {
+        return settingsPath().parent_path() / "visualizer.material.ini";
+    }
+
     static void setShaderSource(std::array<char, ShaderSourceCapacity>& destination, const std::string_view source)
     {
         const std::size_t size = std::min(source.size(), destination.size() - 1);
@@ -2636,7 +2916,7 @@ void main()
     static void loadShaderSources(std::array<char, ShaderSourceCapacity>& vertexSource, std::array<char, ShaderSourceCapacity>& fragmentSource)
     {
         setShaderSource(vertexSource, DefaultVertexShaderSource);
-        setShaderSource(fragmentSource, DefaultFragmentShaderSource);
+        setShaderSource(fragmentSource, ShaderPresets.front().FragmentSource);
         loadTextFile(vertexShaderPath(), vertexSource);
         loadTextFile(fragmentShaderPath(), fragmentSource);
     }
@@ -2679,7 +2959,15 @@ void main()
         stream << "BassEndBand=" << settings.BassEndBand << '\n';
         stream << "FullRow=" << settings.FullRow << '\n';
         stream << "OverallGain=" << settings.OverallGain << '\n';
+        stream << "AutomaticOverallGain=" << settings.AutomaticOverallGain << '\n';
+        stream << "AutoGainBaseline=" << settings.AutoGainBaseline << '\n';
+        stream << "AutoGainTargetRms=" << settings.AutoGainTargetRms << '\n';
+        stream << "AutoGainAdaptation=" << settings.AutoGainAdaptation << '\n';
+        stream << "AutoGainMinCorrection=" << settings.AutoGainMinCorrection << '\n';
+        stream << "AutoGainMaxCorrection=" << settings.AutoGainMaxCorrection << '\n';
+        stream << "AutoGainSilenceGate=" << settings.AutoGainSilenceGate << '\n';
         stream << "GlobalBrightness=" << settings.GlobalBrightness << '\n';
+        stream << "LiveOutputInterpolation=" << settings.LiveOutputInterpolation << '\n';
         stream << "WaveSpeed=" << settings.WaveSpeed << '\n';
         stream << "FeatherRows=" << settings.FeatherRows << '\n';
         stream << "Saturation=" << settings.Saturation << '\n';
@@ -2696,6 +2984,7 @@ void main()
         stream << "StatisticsInterval=" << settings.StatisticsInterval << '\n';
         stream << "MediaPollInterval=" << settings.MediaPollInterval << '\n';
         stream << "ShaderEditorZoom=" << settings.ShaderEditorZoom << '\n';
+        stream << "ShaderTransitionSeconds=" << settings.ShaderTransitionSeconds << '\n';
         stream << "BaseColorMode=" << settings.BaseColorMode << '\n';
         stream << "ShaderDownsampleMode=" << settings.ShaderDownsampleMode << '\n';
         stream << "ShaderPresetIndex=" << settings.ShaderPresetIndex << '\n';
@@ -2814,7 +3103,15 @@ void main()
             LOAD_NUM(BassEndBand)
             LOAD_NUM(FullRow)
             LOAD_NUM(OverallGain)
+            LOAD_BOOL(AutomaticOverallGain)
+            LOAD_NUM(AutoGainBaseline)
+            LOAD_NUM(AutoGainTargetRms)
+            LOAD_NUM(AutoGainAdaptation)
+            LOAD_NUM(AutoGainMinCorrection)
+            LOAD_NUM(AutoGainMaxCorrection)
+            LOAD_NUM(AutoGainSilenceGate)
             LOAD_NUM(GlobalBrightness)
+            LOAD_NUM(LiveOutputInterpolation)
             LOAD_NUM(WaveSpeed)
             LOAD_NUM(FeatherRows)
             LOAD_NUM(Saturation)
@@ -2831,6 +3128,7 @@ void main()
             LOAD_NUM(StatisticsInterval)
             LOAD_NUM(MediaPollInterval)
             LOAD_NUM(ShaderEditorZoom)
+            LOAD_NUM(ShaderTransitionSeconds)
             LOAD_NUM(BaseColorMode)
             LOAD_NUM(ShaderDownsampleMode)
 #undef LOAD_NUM
@@ -2862,7 +3160,9 @@ void main()
         settings.ShaderFramebufferWidth = std::clamp(settings.ShaderFramebufferWidth, static_cast<int>(Columns), MaxShaderDimension);
         settings.ShaderFramebufferHeight = std::clamp(settings.ShaderFramebufferHeight, static_cast<int>(Rows), MaxShaderDimension);
         settings.ShaderEditorZoom = std::clamp(std::round(settings.ShaderEditorZoom * 10.0f) / 10.0f, 0.60f, 2.50f);
+        settings.ShaderTransitionSeconds = std::clamp(settings.ShaderTransitionSeconds, 0.0f, 10.0f);
         settings.GlobalBrightness = std::clamp(settings.GlobalBrightness, 0.0f, 1.0f);
+        settings.LiveOutputInterpolation = std::clamp(settings.LiveOutputInterpolation, 0.0f, 1.0f);
         g_SettingsStatus = "Loaded " + std::to_string(loaded) + " settings from " + path.string();
         if (failed != 0) g_SettingsStatus += " (" + std::to_string(failed) + " malformed lines ignored)";
     }
@@ -2981,6 +3281,290 @@ void main()
         b = std::clamp(gray + (b - gray) * saturation, 0.0f, 255.0f);
     }
 
+
+    struct ShaderUniformMetadata
+    {
+        bool Explicit = false;
+        bool Hidden = false;
+        bool Color = false;
+        bool HasDefault = false;
+        bool HasMin = false;
+        bool HasMax = false;
+        bool HasStep = false;
+        std::string Label;
+        std::string Id;
+        float Min = 0.0f;
+        float Max = 1.0f;
+        float Step = 0.01f;
+        std::array<float, 4> Default{};
+    };
+
+    struct ShaderMaterialParameter
+    {
+        std::string Name;
+        std::string Label;
+        std::string PersistenceKey;
+        GLenum Type = 0;
+        GLint Location = -1;
+        int Components = 1;
+        bool Integer = false;
+        bool Boolean = false;
+        bool Color = false;
+        bool HasMin = false;
+        bool HasMax = false;
+        float Min = 0.0f;
+        float Max = 1.0f;
+        float Step = 0.01f;
+        std::array<float, 4> FloatValue{};
+        std::array<float, 4> FloatDefault{};
+        std::array<int, 4> IntValue{};
+        std::array<int, 4> IntDefault{};
+    };
+
+    static std::unordered_map<std::string, std::string> g_ShaderMaterialValues;
+
+    static std::string shaderMaterialSerializeFloats(const std::array<float, 4>& values, const int count)
+    {
+        std::ostringstream stream;
+        stream << std::setprecision(9);
+        for (int i = 0; i < count; ++i)
+        {
+            if (i != 0) stream << ',';
+            stream << values[static_cast<std::size_t>(i)];
+        }
+        return stream.str();
+    }
+
+    static std::string shaderMaterialSerializeInts(const std::array<int, 4>& values, const int count)
+    {
+        std::ostringstream stream;
+        for (int i = 0; i < count; ++i)
+        {
+            if (i != 0) stream << ',';
+            stream << values[static_cast<std::size_t>(i)];
+        }
+        return stream.str();
+    }
+
+    static bool parseShaderMaterialFloats(const std::string_view value, std::array<float, 4>& result, const int count)
+    {
+        std::array<float, 4> parsed{};
+        std::size_t start = 0;
+        for (int i = 0; i < count; ++i)
+        {
+            const std::size_t end = value.find(',', start);
+            const std::string_view part = value.substr(start, end == std::string_view::npos ? value.size() - start : end - start);
+            if (!parseNumber(part, parsed[static_cast<std::size_t>(i)])) return false;
+            if (i + 1 < count)
+            {
+                if (end == std::string_view::npos) return false;
+                start = end + 1;
+            }
+            else if (end != std::string_view::npos)
+                return false;
+        }
+        result = parsed;
+        return true;
+    }
+
+    static bool parseShaderMaterialInts(const std::string_view value, std::array<int, 4>& result, const int count)
+    {
+        std::array<int, 4> parsed{};
+        std::size_t start = 0;
+        for (int i = 0; i < count; ++i)
+        {
+            const std::size_t end = value.find(',', start);
+            const std::string_view part = value.substr(start, end == std::string_view::npos ? value.size() - start : end - start);
+            if (!parseNumber(part, parsed[static_cast<std::size_t>(i)])) return false;
+            if (i + 1 < count)
+            {
+                if (end == std::string_view::npos) return false;
+                start = end + 1;
+            }
+            else if (end != std::string_view::npos)
+                return false;
+        }
+        result = parsed;
+        return true;
+    }
+
+    static void loadShaderMaterialValueCache()
+    {
+        g_ShaderMaterialValues.clear();
+        std::ifstream file(shaderMaterialPath());
+        std::string line;
+        while (std::getline(file, line))
+        {
+            const std::string_view whole = trimSettingValue(line);
+            if (whole.empty() || whole.front() == '#' || whole.front() == ';') continue;
+            const std::size_t separator = whole.find('=');
+            if (separator == std::string_view::npos) continue;
+            const std::string key(trimSettingValue(whole.substr(0, separator)));
+            const std::string value(trimSettingValue(whole.substr(separator + 1)));
+            if (!key.empty()) g_ShaderMaterialValues[key] = value;
+        }
+    }
+
+    static bool saveShaderMaterialValueCache()
+    {
+        const auto path = shaderMaterialPath();
+        std::error_code error;
+        if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), error);
+        const auto temporaryPath = std::filesystem::path(path.string() + ".tmp");
+        std::ofstream file(temporaryPath, std::ios::trunc);
+        if (!file) return false;
+        file << "# Quartz reflected shader material parameters\n";
+        std::vector<std::string> keys;
+        keys.reserve(g_ShaderMaterialValues.size());
+        for (const auto& [key, _] : g_ShaderMaterialValues) keys.push_back(key);
+        std::sort(keys.begin(), keys.end());
+        for (const auto& key : keys) file << key << '=' << g_ShaderMaterialValues[key] << '\n';
+        file.close();
+        if (!file) { std::filesystem::remove(temporaryPath, error); return false; }
+        std::filesystem::rename(temporaryPath, path, error);
+        if (error)
+        {
+            std::filesystem::remove(path, error);
+            error.clear();
+            std::filesystem::rename(temporaryPath, path, error);
+        }
+        return !error;
+    }
+
+    static std::string prettyUniformLabel(std::string_view name)
+    {
+        if (name.size() > 1 && name[0] == 'u' && std::isupper(static_cast<unsigned char>(name[1]))) name.remove_prefix(1);
+        std::string result;
+        result.reserve(name.size() + 8);
+        for (std::size_t i = 0; i < name.size(); ++i)
+        {
+            const char c = name[i];
+            if (i != 0 && std::isupper(static_cast<unsigned char>(c)) && !std::isupper(static_cast<unsigned char>(name[i - 1]))) result.push_back(' ');
+            result.push_back(c);
+        }
+        if (!result.empty()) result[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(result[0])));
+        return result;
+    }
+
+    static bool isEngineShaderUniform(std::string_view name)
+    {
+        if (const std::size_t bracket = name.find('['); bracket != std::string_view::npos) name = name.substr(0, bracket);
+        static constexpr std::array<std::string_view, 20> Names{
+            "uTime", "uResolution", "uBands", "uMediaColor", "uMediaAmount", "uSolidColor", "uWaveSpeed", "uFeatherRows", "uSaturation",
+            "uForceFullRow", "uFullRow", "uCapsLock", "uScrollLock", "uCapsLockColor", "uScrollLockColor", "uCapsLockColorEnabled",
+            "uScrollLockColorEnabled", "uKeyState", "uKeyEvents", "gl_DepthRange"
+        };
+        return std::find(Names.begin(), Names.end(), name) != Names.end();
+    }
+
+    static std::unordered_map<std::string, ShaderUniformMetadata> parseShaderUniformMetadata(const std::string_view vertexSource, const std::string_view fragmentSource)
+    {
+        std::unordered_map<std::string, ShaderUniformMetadata> result;
+        static const std::regex uniformPattern(R"rx(\buniform\s+[A-Za-z_][A-Za-z0-9_]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\[[^\]]*\])?\s*;)rx");
+        static const std::regex labelPattern(R"rx(label\s*=\s*"([^"]*)")rx", std::regex::icase);
+        static const std::regex idPattern(R"(\bid\s*=\s*([A-Za-z0-9_.:-]+))", std::regex::icase);
+        const auto parseSource = [&](const std::string_view source)
+        {
+            std::size_t offset = 0;
+            while (offset < source.size())
+            {
+                const std::size_t end = source.find('\n', offset);
+                const std::string line(source.substr(offset, end == std::string_view::npos ? source.size() - offset : end - offset));
+                std::smatch match;
+                if (std::regex_search(line, match, uniformPattern))
+                {
+                    const std::size_t uiOffset = line.find("@ui");
+                    if (uiOffset != std::string::npos)
+                    {
+                        ShaderUniformMetadata metadata{};
+                        metadata.Explicit = true;
+                        const std::string options = line.substr(uiOffset + 3);
+                        metadata.Hidden = std::regex_search(options, std::regex(R"(\bhidden\b)", std::regex::icase));
+                        metadata.Color = std::regex_search(options, std::regex(R"(\bcolor\b)", std::regex::icase));
+                        std::smatch optionMatch;
+                        if (std::regex_search(options, optionMatch, labelPattern)) metadata.Label = optionMatch[1].str();
+                        if (std::regex_search(options, optionMatch, idPattern)) metadata.Id = optionMatch[1].str();
+
+                        const auto findNumber = [&](const char* key, float& destination, bool& present)
+                        {
+                            const std::regex pattern(std::string(R"rx(\b)rx") + key + R"rx(\s*=\s*([-+]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][-+]?[0-9]+)?))rx", std::regex::icase);
+                            std::smatch numberMatch;
+                            if (!std::regex_search(options, numberMatch, pattern)) return;
+                            if (parseNumber(numberMatch[1].str(), destination)) present = true;
+                        };
+                        findNumber("min", metadata.Min, metadata.HasMin);
+                        findNumber("max", metadata.Max, metadata.HasMax);
+                        findNumber("step", metadata.Step, metadata.HasStep);
+
+                        const std::regex defaultPattern(R"(\bdefault\s*=\s*([^\s]+))", std::regex::icase);
+                        if (std::regex_search(options, optionMatch, defaultPattern))
+                        {
+                            metadata.HasDefault = parseShaderMaterialFloats(optionMatch[1].str(), metadata.Default, 1);
+                            if (!metadata.HasDefault)
+                            {
+                                std::array<float, 4> values{};
+                                for (int count = 4; count >= 2 && !metadata.HasDefault; --count)
+                                {
+                                    if (parseShaderMaterialFloats(optionMatch[1].str(), values, count))
+                                    {
+                                        metadata.Default = values;
+                                        metadata.HasDefault = true;
+                                    }
+                                }
+                            }
+                        }
+                        result[match[1].str()] = std::move(metadata);
+                    }
+                }
+                if (end == std::string_view::npos) break;
+                offset = end + 1;
+            }
+        };
+        parseSource(vertexSource);
+        parseSource(fragmentSource);
+        return result;
+    }
+
+    static int shaderUniformComponents(const GLenum type) noexcept
+    {
+        switch (type)
+        {
+        case GL_FLOAT:
+        case GL_INT:
+        case GL_BOOL: return 1;
+        case GL_FLOAT_VEC2:
+        case GL_INT_VEC2:
+        case GL_BOOL_VEC2: return 2;
+        case GL_FLOAT_VEC3:
+        case GL_INT_VEC3:
+        case GL_BOOL_VEC3: return 3;
+        case GL_FLOAT_VEC4:
+        case GL_INT_VEC4:
+        case GL_BOOL_VEC4: return 4;
+        default: return 0;
+        }
+    }
+
+    static const char* shaderUniformTypeName(const GLenum type) noexcept
+    {
+        switch (type)
+        {
+        case GL_FLOAT: return "float";
+        case GL_FLOAT_VEC2: return "vec2";
+        case GL_FLOAT_VEC3: return "vec3";
+        case GL_FLOAT_VEC4: return "vec4";
+        case GL_INT: return "int";
+        case GL_INT_VEC2: return "ivec2";
+        case GL_INT_VEC3: return "ivec3";
+        case GL_INT_VEC4: return "ivec4";
+        case GL_BOOL: return "bool";
+        case GL_BOOL_VEC2: return "bvec2";
+        case GL_BOOL_VEC3: return "bvec3";
+        case GL_BOOL_VEC4: return "bvec4";
+        default: return "unsupported";
+        }
+    }
+
     class ShaderFramebuffer
     {
     public:
@@ -3076,9 +3660,11 @@ void main()
                 return false;
             }
 
+            stashMaterialValues();
             if (_program != 0)
                 glDeleteProgram(_program);
             _program = program;
+            reflectMaterialParameters(vertexSource, fragmentSource);
             _status = "Shaders compiled successfully";
             return true;
         }
@@ -3162,6 +3748,7 @@ void main()
             uniform1i("uCapsLockColorEnabled", settings.ShaderCapsLockColorEnabled ? 1 : 0);
             uniform1i("uScrollLockColorEnabled", settings.ShaderScrollLockColorEnabled ? 1 : 0);
 
+            applyMaterialParameters();
             glDrawArrays(GL_TRIANGLES, 0, 6);
             glPixelStorei(GL_PACK_ALIGNMENT, 1);
             glReadPixels(0, 0, _width, _height, GL_RGBA, GL_UNSIGNED_BYTE, _pixels.data());
@@ -3276,8 +3863,160 @@ void main()
         int width() const noexcept { return _width; }
         int height() const noexcept { return _height; }
         const std::string& status() const noexcept { return _status; }
+        std::vector<ShaderMaterialParameter>& materialParameters() noexcept { return _materialParameters; }
+        const std::vector<ShaderMaterialParameter>& materialParameters() const noexcept { return _materialParameters; }
+        std::uint64_t materialRevision() const noexcept { return _materialRevision; }
+        void markMaterialChanged() noexcept { ++_materialRevision; }
+        void snapshotMaterialValues() { stashMaterialValues(); }
+        bool saveMaterialValues()
+        {
+            stashMaterialValues();
+            return saveShaderMaterialValueCache();
+        }
+
+        bool setMaterialParameter(const std::string_view id, const int component, const float value) noexcept
+        {
+            for (auto& parameter : _materialParameters)
+            {
+                if (parameter.PersistenceKey != id && parameter.Name != id) continue;
+                const int index = std::clamp(component, 0, std::max(parameter.Components - 1, 0));
+                if (parameter.Integer || parameter.Boolean)
+                    parameter.IntValue[static_cast<std::size_t>(index)] = parameter.Boolean ? (value >= 0.5f ? 1 : 0) : static_cast<int>(std::lround(value));
+                else
+                    parameter.FloatValue[static_cast<std::size_t>(index)] = value;
+                return true;
+            }
+            return false;
+        }
+
+        const ShaderMaterialParameter* findMaterialParameter(const std::string_view id) const noexcept
+        {
+            for (const auto& parameter : _materialParameters)
+                if (parameter.PersistenceKey == id || parameter.Name == id) return &parameter;
+            return nullptr;
+        }
 
     private:
+        void stashMaterialValues()
+        {
+            for (const auto& parameter : _materialParameters)
+            {
+                g_ShaderMaterialValues[parameter.PersistenceKey] = parameter.Integer || parameter.Boolean
+                    ? shaderMaterialSerializeInts(parameter.IntValue, parameter.Components)
+                    : shaderMaterialSerializeFloats(parameter.FloatValue, parameter.Components);
+            }
+        }
+
+        void reflectMaterialParameters(const std::string_view vertexSource, const std::string_view fragmentSource)
+        {
+            _materialParameters.clear();
+            if (_program == 0) return;
+            const auto metadata = parseShaderUniformMetadata(vertexSource, fragmentSource);
+            GLint count = 0;
+            GLint maxNameLength = 0;
+            glGetProgramiv(_program, GL_ACTIVE_UNIFORMS, &count);
+            glGetProgramiv(_program, GL_ACTIVE_UNIFORM_MAX_LENGTH, &maxNameLength);
+            std::vector<char> nameBuffer(static_cast<std::size_t>(std::max(maxNameLength, 2)), '\0');
+            for (GLint index = 0; index < count; ++index)
+            {
+                GLsizei nameLength = 0;
+                GLint arraySize = 0;
+                GLenum type = 0;
+                glGetActiveUniform(_program, static_cast<GLuint>(index), static_cast<GLsizei>(nameBuffer.size()), &nameLength, &arraySize, &type, nameBuffer.data());
+                if (nameLength <= 0 || arraySize != 1) continue;
+                std::string name(nameBuffer.data(), static_cast<std::size_t>(nameLength));
+                if (name.ends_with("[0]")) name.resize(name.size() - 3);
+                const auto metadataIt = metadata.find(name);
+                const ShaderUniformMetadata* ui = metadataIt == metadata.end() ? nullptr : &metadataIt->second;
+                if (ui && ui->Hidden) continue;
+                if (isEngineShaderUniform(name) && (!ui || !ui->Explicit)) continue;
+
+                const int components = shaderUniformComponents(type);
+                if (components == 0) continue;
+                const GLint location = glGetUniformLocation(_program, name.c_str());
+                if (location < 0) continue;
+
+                ShaderMaterialParameter parameter{};
+                parameter.Name = name;
+                parameter.Label = ui && !ui->Label.empty() ? ui->Label : prettyUniformLabel(name);
+                parameter.PersistenceKey = ui && !ui->Id.empty() ? ui->Id : name;
+                parameter.Type = type;
+                parameter.Location = location;
+                parameter.Components = components;
+                parameter.Integer = type == GL_INT || type == GL_INT_VEC2 || type == GL_INT_VEC3 || type == GL_INT_VEC4;
+                parameter.Boolean = type == GL_BOOL || type == GL_BOOL_VEC2 || type == GL_BOOL_VEC3 || type == GL_BOOL_VEC4;
+                parameter.Color = ui && ui->Color && !parameter.Integer && !parameter.Boolean && (components == 3 || components == 4);
+                parameter.HasMin = ui && ui->HasMin;
+                parameter.HasMax = ui && ui->HasMax;
+                parameter.Min = ui ? ui->Min : 0.0f;
+                parameter.Max = ui ? ui->Max : 1.0f;
+                parameter.Step = ui && ui->HasStep ? std::max(ui->Step, 0.000001f) : (parameter.Integer || parameter.Boolean ? 1.0f : 0.01f);
+
+                if (parameter.Integer || parameter.Boolean)
+                {
+                    glGetUniformiv(_program, location, parameter.IntValue.data());
+                    parameter.IntDefault = parameter.IntValue;
+                    if (ui && ui->HasDefault)
+                    {
+                        for (int component = 0; component < components; ++component)
+                            parameter.IntValue[static_cast<std::size_t>(component)] = parameter.IntDefault[static_cast<std::size_t>(component)] = static_cast<int>(std::lround(ui->Default[static_cast<std::size_t>(component)]));
+                    }
+                    if (const auto saved = g_ShaderMaterialValues.find(parameter.PersistenceKey); saved != g_ShaderMaterialValues.end())
+                    {
+                        std::array<int, 4> values{};
+                        if (parseShaderMaterialInts(saved->second, values, components)) parameter.IntValue = values;
+                    }
+                }
+                else
+                {
+                    glGetUniformfv(_program, location, parameter.FloatValue.data());
+                    parameter.FloatDefault = parameter.FloatValue;
+                    if (ui && ui->HasDefault)
+                    {
+                        for (int component = 0; component < components; ++component)
+                            parameter.FloatValue[static_cast<std::size_t>(component)] = parameter.FloatDefault[static_cast<std::size_t>(component)] = ui->Default[static_cast<std::size_t>(component)];
+                    }
+                    if (const auto saved = g_ShaderMaterialValues.find(parameter.PersistenceKey); saved != g_ShaderMaterialValues.end())
+                    {
+                        std::array<float, 4> values{};
+                        if (parseShaderMaterialFloats(saved->second, values, components)) parameter.FloatValue = values;
+                    }
+                }
+                _materialParameters.push_back(std::move(parameter));
+            }
+            std::sort(_materialParameters.begin(), _materialParameters.end(), [](const auto& a, const auto& b) { return a.Label < b.Label; });
+        }
+
+        void applyMaterialParameters() const noexcept
+        {
+            for (const auto& parameter : _materialParameters)
+            {
+                if (parameter.Location < 0) continue;
+                if (parameter.Boolean || parameter.Integer)
+                {
+                    switch (parameter.Components)
+                    {
+                    case 1: glUniform1i(parameter.Location, parameter.IntValue[0]); break;
+                    case 2: glUniform2iv(parameter.Location, 1, parameter.IntValue.data()); break;
+                    case 3: glUniform3iv(parameter.Location, 1, parameter.IntValue.data()); break;
+                    case 4: glUniform4iv(parameter.Location, 1, parameter.IntValue.data()); break;
+                    default: break;
+                    }
+                }
+                else
+                {
+                    switch (parameter.Components)
+                    {
+                    case 1: glUniform1f(parameter.Location, parameter.FloatValue[0]); break;
+                    case 2: glUniform2fv(parameter.Location, 1, parameter.FloatValue.data()); break;
+                    case 3: glUniform3fv(parameter.Location, 1, parameter.FloatValue.data()); break;
+                    case 4: glUniform4fv(parameter.Location, 1, parameter.FloatValue.data()); break;
+                    default: break;
+                    }
+                }
+            }
+        }
+
         GLuint compileStage(const GLenum type, const std::string_view source)
         {
             const GLuint shader = glCreateShader(type);
@@ -3326,6 +4065,8 @@ void main()
         int _width = 0;
         int _height = 0;
         std::vector<std::uint8_t> _pixels;
+        std::vector<ShaderMaterialParameter> _materialParameters;
+        std::uint64_t _materialRevision = 0;
         std::string _status = "Shader not compiled";
     };
 
@@ -3377,6 +4118,71 @@ void main()
         return result;
     }
 
+    struct ShaderTransitionState
+    {
+        ShaderFramebuffer Previous;
+        std::array<Color32, MatrixSize> Frame{};
+        bool Active = false;
+        double StartedAt = 0.0;
+        float Duration = 0.0f;
+
+        void cancel() noexcept
+        {
+            Active = false;
+            StartedAt = 0.0;
+            Duration = 0.0f;
+            Previous.shutdown();
+        }
+    };
+
+    static Color32 lerpColorLinear(const Color32 from, const Color32 to, const float amount) noexcept
+    {
+        const float t = std::clamp(amount, 0.0f, 1.0f);
+        const auto mix = [t](const std::uint8_t a, const std::uint8_t b) { return static_cast<std::uint8_t>(std::lround(static_cast<float>(a) + (static_cast<float>(b) - a) * t)); };
+        return {mix(from.R, to.R), mix(from.G, to.G), mix(from.B, to.B)};
+    }
+
+    static bool switchShaderPreset(ShaderFramebuffer& framebuffer, ShaderTransitionState& transition, ShaderEditorState& editors, std::array<char, ShaderSourceCapacity>& vertexSource, std::array<char, ShaderSourceCapacity>& fragmentSource, VisualizerSettings& settings, const int presetIndex, const double now, const float transitionSeconds, const bool persist = true)
+    {
+        if (presetIndex <= 0 || presetIndex > static_cast<int>(ShaderPresets.size())) return false;
+        const auto& preset = ShaderPresets[static_cast<std::size_t>(presetIndex - 1)];
+        if (std::string_view(fragmentSource.data()) == preset.FragmentSource)
+        {
+            settings.ShaderPresetIndex = presetIndex;
+            return true;
+        }
+
+        const std::array<char, ShaderSourceCapacity> previousSource = fragmentSource;
+        transition.cancel();
+        const float duration = std::clamp(transitionSeconds, 0.0f, 10.0f);
+        if (duration > 0.0f && framebuffer.ready())
+        {
+            framebuffer.snapshotMaterialValues();
+            if (transition.Previous.initialize(settings.ShaderFramebufferWidth, settings.ShaderFramebufferHeight) && transition.Previous.compile(vertexSource.data(), previousSource.data()))
+            {
+                transition.Active = true;
+                transition.StartedAt = now;
+                transition.Duration = duration;
+            }
+            else
+                transition.cancel();
+        }
+
+        setShaderSource(fragmentSource, preset.FragmentSource);
+        if (!compileShaders(framebuffer, editors, vertexSource, fragmentSource))
+        {
+            fragmentSource = previousSource;
+            transition.cancel();
+            return false;
+        }
+
+        settings.ShaderPresetIndex = presetIndex;
+        settings.BaseColorMode = 2;
+        if (editors.Initialized) editors.Fragment.SetText(fragmentSource.data());
+        if (persist) saveShaderSources(vertexSource, fragmentSource);
+        return true;
+    }
+
     struct PacketBuffer
     {
         alignas(4) std::array<std::byte, 512> Data{};
@@ -3402,10 +4208,25 @@ void main()
         return packet;
     }
 
+    struct USBStatsSnapshot
+    {
+        std::uint64_t TxBytes = 0;
+        std::uint64_t RxBytes = 0;
+        std::uint64_t TxTransfers = 0;
+        std::uint64_t RxTransfers = 0;
+        std::uint64_t TxErrors = 0;
+        std::uint64_t RxErrors = 0;
+        std::uint64_t Connects = 0;
+        std::uint64_t Disconnects = 0;
+        double LastTxMilliseconds = 0.0;
+        double LastRxMilliseconds = 0.0;
+    };
+
     class RawUSB
     {
     public:
         using PacketHandler = std::function<void(const PacketHeader&)>;
+        using PacketObserver = std::function<void(bool, const PacketHeader&, std::span<const std::byte>)>;
 
         ~RawUSB()
         {
@@ -3470,6 +4291,7 @@ void main()
             _running.store(true, std::memory_order_release);
             _connected.store(true, std::memory_order_release);
             _lastError.store(LIBUSB_SUCCESS, std::memory_order_release);
+            _connects.fetch_add(1, std::memory_order_relaxed);
             try
             {
                 _receiveThread = std::thread(&RawUSB::_receiveLoop, this);
@@ -3489,6 +4311,7 @@ void main()
 
         void disconnect() noexcept
         {
+            const bool hadDevice = _handle != nullptr || _connected.load(std::memory_order_acquire);
             _running.store(false, std::memory_order_release);
             _connected.store(false, std::memory_order_release);
             if (_receiveThread.joinable())
@@ -3501,6 +4324,7 @@ void main()
             }
             _deviceName.clear();
             _rxAssembly.clear();
+            if (hadDevice) _disconnects.fetch_add(1, std::memory_order_relaxed);
         }
 
         void shutdown() noexcept
@@ -3533,25 +4357,59 @@ void main()
             _packetHandler = std::move(handler);
         }
 
+        void setPacketObserver(PacketObserver observer)
+        {
+            _packetObserver = std::move(observer);
+        }
+
+        USBStatsSnapshot stats() const noexcept
+        {
+            return {
+                _txBytes.load(std::memory_order_relaxed),
+                _rxBytes.load(std::memory_order_relaxed),
+                _txTransfers.load(std::memory_order_relaxed),
+                _rxTransfers.load(std::memory_order_relaxed),
+                _txErrors.load(std::memory_order_relaxed),
+                _rxErrors.load(std::memory_order_relaxed),
+                _connects.load(std::memory_order_relaxed),
+                _disconnects.load(std::memory_order_relaxed),
+                _lastTxMicroseconds.load(std::memory_order_relaxed) / 1000.0,
+                _lastRxMicroseconds.load(std::memory_order_relaxed) / 1000.0
+            };
+        }
+
         bool send(const PacketBuffer& packet) noexcept
         {
             if (!_handle || !_connected.load(std::memory_order_acquire) || packet.Size == 0 || packet.Size > packet.Data.size())
                 return false;
             int transferred = 0;
+            const auto transferStart = std::chrono::steady_clock::now();
             const int result = libusb_bulk_transfer(_handle, RequestEndpoint, reinterpret_cast<unsigned char*>(const_cast<std::byte*>(packet.Data.data())), static_cast<int>(packet.Size), &transferred, 20);
+            const auto transferEnd = std::chrono::steady_clock::now();
+            _lastTxMicroseconds.store(std::chrono::duration<double, std::micro>(transferEnd - transferStart).count(), std::memory_order_relaxed);
+            _txTransfers.fetch_add(1, std::memory_order_relaxed);
+            if (transferred > 0) _txBytes.fetch_add(static_cast<std::uint64_t>(transferred), std::memory_order_relaxed);
+            if (result != LIBUSB_SUCCESS || transferred != static_cast<int>(packet.Size)) _txErrors.fetch_add(1, std::memory_order_relaxed);
             _lastError.store(result, std::memory_order_release);
             if (result == LIBUSB_ERROR_NO_DEVICE)
             {
                 _running.store(false, std::memory_order_release);
                 _connected.store(false, std::memory_order_release);
             }
-            return result == LIBUSB_SUCCESS && transferred == static_cast<int>(packet.Size);
+            const bool success = result == LIBUSB_SUCCESS && transferred == static_cast<int>(packet.Size);
+            if (success && _packetObserver)
+            {
+                const std::span<const std::byte> bytes(packet.Data.data(), packet.Size);
+                if (const auto* header = PacketHeader::asPtr(bytes))
+                    _packetObserver(true, *header, bytes);
+            }
+            return success;
         }
 
     private:
-        static constexpr int RPCInterface = 1;
-        static constexpr unsigned char RequestEndpoint = 0x03;
-        static constexpr unsigned char ResponseEndpoint = 0x84;
+        static constexpr int RPCInterface = RPCInterfaceNumber;
+        static constexpr unsigned char RequestEndpoint = RPCOutEndpoint;
+        static constexpr unsigned char ResponseEndpoint = RPCInEndpoint;
 
         void _receiveLoop() noexcept
         {
@@ -3559,12 +4417,18 @@ void main()
             while (_running.load(std::memory_order_acquire))
             {
                 int transferred = 0;
+                const auto transferStart = std::chrono::steady_clock::now();
                 const int result = libusb_bulk_transfer(_handle, ResponseEndpoint, buffer.data(), static_cast<int>(buffer.size()), &transferred, 100);
+                const auto transferEnd = std::chrono::steady_clock::now();
                 if (result == LIBUSB_ERROR_TIMEOUT)
                     continue;
+                _lastRxMicroseconds.store(std::chrono::duration<double, std::micro>(transferEnd - transferStart).count(), std::memory_order_relaxed);
+                _rxTransfers.fetch_add(1, std::memory_order_relaxed);
+                if (transferred > 0) _rxBytes.fetch_add(static_cast<std::uint64_t>(transferred), std::memory_order_relaxed);
                 _lastError.store(result, std::memory_order_release);
                 if (result != LIBUSB_SUCCESS)
                 {
+                    _rxErrors.fetch_add(1, std::memory_order_relaxed);
                     if (result == LIBUSB_ERROR_NO_DEVICE)
                         _connected.store(false, std::memory_order_release);
                     break;
@@ -3603,6 +4467,8 @@ void main()
                 packet.Size = packetSize;
                 std::memcpy(packet.Data.data(), _rxAssembly.data(), packetSize);
                 header = PacketHeader::asPtr(std::span<const std::byte>(packet.Data.data(), packet.Size));
+                if (header && _packetObserver)
+                    _packetObserver(false, *header, std::span<const std::byte>(packet.Data.data(), packet.Size));
                 if (header && _packetHandler)
                     _packetHandler(*header);
                 _rxAssembly.erase(_rxAssembly.begin(), _rxAssembly.begin() + static_cast<std::ptrdiff_t>(packetSize));
@@ -3615,9 +4481,18 @@ void main()
         std::atomic_bool _running = false;
         std::atomic_bool _connected = false;
         std::atomic_int _lastError = LIBUSB_SUCCESS;
+        std::atomic_uint64_t _txBytes{0}, _rxBytes{0}, _txTransfers{0}, _rxTransfers{0}, _txErrors{0}, _rxErrors{0}, _connects{0}, _disconnects{0};
+        std::atomic<double> _lastTxMicroseconds{0.0}, _lastRxMicroseconds{0.0};
         PacketHandler _packetHandler;
+        PacketObserver _packetObserver;
         std::vector<std::byte> _rxAssembly;
         std::string _deviceName;
+    };
+
+    struct AudioLevelSnapshot
+    {
+        float Rms = 0.0f;
+        float Peak = 0.0f;
     };
 
     class AudioSpectrum
@@ -3690,6 +4565,24 @@ void main()
         bool isRunning() const noexcept { return _running.load(std::memory_order_acquire); }
         const std::string& source() const noexcept { return _source; }
         const std::string& error() const noexcept { return _error; }
+
+        AudioLevelSnapshot levelSnapshot()
+        {
+            AudioLevelSnapshot result{};
+            std::lock_guard lock(_sampleMutex);
+            const int available = std::min(_sampleCount, static_cast<int>(FFTSize));
+            if (available <= 0) return result;
+            const int start = (_writePosition - available + static_cast<int>(FFTSize)) % static_cast<int>(FFTSize);
+            double sumSquares = 0.0;
+            for (int i = 0; i < available; ++i)
+            {
+                const float sample = _samples[(start + i) % static_cast<int>(FFTSize)];
+                sumSquares += static_cast<double>(sample) * sample;
+                result.Peak = std::max(result.Peak, std::abs(sample));
+            }
+            result.Rms = static_cast<float>(std::sqrt(sumSquares / available));
+            return result;
+        }
 
         void getBands(const std::span<float> bands, const float minFrequency, const float maxFrequency, const float minDb, const float maxDb)
         {
@@ -3810,6 +4703,64 @@ void main()
         int _sampleCount = 0;
         std::string _source;
         std::string _error;
+    };
+
+    struct AutoGainState
+    {
+        float LongTermRms = 0.0f;
+        float Correction = 1.0f;
+        float EffectiveGain = 1.62f;
+        float SilenceSeconds = 0.0f;
+        bool Initialized = false;
+
+        void reset(const VisualizerSettings& settings) noexcept
+        {
+            LongTermRms = 0.0f;
+            Correction = 1.0f;
+            EffectiveGain = settings.AutomaticOverallGain ? settings.AutoGainBaseline : settings.OverallGain;
+            SilenceSeconds = 0.0f;
+            Initialized = false;
+        }
+
+        void update(const AudioLevelSnapshot& level, const VisualizerSettings& settings, const float dt) noexcept
+        {
+            if (!settings.AutomaticOverallGain)
+            {
+                Correction = 1.0f;
+                EffectiveGain = settings.OverallGain;
+                SilenceSeconds = 0.0f;
+                return;
+            }
+
+            const float safeDt = std::clamp(dt, 0.0001f, 0.25f);
+            if (level.Rms > settings.AutoGainSilenceGate)
+            {
+                SilenceSeconds = 0.0f;
+                const float loudnessAlpha = 1.0f - std::exp(-settings.AutoGainAdaptation * safeDt);
+                if (!Initialized)
+                {
+                    LongTermRms = level.Rms;
+                    Initialized = true;
+                }
+                else
+                    LongTermRms += (level.Rms - LongTermRms) * loudnessAlpha;
+
+                const float desired = std::clamp(settings.AutoGainTargetRms / std::max(LongTermRms, 0.000001f), settings.AutoGainMinCorrection, settings.AutoGainMaxCorrection);
+                const float correctionAlpha = 1.0f - std::exp(-std::max(settings.AutoGainAdaptation * 0.55f, 0.02f) * safeDt);
+                Correction += (desired - Correction) * correctionAlpha;
+            }
+            else
+            {
+                SilenceSeconds += safeDt;
+                if (SilenceSeconds > 3.0f)
+                {
+                    const float returnAlpha = 1.0f - std::exp(-0.12f * safeDt);
+                    Correction += (1.0f - Correction) * returnAlpha;
+                }
+            }
+            Correction = std::clamp(Correction, settings.AutoGainMinCorrection, settings.AutoGainMaxCorrection);
+            EffectiveGain = settings.AutoGainBaseline * Correction;
+        }
     };
 
     static std::string shellQuote(const std::string_view value)
@@ -3986,6 +4937,8 @@ void main()
                 static_cast<std::uint8_t>(packed)
             };
         }
+
+        bool playing() const noexcept { return _playing.load(std::memory_order_acquire); }
 
         std::string mediaTitle() const
         {
@@ -4272,6 +5225,7 @@ void main()
             const auto discovery = currentMedia();
             if (!discovery.Media)
             {
+                _playing.store(false, std::memory_order_release);
                 _lastMediaKey.clear();
                 _targetColor.store(-1, std::memory_order_release);
                 setStatus(discovery.Status);
@@ -4280,11 +5234,13 @@ void main()
             const auto& media = *discovery.Media;
             if (media.Status != "Playing")
             {
+                _playing.store(false, std::memory_order_release);
                 _lastMediaKey.clear();
                 _targetColor.store(-1, std::memory_order_release);
                 setStatus("MPRIS " + (media.Status.empty() ? std::string("not playing") : media.Status) + " (" + media.Player + ")", media.Title);
                 return;
             }
+            _playing.store(true, std::memory_order_release);
             if (media.ArtworkUrl.empty())
             {
                 _lastMediaKey.clear();
@@ -4333,13 +5289,2360 @@ void main()
         std::atomic_bool _running = false;
         std::atomic_int _pollMilliseconds = 500;
         std::atomic<std::int32_t> _targetColor = -1;
+        std::atomic_bool _playing = false;
         mutable std::mutex _stateMutex;
         std::string _lastMediaKey;
         std::string _mediaTitle;
         std::string _status = "Starting";
     };
 
-    static void mapSpectrumToColumns(const std::span<const float> analysisBands, std::array<float, Columns>& bands, const VisualizerSettings& settings)
+
+    enum class RuntimeSourceKind : int
+    {
+        Constant,
+        Time,
+        Audio,
+        Media,
+        Keyboard,
+        RPC,
+        Host,
+        USB,
+        RGB,
+        NativeProcess,
+        BindingStatus
+    };
+
+    enum class ProcessValueType : int
+    {
+        U8, I8, U16, I16, U32, I32, U64, I64, Float, Double, Bool
+    };
+
+    enum class ProcessAddressMode : int
+    {
+        AddressChain,
+        Signature
+    };
+
+    enum class SignatureResultMode : int
+    {
+        MatchAddress,
+        RipRelative32,
+        PointerAtOffset,
+        RegisterRelativeCapture
+    };
+
+    enum class RuntimeX64Register : int
+    {
+        Rax, Rbx, Rcx, Rdx, Rsi, Rdi, Rbp, Rsp, R8, R9, R10, R11, R12, R13, R14, R15
+    };
+
+    enum class RuntimeDisplacementType : int
+    {
+        I8, I32, Manual
+    };
+
+    enum class RuntimeParameterSlot : int
+    {
+        Normalize,
+        InputMin,
+        InputMax,
+        Invert,
+        Scale,
+        Offset,
+        Clamp,
+        OutputMin,
+        OutputMax,
+        SmoothingHz,
+        UpdateHz,
+        Count
+    };
+
+    enum class RuntimeControlCondition : int
+    {
+        Equal,
+        NotEqual,
+        Less,
+        LessEqual,
+        Greater,
+        GreaterEqual,
+        Between,
+        Outside,
+        RisingEdge,
+        FallingEdge
+    };
+
+    enum class RuntimeControlTarget : int
+    {
+        ActiveShader,
+        BindingEnabled,
+        GlobalBrightness,
+        SendFramebuffer,
+        BaseColorMode,
+        MaterialParameter
+    };
+
+    struct RuntimeParameterLink
+    {
+        bool Enabled = false;
+        std::uint64_t BindingId = 0;
+    };
+
+    enum class ProcessRebindMode : int
+    {
+        NameExact,
+        ExecutableExact,
+        TitleExact,
+        CommandLineExact,
+        NameRegex,
+        ExecutableRegex,
+        TitleRegex,
+        CommandLineRegex,
+        AnyRegex
+    };
+
+    struct RuntimeProcessInfo
+    {
+        pid_t Pid = 0;
+        std::string Name;
+        std::string Exe;
+        std::string Title;
+        std::string CommandLine;
+        std::string SearchText;
+    };
+
+    struct RuntimeProcessModule
+    {
+        std::uintptr_t Base = 0;
+        std::uintptr_t End = 0;
+        std::string Name;
+        std::string Path;
+    };
+
+    struct RuntimeProcessRegion
+    {
+        std::uintptr_t Base = 0;
+        std::uintptr_t End = 0;
+        bool Readable = false;
+        bool Executable = false;
+        std::string Path;
+    };
+
+    struct RuntimeRegisterCaptureState
+    {
+        std::mutex Mutex;
+        bool Finished = false;
+        bool Success = false;
+        std::uint64_t RegisterValue = 0;
+        std::intptr_t Displacement = 0;
+        std::uintptr_t ResolvedAddress = 0;
+        std::string Status;
+        // Keep the worker last: members are destroyed in reverse order, so jthread requests stop
+        // and joins while Mutex/Status/the result fields are still alive. The worker captures this state raw.
+        std::jthread Worker;
+    };
+
+    struct RuntimeBinding
+    {
+        std::uint64_t Id = 0;
+        bool Enabled = true;
+        RuntimeSourceKind Source = RuntimeSourceKind::Constant;
+        int Signal = 0;
+        float Constant = 0.5f;
+        char Name[64] = "Binding";
+        char TargetId[128] = "source.health";
+        int TargetComponent = 0;
+
+        int ProcessId = 0;
+        bool AutoReattach = true;
+        ProcessRebindMode RebindMode = ProcessRebindMode::NameExact;
+        ProcessValueType ValueType = ProcessValueType::Float;
+        char ProcessName[128]{};
+        char ProcessRebindPattern[512]{};
+        char ProcessSearch[256]{};
+        char Module[192]{};
+        ProcessAddressMode AddressMode = ProcessAddressMode::AddressChain;
+        char Address[256] = "+0x0";
+        char Signature[512]{};
+        bool SignatureExecutableOnly = true;
+        SignatureResultMode SignatureResolve = SignatureResultMode::MatchAddress;
+        int SignatureResultOffset = 0;
+        int SignatureInstructionSize = 7;
+        RuntimeX64Register SignatureRegister = RuntimeX64Register::R15;
+        int SignatureRegisterDisplacementOffset = 3;
+        RuntimeDisplacementType SignatureDisplacementType = RuntimeDisplacementType::I32;
+        int SignatureManualDisplacement = 0;
+        float SignatureCaptureTimeoutSeconds = 10.0f;
+        float SignatureRetrySeconds = 1.0f;
+        double NextProcessSearch = 0.0;
+
+        std::vector<std::uint8_t> SignatureBytes;
+        std::vector<std::uint8_t> SignatureMasks;
+        std::vector<RuntimeProcessRegion> SignatureRegions;
+        std::size_t SignatureRegionIndex = 0;
+        std::uintptr_t SignatureCursor = 0;
+        std::uintptr_t SignatureResolvedAddress = 0;
+        std::uintptr_t SignatureMatchAddress = 0;
+        std::uintptr_t SignatureInstructionAddress = 0;
+        std::uint64_t SignatureCapturedRegister = 0;
+        std::intptr_t SignatureCapturedDisplacement = 0;
+        std::shared_ptr<RuntimeRegisterCaptureState> SignatureRegisterCapture;
+        std::uint64_t SignatureConfigHash = 0;
+        pid_t SignatureScanPid = 0;
+        double NextSignatureScan = 0.0;
+        double NextRegisterCapture = 0.0;
+        std::uint64_t SignatureScannedBytes = 0;
+        std::uint64_t SignatureTotalBytes = 0;
+        float SignatureProgress = 0.0f;
+        std::string SignatureStatus;
+
+        std::uint64_t StatusBindingId = 0;
+        bool WriteMaterial = true;
+
+        bool Normalize = false;
+        float InputMin = 0.0f;
+        float InputMax = 1.0f;
+        bool Invert = false;
+        float Scale = 1.0f;
+        float Offset = 0.0f;
+        bool Clamp = true;
+        float OutputMin = 0.0f;
+        float OutputMax = 1.0f;
+        float SmoothingHz = 8.0f;
+        float UpdateHz = 60.0f;
+        std::array<RuntimeParameterLink, static_cast<std::size_t>(RuntimeParameterSlot::Count)> ParameterLinks{};
+
+        float RawValue = 0.0f;
+        float Value = 0.0f;
+        bool HasValue = false;
+        bool LastReadSucceeded = false;
+        bool RuntimeEnabled = true;
+        double LastSuccessTime = 0.0;
+        double NextUpdate = 0.0;
+        double LastUpdate = 0.0;
+        std::string Error;
+    };
+
+    struct RuntimeControlRule
+    {
+        std::uint64_t Id = 0;
+        bool Enabled = true;
+        char Name[64] = "Control";
+        std::uint64_t SourceBindingId = 0;
+        RuntimeControlCondition Condition = RuntimeControlCondition::Greater;
+        float ValueA = 0.5f;
+        float ValueB = 1.0f;
+        float Tolerance = 0.001f;
+        float Hysteresis = 0.0f;
+        RuntimeControlTarget Target = RuntimeControlTarget::ActiveShader;
+        int ShaderPresetIndex = 1;
+        std::uint64_t TargetBindingId = 0;
+        float TargetValue = 1.0f;
+        bool TargetBool = true;
+        int TargetComponent = 0;
+        char TargetId[128]{};
+        float TransitionSeconds = 0.35f;
+
+        bool ConditionActive = false;
+        bool PreviousInitialized = false;
+        float PreviousValue = 0.0f;
+    };
+
+    struct RuntimeControlOutput
+    {
+        std::optional<int> ShaderPresetIndex;
+        float ShaderTransitionSeconds = 0.0f;
+        std::optional<float> GlobalBrightness;
+        std::optional<bool> SendFramebuffer;
+        std::optional<int> BaseColorMode;
+    };
+
+    struct RuntimeTimelineEvent
+    {
+        double Time = 0.0;
+        std::string Category;
+        std::string Text;
+    };
+
+    struct RuntimePacketRecord
+    {
+        static constexpr std::size_t CaptureBytes = 128;
+        double Time = 0.0;
+        bool Tx = false;
+        std::uint16_t Type = 0;
+        std::uint8_t Version = 0;
+        std::uint32_t PacketId = 0;
+        std::uint32_t ResponseFor = 0;
+        std::uint32_t PayloadLength = 0;
+        std::size_t Bytes = 0;
+        std::size_t CapturedBytes = 0;
+        std::array<std::byte, CaptureBytes> Data{};
+    };
+
+    struct RuntimeUSBRates
+    {
+        double TxKiB = 0.0;
+        double RxKiB = 0.0;
+        double TxTransfers = 0.0;
+        double RxTransfers = 0.0;
+    };
+
+    struct RuntimeSignalContext
+    {
+        double Time = 0.0;
+        float DeltaTime = 0.0f;
+        AudioLevelSnapshot Audio{};
+        const std::array<float, Columns>* MappedBands = nullptr;
+        const std::array<float, Columns>* SmoothedBands = nullptr;
+        std::optional<Color32> MediaColor;
+        float MediaAmount = 0.0f;
+        bool MediaPlaying = false;
+        ReactiveKeyState Keys{};
+        PerformanceSnapshot Performance{};
+        bool HasPerformance = false;
+        float AppCpu = 0.0f;
+        bool USBConnected = false;
+        USBStatsSnapshot USB{};
+        RuntimeUSBRates USBRates{};
+        const std::array<Color32, MatrixSize>* Framebuffer = nullptr;
+        float EffectiveGain = 1.0f;
+        float GainCorrection = 1.0f;
+    };
+
+    struct RuntimeInputAnalytics
+    {
+        std::array<std::uint64_t, MatrixSize> PressCount{};
+        std::array<double, MatrixSize> DownSince{};
+        std::array<double, MatrixSize> LastDuration{};
+        std::array<float, MatrixSize> Previous{};
+        std::uint64_t TotalPresses = 0;
+        double LongestPress = 0.0;
+
+        void update(const ReactiveKeyState& keys, const double now) noexcept
+        {
+            for (std::size_t i = 0; i < MatrixSize; ++i)
+            {
+                const bool down = keys.Down[i] > 0.5f;
+                const bool wasDown = Previous[i] > 0.5f;
+                if (down && !wasDown)
+                {
+                    ++PressCount[i];
+                    ++TotalPresses;
+                    DownSince[i] = now;
+                }
+                else if (!down && wasDown && DownSince[i] > 0.0)
+                {
+                    LastDuration[i] = std::max(now - DownSince[i], 0.0);
+                    LongestPress = std::max(LongestPress, LastDuration[i]);
+                    DownSince[i] = 0.0;
+                }
+                Previous[i] = keys.Down[i];
+            }
+        }
+
+        double heldDuration(const std::size_t index, const double now) const noexcept
+        {
+            return index < MatrixSize && DownSince[index] > 0.0 ? std::max(now - DownSince[index], 0.0) : 0.0;
+        }
+    };
+
+    struct RuntimeRGBAnalytics
+    {
+        std::array<Color32, MatrixSize> Previous{};
+        std::array<float, 16> LumaHistogram{};
+        std::uint64_t Frames = 0;
+        std::uint64_t ChangedCellsTotal = 0;
+        std::size_t ChangedCells = 0;
+        float AverageChangedCells = 0.0f;
+        float FrameRate = 0.0f;
+        double LastFrameTime = 0.0;
+
+        void update(const std::array<Color32, MatrixSize>& framebuffer, const double now) noexcept
+        {
+            ChangedCells = 0;
+            LumaHistogram.fill(0.0f);
+            for (std::size_t row = 0; row < ActiveProbeRows; ++row)
+                for (std::size_t column = 0; column < Columns; ++column)
+                {
+                    const std::size_t index = row * Columns + column;
+                    const auto& current = framebuffer[index];
+                    const auto& previous = Previous[index];
+                    if (current.R != previous.R || current.G != previous.G || current.B != previous.B) ++ChangedCells;
+                    const float luma = (current.R / 255.0f) * 0.2126f + (current.G / 255.0f) * 0.7152f + (current.B / 255.0f) * 0.0722f;
+                    const std::size_t bucket = std::min<std::size_t>(static_cast<std::size_t>(luma * LumaHistogram.size()), LumaHistogram.size() - 1);
+                    LumaHistogram[bucket] += 1.0f;
+                }
+            constexpr float ActiveCells = static_cast<float>(ActiveProbeRows * Columns);
+            for (auto& bucket : LumaHistogram) bucket /= ActiveCells;
+            Previous = framebuffer;
+            ++Frames;
+            ChangedCellsTotal += ChangedCells;
+            AverageChangedCells += (static_cast<float>(ChangedCells) - AverageChangedCells) * 0.05f;
+            if (LastFrameTime > 0.0)
+            {
+                const double dt = now - LastFrameTime;
+                if (dt > 0.000001)
+                {
+                    const float instantaneous = static_cast<float>(1.0 / dt);
+                    FrameRate += (instantaneous - FrameRate) * 0.08f;
+                }
+            }
+            LastFrameTime = now;
+        }
+    };
+
+    static std::string runtimeLower(std::string_view value)
+    {
+        std::string result(value);
+        std::ranges::transform(result, result.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return result;
+    }
+
+    static std::string runtimeRegexEscape(const std::string_view value)
+    {
+        static constexpr std::string_view Special = R"(\.^$|()[]*+?{})";
+        std::string result;
+        result.reserve(value.size() + 8);
+        for (const char c : value)
+        {
+            if (Special.find(c) != std::string_view::npos) result.push_back('\\');
+            result.push_back(c);
+        }
+        return result;
+    }
+
+    static bool runtimeRebindModeIsRegex(const ProcessRebindMode mode) noexcept
+    {
+        return mode >= ProcessRebindMode::NameRegex;
+    }
+
+    static const char* runtimeRebindModeName(const ProcessRebindMode mode) noexcept
+    {
+        switch (mode)
+        {
+        case ProcessRebindMode::NameExact: return "Process name (exact)";
+        case ProcessRebindMode::ExecutableExact: return "Executable path (exact)";
+        case ProcessRebindMode::TitleExact: return "Process title / argv[0] (exact)";
+        case ProcessRebindMode::CommandLineExact: return "Command line (exact)";
+        case ProcessRebindMode::NameRegex: return "Process name (regex)";
+        case ProcessRebindMode::ExecutableRegex: return "Executable path (regex)";
+        case ProcessRebindMode::TitleRegex: return "Process title / argv[0] (regex)";
+        case ProcessRebindMode::CommandLineRegex: return "Command line (regex)";
+        case ProcessRebindMode::AnyRegex: return "Any field (regex)";
+        }
+        return "Process name (exact)";
+    }
+
+    static std::vector<RuntimeProcessInfo> enumerateRuntimeProcesses()
+    {
+        std::vector<RuntimeProcessInfo> processes;
+        std::error_code error;
+        for (const auto& entry : std::filesystem::directory_iterator("/proc", error))
+        {
+            if (error || !entry.is_directory(error)) continue;
+            const std::string name = entry.path().filename().string();
+            if (name.empty() || !std::ranges::all_of(name, [](const unsigned char c) { return std::isdigit(c) != 0; })) continue;
+            int pid = 0;
+            const auto [ptr, ec] = std::from_chars(name.data(), name.data() + name.size(), pid);
+            if (ec != std::errc{} || ptr != name.data() + name.size() || pid <= 0) continue;
+
+            RuntimeProcessInfo process;
+            process.Pid = static_cast<pid_t>(pid);
+            std::ifstream comm(entry.path() / "comm");
+            std::getline(comm, process.Name);
+            std::array<char, 4096> exe{};
+            const ssize_t count = ::readlink((entry.path() / "exe").c_str(), exe.data(), exe.size() - 1);
+            if (count > 0) process.Exe.assign(exe.data(), static_cast<std::size_t>(count));
+
+            std::ifstream cmdline(entry.path() / "cmdline", std::ios::binary);
+            if (cmdline)
+            {
+                std::string raw((std::istreambuf_iterator<char>(cmdline)), std::istreambuf_iterator<char>());
+                if (!raw.empty())
+                {
+                    const std::size_t firstEnd = raw.find('\0');
+                    process.Title = raw.substr(0, firstEnd == std::string::npos ? raw.size() : firstEnd);
+                    for (char& c : raw) if (c == '\0') c = ' ';
+                    process.CommandLine = trim(std::move(raw));
+                }
+            }
+            if (process.Title.empty()) process.Title = process.Name;
+            if (process.CommandLine.empty()) process.CommandLine = !process.Exe.empty() ? process.Exe : process.Name;
+            if (process.Name.empty() && process.Exe.empty() && process.Title.empty()) continue;
+            process.SearchText = runtimeLower(std::to_string(process.Pid) + "\n" + process.Name + "\n" + process.Exe + "\n" + process.Title + "\n" + process.CommandLine);
+            processes.emplace_back(std::move(process));
+        }
+        std::ranges::sort(processes, [](const auto& a, const auto& b)
+        {
+            if (a.Name != b.Name) return a.Name < b.Name;
+            return a.Pid < b.Pid;
+        });
+        return processes;
+    }
+
+    static std::string runtimeProcessDisplayTitle(const RuntimeProcessInfo& process)
+    {
+        std::string title = process.Name.empty() ? "<unnamed>" : process.Name;
+        if (!process.Title.empty() && process.Title != process.Name && process.Title != process.Exe)
+        {
+            std::string decorative = process.Title;
+            if (decorative.size() > 72) decorative.resize(69), decorative += "...";
+            title += "  -  " + decorative;
+        }
+        return title;
+    }
+
+    static bool runtimeProcessMatchesSearch(const RuntimeProcessInfo& process, const std::string_view loweredQuery)
+    {
+        return loweredQuery.empty() || process.SearchText.find(loweredQuery) != std::string::npos;
+    }
+
+    static std::string runtimeProcessRebindValue(const RuntimeProcessInfo& process, const ProcessRebindMode mode)
+    {
+        switch (mode)
+        {
+        case ProcessRebindMode::NameExact:
+        case ProcessRebindMode::NameRegex: return process.Name;
+        case ProcessRebindMode::ExecutableExact:
+        case ProcessRebindMode::ExecutableRegex: return process.Exe;
+        case ProcessRebindMode::TitleExact:
+        case ProcessRebindMode::TitleRegex: return process.Title;
+        case ProcessRebindMode::CommandLineExact:
+        case ProcessRebindMode::CommandLineRegex: return process.CommandLine;
+        case ProcessRebindMode::AnyRegex: return process.Name;
+        }
+        return process.Name;
+    }
+
+    static void captureRuntimeRebindPattern(RuntimeBinding& binding, const RuntimeProcessInfo& process)
+    {
+        std::string value = runtimeProcessRebindValue(process, binding.RebindMode);
+        if (value.empty()) value = process.Name;
+        if (runtimeRebindModeIsRegex(binding.RebindMode)) value = "^" + runtimeRegexEscape(value) + "$";
+        std::snprintf(binding.ProcessRebindPattern, sizeof(binding.ProcessRebindPattern), "%s", value.c_str());
+    }
+
+    static bool runtimeProcessMatchesRebind(const RuntimeProcessInfo& process, const RuntimeBinding& binding, const std::regex* regex)
+    {
+        if (runtimeRebindModeIsRegex(binding.RebindMode))
+        {
+            if (!regex) return false;
+            const auto matches = [&](const std::string& value) { return !value.empty() && std::regex_search(value, *regex); };
+            switch (binding.RebindMode)
+            {
+            case ProcessRebindMode::NameRegex: return matches(process.Name);
+            case ProcessRebindMode::ExecutableRegex: return matches(process.Exe);
+            case ProcessRebindMode::TitleRegex: return matches(process.Title);
+            case ProcessRebindMode::CommandLineRegex: return matches(process.CommandLine);
+            case ProcessRebindMode::AnyRegex: return matches(process.Name) || matches(process.Exe) || matches(process.Title) || matches(process.CommandLine);
+            default: return false;
+            }
+        }
+        return runtimeProcessRebindValue(process, binding.RebindMode) == binding.ProcessRebindPattern;
+    }
+
+    static std::optional<RuntimeProcessInfo> findRuntimeRebindProcess(const RuntimeBinding& binding, std::string& error)
+    {
+        if (!binding.AutoReattach) { error = "automatic process rebind is disabled"; return std::nullopt; }
+        if (binding.ProcessRebindPattern[0] == '\0') { error = "rebind pattern is empty"; return std::nullopt; }
+        std::optional<std::regex> regex;
+        if (runtimeRebindModeIsRegex(binding.RebindMode))
+        {
+            try { regex.emplace(binding.ProcessRebindPattern, std::regex::ECMAScript | std::regex::icase); }
+            catch (const std::regex_error& e) { error = std::string("invalid rebind regex: ") + e.what(); return std::nullopt; }
+        }
+        std::optional<RuntimeProcessInfo> best;
+        for (const auto& process : enumerateRuntimeProcesses())
+            if (runtimeProcessMatchesRebind(process, binding, regex ? &*regex : nullptr) && (!best || process.Pid > best->Pid)) best = process;
+        if (!best) error = "waiting for process match: " + std::string(binding.ProcessRebindPattern);
+        return best;
+    }
+
+    static bool runtimeProcessIsAlive(const pid_t pid) noexcept
+    {
+        if (pid <= 0) return false;
+        errno = 0;
+        return ::kill(pid, 0) == 0 || errno != ESRCH;
+    }
+
+    static double runtimeSteadySeconds() noexcept
+    {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    static bool tryRuntimeProcessRebind(RuntimeBinding& binding, pid_t& pid, std::string& error)
+    {
+        if (!binding.AutoReattach) { error = "process is not running"; return false; }
+        const double now = runtimeSteadySeconds();
+        if (now < binding.NextProcessSearch) { error = "waiting for process match: " + std::string(binding.ProcessRebindPattern); return false; }
+        binding.NextProcessSearch = now + 1.0;
+        const auto process = findRuntimeRebindProcess(binding, error);
+        if (!process) return false;
+        pid = process->Pid;
+        binding.ProcessId = static_cast<int>(pid);
+        std::snprintf(binding.ProcessName, sizeof(binding.ProcessName), "%s", process->Name.c_str());
+        binding.NextProcessSearch = 0.0;
+        error.clear();
+        return true;
+    }
+
+    static std::vector<RuntimeProcessModule> enumerateRuntimeModules(const pid_t pid)
+    {
+        std::vector<RuntimeProcessModule> modules;
+        std::ifstream maps("/proc/" + std::to_string(pid) + "/maps");
+        if (!maps) return modules;
+        std::unordered_map<std::string, std::size_t> indices;
+        std::string line;
+        while (std::getline(maps, line))
+        {
+            std::istringstream stream(line);
+            std::string range, permissions, offsetText, device, inode;
+            if (!(stream >> range >> permissions >> offsetText >> device >> inode)) continue;
+            std::string path;
+            std::getline(stream, path);
+            path = trim(std::move(path));
+            if (path.empty() || path.front() == '[') continue;
+            const std::size_t dash = range.find('-');
+            if (dash == std::string::npos) continue;
+            std::uintptr_t start = 0, end = 0, offset = 0;
+            auto parseHex = [](const std::string_view value, std::uintptr_t& result)
+            {
+                const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), result, 16);
+                return ec == std::errc{} && ptr == value.data() + value.size();
+            };
+            if (!parseHex(std::string_view(range).substr(0, dash), start) || !parseHex(std::string_view(range).substr(dash + 1), end) || !parseHex(offsetText, offset)) continue;
+            const std::uintptr_t base = start >= offset ? start - offset : start;
+            const auto existing = indices.find(path);
+            if (existing == indices.end())
+            {
+                RuntimeProcessModule module;
+                module.Base = base;
+                module.End = end;
+                module.Path = path;
+                module.Name = std::filesystem::path(path).filename().string();
+                indices[path] = modules.size();
+                modules.emplace_back(std::move(module));
+            }
+            else
+            {
+                auto& module = modules[existing->second];
+                module.Base = std::min(module.Base, base);
+                module.End = std::max(module.End, end);
+            }
+        }
+        std::ranges::sort(modules, std::ranges::less{}, &RuntimeProcessModule::Base);
+        return modules;
+    }
+
+    static std::vector<RuntimeProcessRegion> enumerateRuntimeRegions(const pid_t pid)
+    {
+        std::vector<RuntimeProcessRegion> regions;
+        std::ifstream maps("/proc/" + std::to_string(pid) + "/maps");
+        if (!maps) return regions;
+        std::string line;
+        while (std::getline(maps, line))
+        {
+            std::istringstream stream(line);
+            std::string range, permissions, offset, device, inode;
+            if (!(stream >> range >> permissions >> offset >> device >> inode)) continue;
+            const std::size_t dash = range.find('-');
+            if (dash == std::string::npos) continue;
+            std::uintptr_t base = 0, end = 0;
+            const auto [basePtr, baseEc] = std::from_chars(range.data(), range.data() + dash, base, 16);
+            const auto [endPtr, endEc] = std::from_chars(range.data() + dash + 1, range.data() + range.size(), end, 16);
+            if (baseEc != std::errc{} || endEc != std::errc{} || base >= end) continue;
+            std::string path;
+            std::getline(stream, path);
+            RuntimeProcessRegion region;
+            region.Base = base;
+            region.End = end;
+            region.Readable = !permissions.empty() && permissions[0] == 'r';
+            region.Executable = permissions.size() > 2 && permissions[2] == 'x';
+            region.Path = trim(std::move(path));
+            regions.emplace_back(std::move(region));
+        }
+        return regions;
+    }
+
+    static int runtimeHexNibble(const char c) noexcept
+    {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    }
+
+    static bool parseRuntimeIdaSignature(const std::string_view signature, std::vector<std::uint8_t>& bytes, std::vector<std::uint8_t>& masks, std::string& error)
+    {
+        bytes.clear();
+        masks.clear();
+        std::istringstream stream{std::string(signature)};
+        std::string token;
+        while (stream >> token)
+        {
+            if (token == "?" || token == "??")
+            {
+                bytes.push_back(0);
+                masks.push_back(0);
+                continue;
+            }
+            if (token.size() != 2)
+            {
+                error = "signature token must be two hex nibbles or ?: " + token;
+                return false;
+            }
+            const bool highWildcard = token[0] == '?';
+            const bool lowWildcard = token[1] == '?';
+            const int high = highWildcard ? 0 : runtimeHexNibble(token[0]);
+            const int low = lowWildcard ? 0 : runtimeHexNibble(token[1]);
+            if (high < 0 || low < 0)
+            {
+                error = "invalid signature byte: " + token;
+                return false;
+            }
+            bytes.push_back(static_cast<std::uint8_t>((high << 4) | low));
+            masks.push_back(static_cast<std::uint8_t>((highWildcard ? 0 : 0xF0) | (lowWildcard ? 0 : 0x0F)));
+        }
+        if (bytes.empty())
+        {
+            error = "signature is empty";
+            return false;
+        }
+        if (std::ranges::all_of(masks, [](const std::uint8_t mask) { return mask == 0; }))
+        {
+            error = "signature cannot contain only wildcards";
+            return false;
+        }
+        error.clear();
+        return true;
+    }
+
+    static bool readProcessMemoryBlock(const pid_t pid, const std::uintptr_t address, std::span<std::uint8_t> buffer, std::string& error)
+    {
+        if (buffer.empty()) return true;
+        iovec local{buffer.data(), buffer.size()};
+        iovec remote{reinterpret_cast<void*>(address), buffer.size()};
+        errno = 0;
+        const ssize_t count = ::process_vm_readv(pid, &local, 1, &remote, 1, 0);
+        if (count == static_cast<ssize_t>(buffer.size())) return true;
+        error = count < 0 ? std::string(std::strerror(errno)) : "short read (" + std::to_string(count) + "/" + std::to_string(buffer.size()) + ")";
+        return false;
+    }
+
+    template<typename T>
+    static bool readProcessMemoryValue(pid_t pid, std::uintptr_t address, T& value, std::string& error);
+
+    static const char* runtimeX64RegisterName(const RuntimeX64Register reg) noexcept
+    {
+        static constexpr const char* Names[] = {"RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "RBP", "RSP", "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"};
+        return Names[std::clamp(static_cast<int>(reg), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static std::uint64_t runtimeX64RegisterValue(const user_regs_struct& regs, const RuntimeX64Register reg) noexcept
+    {
+        switch (reg)
+        {
+        case RuntimeX64Register::Rax: return regs.rax;
+        case RuntimeX64Register::Rbx: return regs.rbx;
+        case RuntimeX64Register::Rcx: return regs.rcx;
+        case RuntimeX64Register::Rdx: return regs.rdx;
+        case RuntimeX64Register::Rsi: return regs.rsi;
+        case RuntimeX64Register::Rdi: return regs.rdi;
+        case RuntimeX64Register::Rbp: return regs.rbp;
+        case RuntimeX64Register::Rsp: return regs.rsp;
+        case RuntimeX64Register::R8: return regs.r8;
+        case RuntimeX64Register::R9: return regs.r9;
+        case RuntimeX64Register::R10: return regs.r10;
+        case RuntimeX64Register::R11: return regs.r11;
+        case RuntimeX64Register::R12: return regs.r12;
+        case RuntimeX64Register::R13: return regs.r13;
+        case RuntimeX64Register::R14: return regs.r14;
+        case RuntimeX64Register::R15: return regs.r15;
+        }
+        return 0;
+    }
+
+    static std::vector<pid_t> enumerateRuntimeThreads(const pid_t pid)
+    {
+        std::vector<pid_t> result;
+        std::error_code ec;
+        const std::filesystem::path taskPath = "/proc/" + std::to_string(pid) + "/task";
+        for (const auto& entry : std::filesystem::directory_iterator(taskPath, ec))
+        {
+            const std::string name = entry.path().filename().string();
+            pid_t tid = 0;
+            const auto [pointer, error] = std::from_chars(name.data(), name.data() + name.size(), tid);
+            if (error == std::errc{} && pointer == name.data() + name.size() && tid > 0) result.push_back(tid);
+        }
+        std::ranges::sort(result);
+        return result;
+    }
+
+    static bool runtimePtracePeekUser(const pid_t tid, const std::size_t offset, std::uint64_t& value) noexcept
+    {
+        errno = 0;
+        const long result = ::ptrace(PTRACE_PEEKUSER, tid, reinterpret_cast<void*>(offset), nullptr);
+        if (result == -1 && errno != 0) return false;
+        value = static_cast<std::uint64_t>(static_cast<unsigned long>(result));
+        return true;
+    }
+
+    static bool runtimePtracePokeUser(const pid_t tid, const std::size_t offset, const std::uint64_t value) noexcept
+    {
+        errno = 0;
+        return ::ptrace(PTRACE_POKEUSER, tid, reinterpret_cast<void*>(offset), reinterpret_cast<void*>(static_cast<std::uintptr_t>(value))) == 0;
+    }
+
+    static bool runtimeWaitForPtraceStop(const pid_t tid, std::stop_token stop, const double timeoutSeconds, int& status) noexcept
+    {
+        const double deadline = runtimeSteadySeconds() + timeoutSeconds;
+        while (!stop.stop_requested() && runtimeSteadySeconds() < deadline)
+        {
+            const pid_t result = ::waitpid(tid, &status, __WALL | WNOHANG);
+            if (result == tid) return WIFSTOPPED(status);
+            if (result < 0 && errno != EINTR) return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return false;
+    }
+
+    static void startRuntimeRegisterCapture(RuntimeBinding& binding, const pid_t pid, const std::uintptr_t instruction, const std::intptr_t displacement)
+    {
+        auto state = std::make_shared<RuntimeRegisterCaptureState>();
+        RuntimeRegisterCaptureState* capture = state.get();
+        const RuntimeX64Register targetRegister = binding.SignatureRegister;
+        const double timeoutSeconds = std::clamp(static_cast<double>(binding.SignatureCaptureTimeoutSeconds), 0.1, 120.0);
+        {
+            std::lock_guard lock(capture->Mutex);
+            std::ostringstream status;
+            status << "Waiting for " << runtimeX64RegisterName(targetRegister) << " at 0x" << std::hex << instruction;
+            capture->Status = status.str();
+        }
+        state->Worker = std::jthread([capture, pid, instruction, displacement, targetRegister, timeoutSeconds](std::stop_token stop)
+        {
+            struct TracedThread
+            {
+                pid_t Tid = 0;
+                bool Attached = false;
+                bool Stopped = false;
+                bool Armed = false;
+                std::uint64_t Dr0 = 0;
+                std::uint64_t Dr6 = 0;
+                std::uint64_t Dr7 = 0;
+            };
+
+            auto finish = [&](const bool success, const std::string& status, const std::uint64_t registerValue = 0, const std::uintptr_t resolved = 0)
+            {
+                std::lock_guard lock(capture->Mutex);
+                capture->Finished = true;
+                capture->Success = success;
+                capture->RegisterValue = registerValue;
+                capture->Displacement = displacement;
+                capture->ResolvedAddress = resolved;
+                capture->Status = status;
+            };
+
+            constexpr std::size_t Dr0Offset = offsetof(struct user, u_debugreg[0]);
+            constexpr std::size_t Dr6Offset = offsetof(struct user, u_debugreg[6]);
+            constexpr std::size_t Dr7Offset = offsetof(struct user, u_debugreg[7]);
+            std::vector<TracedThread> threads;
+            std::size_t armedCount = 0;
+            std::uint64_t trapCount = 0;
+            std::uint64_t lastTrapRip = 0;
+            std::uint64_t lastTrapDr6 = 0;
+            std::size_t seizeFailures = 0;
+            std::size_t setupFailures = 0;
+            int lastSeizeError = 0;
+            int lastSetupError = 0;
+
+            auto markGone = [&](TracedThread& thread)
+            {
+                thread.Attached = false;
+                thread.Stopped = false;
+                if (thread.Armed && armedCount > 0) --armedCount;
+                thread.Armed = false;
+            };
+
+            auto restoreDebugRegisters = [&](TracedThread& thread)
+            {
+                if (!thread.Armed || !thread.Stopped) return;
+                runtimePtracePokeUser(thread.Tid, Dr7Offset, thread.Dr7);
+                runtimePtracePokeUser(thread.Tid, Dr0Offset, thread.Dr0);
+                runtimePtracePokeUser(thread.Tid, Dr6Offset, thread.Dr6);
+                thread.Armed = false;
+                if (armedCount > 0) --armedCount;
+            };
+
+            auto detachStopped = [&](TracedThread& thread, const int signal = 0)
+            {
+                if (!thread.Attached || !thread.Stopped) return true;
+                restoreDebugRegisters(thread);
+                errno = 0;
+                if (::ptrace(PTRACE_DETACH, thread.Tid, nullptr, reinterpret_cast<void*>(static_cast<std::uintptr_t>(signal))) == 0)
+                {
+                    thread.Attached = false;
+                    thread.Stopped = false;
+                    return true;
+                }
+                if (errno == ESRCH || errno == ECHILD)
+                {
+                    markGone(thread);
+                    return true;
+                }
+                return false;
+            };
+
+            auto continueStopped = [&](TracedThread& thread, const int signal = 0)
+            {
+                if (!thread.Attached || !thread.Stopped) return false;
+                errno = 0;
+                if (::ptrace(PTRACE_CONT, thread.Tid, nullptr, reinterpret_cast<void*>(static_cast<std::uintptr_t>(signal))) == 0)
+                {
+                    thread.Stopped = false;
+                    return true;
+                }
+                if (errno == ESRCH || errno == ECHILD) markGone(thread);
+                else detachStopped(thread, signal);
+                return false;
+            };
+
+            auto stopForCleanup = [&](TracedThread& thread, int& status, const bool interruptPending = false)
+            {
+                status = 0;
+                if (!thread.Attached) return false;
+                if (thread.Stopped) return true;
+
+                errno = 0;
+                const pid_t pending = ::waitpid(thread.Tid, &status, __WALL | WNOHANG);
+                if (pending == thread.Tid)
+                {
+                    if (WIFEXITED(status) || WIFSIGNALED(status)) { markGone(thread); return false; }
+                    if (WIFSTOPPED(status)) { thread.Stopped = true; return true; }
+                }
+                else if (pending < 0 && errno != EINTR)
+                {
+                    if (errno == ESRCH || errno == ECHILD) markGone(thread);
+                    return false;
+                }
+
+                if (!interruptPending)
+                {
+                    errno = 0;
+                    if (::ptrace(PTRACE_INTERRUPT, thread.Tid, nullptr, nullptr) != 0)
+                    {
+                        if (errno == ESRCH || errno == ECHILD) markGone(thread);
+                        return false;
+                    }
+                }
+
+                for (;;)
+                {
+                    errno = 0;
+                    const pid_t result = ::waitpid(thread.Tid, &status, __WALL);
+                    if (result == thread.Tid)
+                    {
+                        if (WIFEXITED(status) || WIFSIGNALED(status)) { markGone(thread); return false; }
+                        if (WIFSTOPPED(status)) { thread.Stopped = true; return true; }
+                        continue;
+                    }
+                    if (result < 0 && errno == EINTR) continue;
+                    if (result < 0 && (errno == ESRCH || errno == ECHILD)) markGone(thread);
+                    return false;
+                }
+            };
+
+            auto alreadyTracked = [&](const pid_t tid)
+            {
+                return std::ranges::any_of(threads, [tid](const TracedThread& thread) { return thread.Tid == tid && thread.Attached; });
+            };
+
+            auto armThread = [&](const pid_t tid)
+            {
+                if (tid <= 0 || alreadyTracked(tid) || stop.stop_requested()) return false;
+                errno = 0;
+                if (::ptrace(PTRACE_SEIZE, tid, nullptr, nullptr) != 0)
+                {
+                    ++seizeFailures;
+                    lastSeizeError = errno;
+                    return false;
+                }
+
+                threads.push_back({});
+                TracedThread& thread = threads.back();
+                thread.Tid = tid;
+                thread.Attached = true;
+
+                errno = 0;
+                if (::ptrace(PTRACE_INTERRUPT, tid, nullptr, nullptr) != 0)
+                {
+                    ++setupFailures;
+                    lastSetupError = errno;
+                    if (errno == ESRCH || errno == ECHILD) markGone(thread);
+                    return false;
+                }
+
+                int status = 0;
+                if (!runtimeWaitForPtraceStop(tid, stop, 0.25, status))
+                {
+                    ++setupFailures;
+                    lastSetupError = errno;
+                    int cleanupStatus = 0;
+                    if (stopForCleanup(thread, cleanupStatus, true))
+                    {
+                        const int signal = WIFSTOPPED(cleanupStatus) ? WSTOPSIG(cleanupStatus) : 0;
+                        detachStopped(thread, signal == SIGTRAP || signal == SIGSTOP ? 0 : signal);
+                    }
+                    return false;
+                }
+                thread.Stopped = true;
+
+                if (!runtimePtracePeekUser(tid, Dr0Offset, thread.Dr0) || !runtimePtracePeekUser(tid, Dr6Offset, thread.Dr6) || !runtimePtracePeekUser(tid, Dr7Offset, thread.Dr7))
+                {
+                    ++setupFailures;
+                    lastSetupError = errno;
+                    const int signal = WSTOPSIG(status);
+                    detachStopped(thread, signal == SIGTRAP || signal == SIGSTOP ? 0 : signal);
+                    return false;
+                }
+
+                std::uint64_t dr7 = thread.Dr7;
+                dr7 &= ~0x3ULL;
+                dr7 &= ~(0xFULL << 16);
+                dr7 |= 0x1ULL;
+                if (!runtimePtracePokeUser(tid, Dr0Offset, instruction) || !runtimePtracePokeUser(tid, Dr6Offset, 0) || !runtimePtracePokeUser(tid, Dr7Offset, dr7))
+                {
+                    ++setupFailures;
+                    lastSetupError = errno;
+                    detachStopped(thread);
+                    return false;
+                }
+
+                thread.Armed = true;
+                ++armedCount;
+                const int signal = WSTOPSIG(status);
+                if (!continueStopped(thread, signal == SIGTRAP || signal == SIGSTOP ? 0 : signal)) return false;
+                return true;
+            };
+
+            auto refreshThreads = [&]
+            {
+                for (const pid_t tid : enumerateRuntimeThreads(pid)) armThread(tid);
+            };
+
+            auto updateStatus = [&]
+            {
+                std::lock_guard lock(capture->Mutex);
+                std::ostringstream status;
+                status << "Waiting for " << runtimeX64RegisterName(targetRegister) << " at 0x" << std::hex << instruction << std::dec
+                       << " | armed " << armedCount << "/" << threads.size() << " | traps " << trapCount;
+                if (lastTrapRip != 0) status << " | last RIP 0x" << std::hex << lastTrapRip << " DR6 0x" << lastTrapDr6 << std::dec;
+                if (seizeFailures != 0) status << " | seize failures " << seizeFailures << " (" << std::strerror(lastSeizeError) << ')';
+                if (setupFailures != 0) status << " | setup failures " << setupFailures << (lastSetupError ? std::string(" (") + std::strerror(lastSetupError) + ')' : std::string{});
+                capture->Status = status.str();
+            };
+
+            refreshThreads();
+            if (threads.empty())
+            {
+                finish(false, std::string("ptrace seize failed: ") + std::strerror(lastSeizeError ? lastSeizeError : errno));
+                return;
+            }
+
+            bool success = false;
+            std::uint64_t capturedRegister = 0;
+            std::uintptr_t resolvedAddress = 0;
+            std::string failure;
+            if (armedCount == 0) failure = "could not arm a hardware execution breakpoint";
+            const double deadline = runtimeSteadySeconds() + timeoutSeconds;
+            double nextThreadRefresh = runtimeSteadySeconds() + 0.10;
+            double nextStatusUpdate = 0.0;
+
+            while (!stop.stop_requested() && runtimeSteadySeconds() < deadline && !success)
+            {
+                const double now = runtimeSteadySeconds();
+                if (now >= nextThreadRefresh)
+                {
+                    refreshThreads();
+                    nextThreadRefresh = now + 0.10;
+                    if (armedCount > 0) failure.clear();
+                }
+                if (armedCount == 0)
+                {
+                    if (now >= nextStatusUpdate) { updateStatus(); nextStatusUpdate = now + 0.25; }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    continue;
+                }
+
+                bool observed = false;
+                for (auto& thread : threads)
+                {
+                    if (!thread.Attached || thread.Stopped) continue;
+                    int status = 0;
+                    errno = 0;
+                    const pid_t result = ::waitpid(thread.Tid, &status, __WALL | WNOHANG);
+                    if (result == 0) continue;
+                    if (result < 0)
+                    {
+                        if (errno == ECHILD || errno == ESRCH) markGone(thread);
+                        continue;
+                    }
+                    observed = true;
+                    if (WIFEXITED(status) || WIFSIGNALED(status))
+                    {
+                        markGone(thread);
+                        continue;
+                    }
+                    if (!WIFSTOPPED(status)) continue;
+                    thread.Stopped = true;
+
+                    if (!thread.Armed)
+                    {
+                        detachStopped(thread);
+                        continue;
+                    }
+
+                    const int signal = WSTOPSIG(status);
+                    if (signal == SIGTRAP)
+                    {
+                        ++trapCount;
+                        std::uint64_t dr6 = 0;
+                        user_regs_struct regs{};
+                        const bool haveDr6 = runtimePtracePeekUser(thread.Tid, Dr6Offset, dr6);
+                        const bool haveRegs = ::ptrace(PTRACE_GETREGS, thread.Tid, nullptr, &regs) == 0;
+                        if (haveRegs) lastTrapRip = regs.rip;
+                        if (haveDr6) lastTrapDr6 = dr6;
+                        const bool slot0Hit = haveDr6 && (dr6 & 0x1ULL) != 0;
+                        const bool targetRip = haveRegs && regs.rip == instruction;
+                        if (haveRegs && (slot0Hit || targetRip))
+                        {
+                            capturedRegister = runtimeX64RegisterValue(regs, targetRegister);
+                            resolvedAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(capturedRegister) + displacement);
+                            success = true;
+                            detachStopped(thread);
+                            break;
+                        }
+                    }
+
+                    const int deliverSignal = signal == SIGTRAP || signal == SIGSTOP ? 0 : signal;
+                    continueStopped(thread, deliverSignal);
+                }
+
+                if (now >= nextStatusUpdate) { updateStatus(); nextStatusUpdate = now + 0.25; }
+                if (!observed) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+
+            for (auto& thread : threads)
+            {
+                if (!thread.Attached) continue;
+                int status = 0;
+                if (!stopForCleanup(thread, status)) continue;
+                const int signal = WIFSTOPPED(status) ? WSTOPSIG(status) : 0;
+                if (!detachStopped(thread, signal == SIGTRAP || signal == SIGSTOP ? 0 : signal)) continueStopped(thread, signal == SIGTRAP || signal == SIGSTOP ? 0 : signal);
+            }
+
+            if (success)
+            {
+                std::ostringstream status;
+                status << "Captured " << runtimeX64RegisterName(targetRegister) << "=0x" << std::hex << capturedRegister;
+                if (displacement >= 0) status << " +0x" << static_cast<std::uint64_t>(displacement);
+                else status << " -0x" << static_cast<std::uint64_t>(-displacement);
+                status << " -> 0x" << resolvedAddress << std::dec << " | traps " << trapCount;
+                finish(true, status.str(), capturedRegister, resolvedAddress);
+            }
+            else if (stop.stop_requested()) finish(false, "register capture cancelled");
+            else if (armedCount == 0 && !failure.empty()) finish(false, failure);
+            else
+            {
+                std::ostringstream status;
+                status << "register capture timed out | armed " << armedCount << '/' << threads.size() << " | traps " << trapCount;
+                if (lastTrapRip != 0) status << " | last RIP 0x" << std::hex << lastTrapRip << " DR6 0x" << lastTrapDr6;
+                finish(false, status.str());
+            }
+        });
+        binding.SignatureRegisterCapture = std::move(state);
+    }
+
+    static bool readRuntimeRegisterDisplacement(const RuntimeBinding& binding, const pid_t pid, const std::uintptr_t instruction, std::intptr_t& displacement, std::string& error)
+    {
+        if (binding.SignatureDisplacementType == RuntimeDisplacementType::Manual)
+        {
+            displacement = binding.SignatureManualDisplacement;
+            error.clear();
+            return true;
+        }
+        const std::uintptr_t address = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(instruction) + binding.SignatureRegisterDisplacementOffset);
+        if (binding.SignatureDisplacementType == RuntimeDisplacementType::I8)
+        {
+            std::int8_t value = 0;
+            if (!readProcessMemoryValue(pid, address, value, error)) return false;
+            displacement = value;
+        }
+        else
+        {
+            std::int32_t value = 0;
+            if (!readProcessMemoryValue(pid, address, value, error)) return false;
+            displacement = value;
+        }
+        error.clear();
+        return true;
+    }
+
+    static std::optional<std::uintptr_t> advanceRuntimeRegisterCapture(RuntimeBinding& binding, const pid_t pid, std::string& error)
+    {
+        const double now = runtimeSteadySeconds();
+        if (binding.SignatureResolvedAddress != 0) { error.clear(); return binding.SignatureResolvedAddress; }
+        if (binding.SignatureInstructionAddress == 0) { error = "register capture has no instruction address"; return std::nullopt; }
+        if (binding.SignatureRegisterCapture)
+        {
+            bool finished = false, success = false;
+            std::uint64_t registerValue = 0;
+            std::intptr_t displacement = 0;
+            std::uintptr_t resolved = 0;
+            std::string status;
+            {
+                std::lock_guard lock(binding.SignatureRegisterCapture->Mutex);
+                finished = binding.SignatureRegisterCapture->Finished;
+                success = binding.SignatureRegisterCapture->Success;
+                registerValue = binding.SignatureRegisterCapture->RegisterValue;
+                displacement = binding.SignatureRegisterCapture->Displacement;
+                resolved = binding.SignatureRegisterCapture->ResolvedAddress;
+                status = binding.SignatureRegisterCapture->Status;
+            }
+            binding.SignatureStatus = status;
+            if (!finished) { error = status; return std::nullopt; }
+            binding.SignatureRegisterCapture.reset();
+            if (success && resolved != 0)
+            {
+                binding.SignatureCapturedRegister = registerValue;
+                binding.SignatureCapturedDisplacement = displacement;
+                binding.SignatureResolvedAddress = resolved;
+                error.clear();
+                return resolved;
+            }
+            binding.NextRegisterCapture = now + std::max(static_cast<double>(binding.SignatureRetrySeconds), 0.1);
+            error = status;
+            return std::nullopt;
+        }
+        if (now < binding.NextRegisterCapture)
+        {
+            const double remaining = std::max(binding.NextRegisterCapture - now, 0.0);
+            std::ostringstream status;
+            status << "register capture retry in " << std::fixed << std::setprecision(1) << remaining << " s";
+            binding.SignatureStatus = status.str();
+            error = binding.SignatureStatus;
+            return std::nullopt;
+        }
+        startRuntimeRegisterCapture(binding, pid, binding.SignatureInstructionAddress, binding.SignatureCapturedDisplacement);
+        binding.SignatureStatus = "Waiting for instruction execution";
+        error = binding.SignatureStatus;
+        return std::nullopt;
+    }
+
+    static std::uint64_t runtimeSignatureConfigurationHash(const RuntimeBinding& binding)
+    {
+        std::size_t hash = std::hash<std::string_view>{}(binding.Signature);
+        auto mix = [&](const std::size_t value) { hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2); };
+        mix(std::hash<std::string_view>{}(binding.Module));
+        mix(static_cast<std::size_t>(binding.SignatureExecutableOnly));
+        mix(static_cast<std::size_t>(binding.SignatureResolve));
+        mix(static_cast<std::size_t>(static_cast<std::uint32_t>(binding.SignatureResultOffset)));
+        mix(static_cast<std::size_t>(static_cast<std::uint32_t>(binding.SignatureInstructionSize)));
+        mix(static_cast<std::size_t>(binding.SignatureRegister));
+        mix(static_cast<std::size_t>(static_cast<std::uint32_t>(binding.SignatureRegisterDisplacementOffset)));
+        mix(static_cast<std::size_t>(binding.SignatureDisplacementType));
+        mix(static_cast<std::size_t>(static_cast<std::uint32_t>(binding.SignatureManualDisplacement)));
+        return static_cast<std::uint64_t>(hash);
+    }
+
+    static void resetRuntimeSignatureScan(RuntimeBinding& binding, const bool clearResolved = true)
+    {
+        binding.SignatureBytes.clear();
+        binding.SignatureMasks.clear();
+        binding.SignatureRegions.clear();
+        binding.SignatureRegionIndex = 0;
+        binding.SignatureCursor = 0;
+        binding.SignatureScannedBytes = 0;
+        binding.SignatureTotalBytes = 0;
+        binding.SignatureProgress = 0.0f;
+        binding.NextSignatureScan = 0.0;
+        binding.NextRegisterCapture = 0.0;
+        binding.SignatureRegisterCapture.reset();
+        if (clearResolved)
+        {
+            binding.SignatureResolvedAddress = 0;
+            binding.SignatureMatchAddress = 0;
+            binding.SignatureInstructionAddress = 0;
+            binding.SignatureCapturedRegister = 0;
+            binding.SignatureCapturedDisplacement = 0;
+        }
+        binding.SignatureStatus.clear();
+    }
+
+    static bool prepareRuntimeSignatureScan(RuntimeBinding& binding, const pid_t pid, std::string& error)
+    {
+        if (!parseRuntimeIdaSignature(binding.Signature, binding.SignatureBytes, binding.SignatureMasks, error)) return false;
+        binding.SignatureRegions.clear();
+        binding.SignatureTotalBytes = 0;
+        binding.SignatureScannedBytes = 0;
+        for (auto& region : enumerateRuntimeRegions(pid))
+        {
+            if (!region.Readable || (binding.SignatureExecutableOnly && !region.Executable)) continue;
+            if (binding.Module[0] != '\0')
+            {
+                const std::string module = binding.Module;
+                const std::string name = region.Path.empty() ? std::string{} : std::filesystem::path(region.Path).filename().string();
+                if (name != module && region.Path != module && region.Path.find(module) == std::string::npos) continue;
+            }
+            if (region.End - region.Base < binding.SignatureBytes.size()) continue;
+            binding.SignatureTotalBytes += region.End - region.Base;
+            binding.SignatureRegions.emplace_back(std::move(region));
+        }
+        if (binding.SignatureRegions.empty())
+        {
+            error = binding.Module[0] ? "no readable matching mappings for signature scan" : "no readable mappings for signature scan";
+            return false;
+        }
+        binding.SignatureRegionIndex = 0;
+        binding.SignatureCursor = binding.SignatureRegions.front().Base;
+        binding.SignatureScannedBytes = 0;
+        binding.SignatureProgress = 0.0f;
+        binding.SignatureScanPid = pid;
+        binding.SignatureConfigHash = runtimeSignatureConfigurationHash(binding);
+        binding.SignatureStatus = "Scanning signature";
+        error.clear();
+        return true;
+    }
+
+    static bool runtimeSignatureMatches(const std::span<const std::uint8_t> data, const std::size_t offset, const RuntimeBinding& binding) noexcept
+    {
+        for (std::size_t i = 0; i < binding.SignatureBytes.size(); ++i)
+            if ((data[offset + i] & binding.SignatureMasks[i]) != (binding.SignatureBytes[i] & binding.SignatureMasks[i])) return false;
+        return true;
+    }
+
+    template<typename T>
+    static bool readProcessMemoryValue(const pid_t pid, const std::uintptr_t address, T& value, std::string& error)
+    {
+        iovec local{&value, sizeof(T)};
+        iovec remote{reinterpret_cast<void*>(address), sizeof(T)};
+        errno = 0;
+        const ssize_t count = ::process_vm_readv(pid, &local, 1, &remote, 1, 0);
+        if (count == static_cast<ssize_t>(sizeof(T))) return true;
+        error = count < 0 ? std::string(std::strerror(errno)) : "short read (" + std::to_string(count) + "/" + std::to_string(sizeof(T)) + ")";
+        return false;
+    }
+
+    static bool parseRuntimeInteger(const std::string_view text, std::intptr_t& value)
+    {
+        std::string token = trim(std::string(text));
+        if (token.empty()) return false;
+        bool negative = false;
+        if (token.front() == '+' || token.front() == '-')
+        {
+            negative = token.front() == '-';
+            token.erase(token.begin());
+        }
+        int base = 10;
+        if (token.starts_with("0x") || token.starts_with("0X"))
+        {
+            base = 16;
+            token.erase(0, 2);
+        }
+        if (token.empty()) return false;
+        std::uintptr_t raw = 0;
+        const auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), raw, base);
+        if (ec != std::errc{} || ptr != token.data() + token.size()) return false;
+        value = negative ? -static_cast<std::intptr_t>(raw) : static_cast<std::intptr_t>(raw);
+        return true;
+    }
+
+    static std::optional<std::uintptr_t> resolveRuntimeAddress(const RuntimeBinding& binding, const pid_t pid, std::string& error, const std::optional<std::uintptr_t> baseOverride = std::nullopt)
+    {
+        std::string expression = trim(binding.Address);
+        if (expression.empty()) { error = "empty address expression"; return std::nullopt; }
+
+        std::vector<std::string> terms;
+        for (std::size_t start = 0;;)
+        {
+            const std::size_t arrow = expression.find("->", start);
+            terms.emplace_back(trim(expression.substr(start, arrow == std::string::npos ? std::string::npos : arrow - start)));
+            if (arrow == std::string::npos) break;
+            start = arrow + 2;
+        }
+        if (terms.empty()) { error = "invalid address expression"; return std::nullopt; }
+
+        auto modules = enumerateRuntimeModules(pid);
+        std::uintptr_t moduleBase = baseOverride.value_or(0);
+        if (!baseOverride && binding.Module[0] != '\0')
+        {
+            const std::string wanted = binding.Module;
+            const auto it = std::ranges::find_if(modules, [&](const RuntimeProcessModule& module)
+            {
+                return module.Name == wanted || module.Path == wanted || module.Path.find(wanted) != std::string::npos;
+            });
+            if (it == modules.end()) { error = "module not found: " + wanted; return std::nullopt; }
+            moduleBase = it->Base;
+        }
+
+        std::string first = terms.front();
+        if (const std::size_t plus = first.find('+'); plus != std::string::npos && plus > 0 && !std::isdigit(static_cast<unsigned char>(first[0])))
+        {
+            const std::string moduleName = trim(first.substr(0, plus));
+            const auto it = std::ranges::find_if(modules, [&](const RuntimeProcessModule& module)
+            {
+                return module.Name == moduleName || module.Path.find(moduleName) != std::string::npos;
+            });
+            if (it == modules.end()) { error = "module not found: " + moduleName; return std::nullopt; }
+            moduleBase = it->Base;
+            first = first.substr(plus);
+        }
+
+        std::intptr_t firstValue = 0;
+        if (!parseRuntimeInteger(first, firstValue)) { error = "invalid address term: " + first; return std::nullopt; }
+        std::uintptr_t address = first.front() == '+' || first.front() == '-' || moduleBase != 0 ? static_cast<std::uintptr_t>(static_cast<std::intptr_t>(moduleBase) + firstValue) : static_cast<std::uintptr_t>(firstValue);
+
+        for (std::size_t i = 1; i < terms.size(); ++i)
+        {
+            std::uintptr_t pointer = 0;
+            if (!readProcessMemoryValue(pid, address, pointer, error)) { error = "pointer read failed at 0x" + [&]{ std::ostringstream s; s << std::hex << address; return s.str(); }() + ": " + error; return std::nullopt; }
+            std::intptr_t offset = 0;
+            if (!parseRuntimeInteger(terms[i], offset)) { error = "invalid pointer offset: " + terms[i]; return std::nullopt; }
+            address = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(pointer) + offset);
+        }
+        return address;
+    }
+
+    static std::optional<std::uintptr_t> advanceRuntimeSignatureScan(RuntimeBinding& binding, const pid_t pid, std::string& error)
+    {
+        const double now = runtimeSteadySeconds();
+        const std::uint64_t configurationHash = runtimeSignatureConfigurationHash(binding);
+        if (binding.SignatureScanPid != pid || binding.SignatureConfigHash != configurationHash)
+        {
+            resetRuntimeSignatureScan(binding);
+            binding.SignatureScanPid = pid;
+            binding.SignatureConfigHash = configurationHash;
+        }
+        if (binding.SignatureResolvedAddress != 0)
+        {
+            error.clear();
+            return binding.SignatureResolvedAddress;
+        }
+        if (binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture && binding.SignatureInstructionAddress != 0)
+            return advanceRuntimeRegisterCapture(binding, pid, error);
+        if (now < binding.NextSignatureScan)
+        {
+            const double remaining = std::max(binding.NextSignatureScan - now, 0.0);
+            std::ostringstream status;
+            status << "signature not found; retry in " << std::fixed << std::setprecision(1) << remaining << " s";
+            binding.SignatureStatus = status.str();
+            error = binding.SignatureStatus;
+            return std::nullopt;
+        }
+        if (binding.SignatureRegions.empty() && !prepareRuntimeSignatureScan(binding, pid, error))
+        {
+            binding.SignatureStatus = error;
+            binding.NextSignatureScan = now + std::max(static_cast<double>(binding.SignatureRetrySeconds), 0.1);
+            return std::nullopt;
+        }
+
+        constexpr std::size_t ScanBudget = 256 * 1024;
+        constexpr std::size_t ReadChunk = 128 * 1024;
+        std::size_t budget = ScanBudget;
+        std::vector<std::uint8_t> buffer;
+        while (budget > 0 && binding.SignatureRegionIndex < binding.SignatureRegions.size())
+        {
+            const auto& region = binding.SignatureRegions[binding.SignatureRegionIndex];
+            if (binding.SignatureCursor < region.Base) binding.SignatureCursor = region.Base;
+            if (binding.SignatureCursor >= region.End)
+            {
+                ++binding.SignatureRegionIndex;
+                if (binding.SignatureRegionIndex < binding.SignatureRegions.size()) binding.SignatureCursor = binding.SignatureRegions[binding.SignatureRegionIndex].Base;
+                continue;
+            }
+            const std::size_t remaining = static_cast<std::size_t>(region.End - binding.SignatureCursor);
+            const std::size_t readSize = std::min({remaining, ReadChunk, budget + binding.SignatureBytes.size() - 1});
+            if (readSize < binding.SignatureBytes.size())
+            {
+                binding.SignatureScannedBytes += remaining;
+                binding.SignatureCursor = region.End;
+                continue;
+            }
+            buffer.resize(readSize);
+            std::string readError;
+            if (!readProcessMemoryBlock(pid, binding.SignatureCursor, buffer, readError))
+            {
+                binding.SignatureScannedBytes += remaining;
+                binding.SignatureCursor = region.End;
+                continue;
+            }
+            const std::size_t last = buffer.size() - binding.SignatureBytes.size();
+            for (std::size_t offset = 0; offset <= last; ++offset)
+            {
+                if (!runtimeSignatureMatches(buffer, offset, binding)) continue;
+                const std::uintptr_t match = binding.SignatureCursor + offset;
+                std::uintptr_t resolved = 0;
+                if (binding.SignatureResolve == SignatureResultMode::MatchAddress)
+                    resolved = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
+                else if (binding.SignatureResolve == SignatureResultMode::PointerAtOffset)
+                {
+                    const std::uintptr_t pointerAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
+                    if (!readProcessMemoryValue(pid, pointerAddress, resolved, error))
+                    {
+                        binding.SignatureStatus = "signature matched, pointer resolve failed: " + error;
+                        return std::nullopt;
+                    }
+                }
+                else if (binding.SignatureResolve == SignatureResultMode::RipRelative32)
+                {
+                    std::int32_t displacement = 0;
+                    const std::uintptr_t displacementAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
+                    if (!readProcessMemoryValue(pid, displacementAddress, displacement, error))
+                    {
+                        binding.SignatureStatus = "signature matched, RIP displacement read failed: " + error;
+                        return std::nullopt;
+                    }
+                    const int instructionSize = std::max(binding.SignatureInstructionSize, 1);
+                    resolved = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + instructionSize + displacement);
+                }
+                else
+                {
+                    binding.SignatureMatchAddress = match;
+                    binding.SignatureInstructionAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
+                    std::intptr_t displacement = 0;
+                    if (!readRuntimeRegisterDisplacement(binding, pid, binding.SignatureInstructionAddress, displacement, error))
+                    {
+                        binding.SignatureStatus = "signature matched, displacement read failed: " + error;
+                        return std::nullopt;
+                    }
+                    binding.SignatureCapturedDisplacement = displacement;
+                    binding.SignatureProgress = 1.0f;
+                    std::ostringstream status;
+                    status << "Writer located 0x" << std::hex << binding.SignatureInstructionAddress << "; waiting for " << runtimeX64RegisterName(binding.SignatureRegister);
+                    binding.SignatureStatus = status.str();
+                    return advanceRuntimeRegisterCapture(binding, pid, error);
+                }
+                binding.SignatureResolvedAddress = resolved;
+                binding.SignatureMatchAddress = match;
+                binding.SignatureProgress = 1.0f;
+                std::ostringstream status;
+                status << "Signature resolved 0x" << std::hex << resolved << " from match 0x" << match;
+                binding.SignatureStatus = status.str();
+                error.clear();
+                return resolved;
+            }
+            const std::size_t overlap = binding.SignatureBytes.size() > 1 ? binding.SignatureBytes.size() - 1 : 0;
+            const std::size_t step = readSize > overlap ? readSize - overlap : readSize;
+            binding.SignatureCursor += step;
+            binding.SignatureScannedBytes += step;
+            budget = step >= budget ? 0 : budget - step;
+            binding.SignatureProgress = binding.SignatureTotalBytes ? std::clamp(static_cast<float>(static_cast<double>(binding.SignatureScannedBytes) / binding.SignatureTotalBytes), 0.0f, 1.0f) : 0.0f;
+        }
+
+        if (binding.SignatureRegionIndex >= binding.SignatureRegions.size())
+        {
+            binding.SignatureRegions.clear();
+            binding.SignatureRegionIndex = 0;
+            binding.SignatureCursor = 0;
+            binding.NextSignatureScan = now + std::max(static_cast<double>(binding.SignatureRetrySeconds), 0.1);
+            binding.SignatureProgress = 0.0f;
+            binding.SignatureStatus = "Signature not found; waiting for retry interval";
+            error = binding.SignatureStatus;
+            return std::nullopt;
+        }
+        std::ostringstream status;
+        status << "Scanning signature " << std::fixed << std::setprecision(0) << binding.SignatureProgress * 100.0f << "%";
+        binding.SignatureStatus = status.str();
+        error = binding.SignatureStatus;
+        return std::nullopt;
+    }
+
+    static bool readNativeBinding(RuntimeBinding& binding, float& output)
+    {
+        pid_t pid = static_cast<pid_t>(binding.ProcessId);
+        if (!runtimeProcessIsAlive(pid) && !tryRuntimeProcessRebind(binding, pid, binding.Error)) return false;
+
+        std::string error;
+        std::optional<std::uintptr_t> signatureBase;
+        if (binding.AddressMode == ProcessAddressMode::Signature)
+        {
+            signatureBase = advanceRuntimeSignatureScan(binding, pid, error);
+            if (!signatureBase)
+            {
+                binding.Error = std::move(error);
+                return false;
+            }
+        }
+        const auto address = resolveRuntimeAddress(binding, pid, error, signatureBase);
+        if (!address)
+        {
+            if (binding.AddressMode == ProcessAddressMode::Signature && binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture)
+            {
+                binding.SignatureResolvedAddress = 0;
+                binding.NextRegisterCapture = 0.0;
+                binding.SignatureRegisterCapture.reset();
+            }
+            binding.Error = std::move(error);
+            return false;
+        }
+
+#define QUARTZ_READ_NATIVE(type) do { type value{}; if (!readProcessMemoryValue(pid, *address, value, error)) { if (binding.AddressMode == ProcessAddressMode::Signature && binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture) { binding.SignatureResolvedAddress = 0; binding.NextRegisterCapture = 0.0; binding.SignatureRegisterCapture.reset(); } binding.Error = std::move(error); return false; } output = static_cast<float>(value); } while (false)
+        switch (binding.ValueType)
+        {
+        case ProcessValueType::U8: QUARTZ_READ_NATIVE(std::uint8_t); break;
+        case ProcessValueType::I8: QUARTZ_READ_NATIVE(std::int8_t); break;
+        case ProcessValueType::U16: QUARTZ_READ_NATIVE(std::uint16_t); break;
+        case ProcessValueType::I16: QUARTZ_READ_NATIVE(std::int16_t); break;
+        case ProcessValueType::U32: QUARTZ_READ_NATIVE(std::uint32_t); break;
+        case ProcessValueType::I32: QUARTZ_READ_NATIVE(std::int32_t); break;
+        case ProcessValueType::U64: QUARTZ_READ_NATIVE(std::uint64_t); break;
+        case ProcessValueType::I64: QUARTZ_READ_NATIVE(std::int64_t); break;
+        case ProcessValueType::Float: QUARTZ_READ_NATIVE(float); break;
+        case ProcessValueType::Double: { double value{}; if (!readProcessMemoryValue(pid, *address, value, error)) { if (binding.AddressMode == ProcessAddressMode::Signature && binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture) { binding.SignatureResolvedAddress = 0; binding.NextRegisterCapture = 0.0; binding.SignatureRegisterCapture.reset(); } binding.Error = std::move(error); return false; } output = static_cast<float>(value); break; }
+        case ProcessValueType::Bool: { std::uint8_t value{}; if (!readProcessMemoryValue(pid, *address, value, error)) { if (binding.AddressMode == ProcessAddressMode::Signature && binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture) { binding.SignatureResolvedAddress = 0; binding.NextRegisterCapture = 0.0; binding.SignatureRegisterCapture.reset(); } binding.Error = std::move(error); return false; } output = value != 0 ? 1.0f : 0.0f; break; }
+        }
+#undef QUARTZ_READ_NATIVE
+        binding.Error.clear();
+        return true;
+    }
+
+    static std::filesystem::path runtimeBindingsPath()
+    {
+        return settingsPath().parent_path() / "visualizer.bindings.ini";
+    }
+
+    static std::string runtimeEscape(const std::string_view value)
+    {
+        static constexpr char Hex[] = "0123456789ABCDEF";
+        std::string result;
+        for (const unsigned char c : value)
+        {
+            if (std::isalnum(c) || c == '_' || c == '-' || c == '.' || c == '/' || c == ' ') result.push_back(static_cast<char>(c));
+            else { result.push_back('%'); result.push_back(Hex[c >> 4]); result.push_back(Hex[c & 0xF]); }
+        }
+        return result;
+    }
+
+    static std::string runtimeUnescape(const std::string_view value)
+    {
+        auto hex = [](const char c) -> int
+        {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        std::string result;
+        for (std::size_t i = 0; i < value.size(); ++i)
+        {
+            if (value[i] == '%' && i + 2 < value.size())
+            {
+                const int hi = hex(value[i + 1]), lo = hex(value[i + 2]);
+                if (hi >= 0 && lo >= 0) { result.push_back(static_cast<char>((hi << 4) | lo)); i += 2; continue; }
+            }
+            result.push_back(value[i]);
+        }
+        return result;
+    }
+
+    static const char* runtimeSourceName(const RuntimeSourceKind source)
+    {
+        switch (source)
+        {
+        case RuntimeSourceKind::Constant: return "Constant";
+        case RuntimeSourceKind::Time: return "Time";
+        case RuntimeSourceKind::Audio: return "Audio";
+        case RuntimeSourceKind::Media: return "Media / MPRIS";
+        case RuntimeSourceKind::Keyboard: return "Keyboard";
+        case RuntimeSourceKind::RPC: return "RPC / firmware";
+        case RuntimeSourceKind::Host: return "Host";
+        case RuntimeSourceKind::USB: return "USB";
+        case RuntimeSourceKind::RGB: return "RGB output";
+        case RuntimeSourceKind::NativeProcess: return "Native process memory";
+        case RuntimeSourceKind::BindingStatus: return "Binding status";
+        }
+        return "Unknown";
+    }
+
+    static std::vector<std::string_view> runtimeSignalNames(const RuntimeSourceKind source)
+    {
+        switch (source)
+        {
+        case RuntimeSourceKind::Constant: return {"Value"};
+        case RuntimeSourceKind::Time: return {"Seconds", "Sine", "Cosine", "Saw 0..1"};
+        case RuntimeSourceKind::Audio: return {"RMS", "Peak", "Bass", "Mid", "Treble", "Effective gain", "Gain correction"};
+        case RuntimeSourceKind::Media: return {"Artwork amount", "Artwork R", "Artwork G", "Artwork B", "Playing"};
+        case RuntimeSourceKind::Keyboard: return {"Caps Lock", "Scroll Lock", "Held fraction", "Recent key pulse"};
+        case RuntimeSourceKind::RPC: return {"Keyboard CPU %", "Scan rate Hz", "Matrix us", "RGB us", "Scan period us"};
+        case RuntimeSourceKind::Host: return {"App CPU %"};
+        case RuntimeSourceKind::USB: return {"Connected", "TX KiB/s", "RX KiB/s", "TX transfers/s", "RX transfers/s", "Errors"};
+        case RuntimeSourceKind::RGB: return {"Average luma", "Lit fraction", "Average R", "Average G", "Average B"};
+        case RuntimeSourceKind::NativeProcess: return {"Value"};
+        case RuntimeSourceKind::BindingStatus: return {"Has value", "Last read succeeded", "Enabled", "Process alive", "Address resolved", "Register captured", "Has error"};
+        }
+        return {"Value"};
+    }
+
+    class RuntimeBindingEngine
+    {
+    public:
+        RuntimeBindingEngine() { load(); }
+        ~RuntimeBindingEngine() { save(); }
+
+        std::vector<RuntimeBinding>& bindings() noexcept { return _bindings; }
+        const std::vector<RuntimeBinding>& bindings() const noexcept { return _bindings; }
+        std::vector<RuntimeControlRule>& controls() noexcept { return _controls; }
+        const std::vector<RuntimeControlRule>& controls() const noexcept { return _controls; }
+        const RuntimeUSBRates& usbRates() const noexcept { return _usbRates; }
+        std::uint64_t revision() const noexcept { return _revision; }
+        const std::filesystem::path& path() const noexcept { return _path; }
+
+        RuntimeBinding& add()
+        {
+            _bindings.emplace_back();
+            _bindings.back().Id = _nextBindingId++;
+            std::snprintf(_bindings.back().Name, sizeof(_bindings.back().Name), "Binding %zu", _bindings.size());
+            ++_revision;
+            return _bindings.back();
+        }
+
+        RuntimeControlRule& addControl()
+        {
+            _controls.emplace_back();
+            auto& control = _controls.back();
+            control.Id = _nextControlId++;
+            std::snprintf(control.Name, sizeof(control.Name), "Control %zu", _controls.size());
+            ++_revision;
+            return control;
+        }
+
+        void eraseControl(const std::size_t index)
+        {
+            if (index >= _controls.size()) return;
+            _controls.erase(_controls.begin() + static_cast<std::ptrdiff_t>(index));
+            ++_revision;
+        }
+
+        void erase(const std::size_t index)
+        {
+            if (index >= _bindings.size()) return;
+            const std::uint64_t erasedId = _bindings[index].Id;
+            _bindings.erase(_bindings.begin() + static_cast<std::ptrdiff_t>(index));
+            for (auto& binding : _bindings)
+            {
+                if (binding.StatusBindingId == erasedId) binding.StatusBindingId = 0;
+                for (auto& link : binding.ParameterLinks)
+                    if (link.Enabled && link.BindingId == erasedId) link = {};
+            }
+            for (auto& control : _controls)
+            {
+                if (control.SourceBindingId == erasedId) control.SourceBindingId = 0;
+                if (control.TargetBindingId == erasedId) control.TargetBindingId = 0;
+            }
+            ++_revision;
+        }
+
+        void markChanged() noexcept { ++_revision; }
+
+        RuntimeBinding* findBinding(const std::uint64_t id) noexcept
+        {
+            const auto it = std::ranges::find(_bindings, id, &RuntimeBinding::Id);
+            return it == _bindings.end() ? nullptr : &*it;
+        }
+
+        const RuntimeBinding* findBinding(const std::uint64_t id) const noexcept
+        {
+            const auto it = std::ranges::find(_bindings, id, &RuntimeBinding::Id);
+            return it == _bindings.end() ? nullptr : &*it;
+        }
+
+        bool canParameterLink(const std::uint64_t ownerId, const std::uint64_t sourceId) const
+        {
+            if (ownerId == 0 || sourceId == 0 || ownerId == sourceId || !findBinding(sourceId)) return false;
+            std::set<std::uint64_t> visited;
+            return !bindingDependsOn(sourceId, ownerId, visited);
+        }
+
+        bool setParameterLink(RuntimeBinding& owner, const RuntimeParameterSlot slot, const std::uint64_t sourceId)
+        {
+            auto& link = owner.ParameterLinks[static_cast<std::size_t>(slot)];
+            if (sourceId == 0)
+            {
+                link = {};
+                ++_revision;
+                return true;
+            }
+            if (!canParameterLink(owner.Id, sourceId)) return false;
+            link.Enabled = true;
+            link.BindingId = sourceId;
+            ++_revision;
+            return true;
+        }
+
+        float parameterValue(const RuntimeBinding& owner, const RuntimeParameterSlot slot, const float fallback) const noexcept
+        {
+            const auto& link = owner.ParameterLinks[static_cast<std::size_t>(slot)];
+            if (!link.Enabled || link.BindingId == 0) return fallback;
+            const RuntimeBinding* source = findBinding(link.BindingId);
+            return source && source->Enabled && source->HasValue ? source->Value : fallback;
+        }
+
+        bool parameterBool(const RuntimeBinding& owner, const RuntimeParameterSlot slot, const bool fallback) const noexcept
+        {
+            return parameterValue(owner, slot, fallback ? 1.0f : 0.0f) >= 0.5f;
+        }
+
+        void applyMaterialValues(ShaderFramebuffer& shader) const noexcept
+        {
+            for (const auto& binding : _bindings)
+                if (binding.Enabled && binding.RuntimeEnabled && binding.WriteMaterial && binding.HasValue)
+                    shader.setMaterialParameter(binding.TargetId, binding.TargetComponent, binding.Value);
+        }
+
+        void updateRates(const USBStatsSnapshot& stats, const double now)
+        {
+            if (_rateTime <= 0.0)
+            {
+                _lastUSB = stats;
+                _rateTime = now;
+                return;
+            }
+            const double elapsed = now - _rateTime;
+            if (elapsed < 0.25) return;
+            _usbRates.TxKiB = (stats.TxBytes - _lastUSB.TxBytes) / 1024.0 / elapsed;
+            _usbRates.RxKiB = (stats.RxBytes - _lastUSB.RxBytes) / 1024.0 / elapsed;
+            _usbRates.TxTransfers = (stats.TxTransfers - _lastUSB.TxTransfers) / elapsed;
+            _usbRates.RxTransfers = (stats.RxTransfers - _lastUSB.RxTransfers) / elapsed;
+            _lastUSB = stats;
+            _rateTime = now;
+        }
+
+        void update(const RuntimeSignalContext& context, ShaderFramebuffer& shader)
+        {
+            for (auto& binding : _bindings)
+            {
+                if (!binding.Enabled || !binding.RuntimeEnabled || context.Time < binding.NextUpdate) continue;
+                const float updateHz = std::clamp(parameterValue(binding, RuntimeParameterSlot::UpdateHz, binding.UpdateHz), 0.5f, 500.0f);
+                binding.NextUpdate = context.Time + 1.0 / updateHz;
+
+                float raw = 0.0f;
+                binding.LastReadSucceeded = false;
+                if (!readSource(binding, context, raw)) continue;
+                binding.LastReadSucceeded = true;
+                binding.LastSuccessTime = context.Time;
+                binding.RawValue = raw;
+
+                const bool normalize = parameterBool(binding, RuntimeParameterSlot::Normalize, binding.Normalize);
+                const float inputMin = parameterValue(binding, RuntimeParameterSlot::InputMin, binding.InputMin);
+                const float inputMax = parameterValue(binding, RuntimeParameterSlot::InputMax, binding.InputMax);
+                const bool invert = parameterBool(binding, RuntimeParameterSlot::Invert, binding.Invert);
+                const float scale = parameterValue(binding, RuntimeParameterSlot::Scale, binding.Scale);
+                const float offset = parameterValue(binding, RuntimeParameterSlot::Offset, binding.Offset);
+                const bool clampOutput = parameterBool(binding, RuntimeParameterSlot::Clamp, binding.Clamp);
+                const float outputMin = parameterValue(binding, RuntimeParameterSlot::OutputMin, binding.OutputMin);
+                const float outputMax = parameterValue(binding, RuntimeParameterSlot::OutputMax, binding.OutputMax);
+                const float smoothingHz = std::max(parameterValue(binding, RuntimeParameterSlot::SmoothingHz, binding.SmoothingHz), 0.0f);
+
+                float transformed = raw;
+                if (normalize)
+                {
+                    const float range = inputMax - inputMin;
+                    transformed = std::abs(range) > 0.000001f ? (transformed - inputMin) / range : 0.0f;
+                }
+                if (invert) transformed = 1.0f - transformed;
+                transformed = transformed * scale + offset;
+                if (clampOutput) transformed = std::clamp(transformed, std::min(outputMin, outputMax), std::max(outputMin, outputMax));
+
+                const float dt = binding.LastUpdate > 0.0 ? static_cast<float>(std::clamp(context.Time - binding.LastUpdate, 0.0001, 1.0)) : 1.0f / updateHz;
+                binding.LastUpdate = context.Time;
+                if (!binding.HasValue)
+                {
+                    binding.Value = transformed;
+                    binding.HasValue = true;
+                }
+                else
+                {
+                    const float alpha = smoothingHz <= 0.0f ? 1.0f : 1.0f - std::exp(-smoothingHz * dt);
+                    binding.Value += (transformed - binding.Value) * alpha;
+                }
+                if (binding.WriteMaterial)
+                {
+                    if (!shader.setMaterialParameter(binding.TargetId, binding.TargetComponent, binding.Value)) binding.Error = "material id/component not active in current shader";
+                    else binding.Error.clear();
+                }
+                else
+                    binding.Error.clear();
+            }
+        }
+
+        RuntimeControlOutput evaluateControls(ShaderFramebuffer& shader)
+        {
+            for (auto& binding : _bindings) binding.RuntimeEnabled = true;
+            RuntimeControlOutput output;
+            for (auto& control : _controls)
+            {
+                if (!control.Enabled) continue;
+                RuntimeBinding* source = findBinding(control.SourceBindingId);
+                if (!source || !source->Enabled || !source->HasValue) continue;
+                const float value = source->Value;
+                if (!evaluateControlCondition(control, value)) continue;
+
+                switch (control.Target)
+                {
+                case RuntimeControlTarget::ActiveShader:
+                    if (control.ShaderPresetIndex > 0 && control.ShaderPresetIndex <= static_cast<int>(ShaderPresets.size()))
+                    {
+                        output.ShaderPresetIndex = control.ShaderPresetIndex;
+                        output.ShaderTransitionSeconds = std::clamp(control.TransitionSeconds, 0.0f, 10.0f);
+                    }
+                    break;
+                case RuntimeControlTarget::BindingEnabled:
+                    if (RuntimeBinding* target = findBinding(control.TargetBindingId); target && target != source) target->RuntimeEnabled = control.TargetBool;
+                    break;
+                case RuntimeControlTarget::GlobalBrightness:
+                    output.GlobalBrightness = std::clamp(control.TargetValue, 0.0f, 1.0f);
+                    break;
+                case RuntimeControlTarget::SendFramebuffer:
+                    output.SendFramebuffer = control.TargetBool;
+                    break;
+                case RuntimeControlTarget::BaseColorMode:
+                    output.BaseColorMode = std::clamp(static_cast<int>(std::lround(control.TargetValue)), 0, 2);
+                    break;
+                case RuntimeControlTarget::MaterialParameter:
+                    shader.setMaterialParameter(control.TargetId, control.TargetComponent, control.TargetValue);
+                    break;
+                }
+            }
+            return output;
+        }
+
+        bool save()
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(_path.parent_path(), ec);
+            const auto temporary = std::filesystem::path(_path.string() + ".tmp");
+            std::ofstream file(temporary, std::ios::trunc);
+            if (!file) return false;
+            file << "# Quartz runtime material bindings v5\n";
+            for (const auto& b : _bindings)
+            {
+                file << "B\t" << b.Enabled << '\t' << static_cast<int>(b.Source) << '\t' << b.Signal << '\t' << b.Constant << '\t'
+                     << runtimeEscape(b.Name) << '\t' << runtimeEscape(b.TargetId) << '\t' << b.TargetComponent << '\t'
+                     << b.ProcessId << '\t' << b.AutoReattach << '\t' << static_cast<int>(b.ValueType) << '\t'
+                     << runtimeEscape(b.ProcessName) << '\t' << runtimeEscape(b.Module) << '\t' << runtimeEscape(b.Address) << '\t'
+                     << "" << '\t' << "" << '\t' << 0 << '\t' << false << '\t'
+                     << b.Normalize << '\t' << b.InputMin << '\t' << b.InputMax << '\t' << b.Invert << '\t' << b.Scale << '\t' << b.Offset << '\t'
+                     << b.Clamp << '\t' << b.OutputMin << '\t' << b.OutputMax << '\t' << b.SmoothingHz << '\t' << b.UpdateHz << '\t'
+                     << static_cast<int>(b.RebindMode) << '\t' << runtimeEscape(b.ProcessRebindPattern) << '\t' << b.Id << '\t'
+                     << static_cast<int>(b.AddressMode) << '\t' << runtimeEscape(b.Signature) << '\t' << b.SignatureExecutableOnly << '\t'
+                     << static_cast<int>(b.SignatureResolve) << '\t' << b.SignatureResultOffset << '\t' << b.SignatureInstructionSize << '\t' << b.SignatureRetrySeconds << '\t'
+                     << runtimeEscape(serializeParameterLinks(b)) << '\t' << static_cast<int>(b.SignatureRegister) << '\t' << b.SignatureRegisterDisplacementOffset << '\t'
+                     << static_cast<int>(b.SignatureDisplacementType) << '\t' << b.SignatureManualDisplacement << '\t' << b.SignatureCaptureTimeoutSeconds << '\t' << b.StatusBindingId << '\t' << b.WriteMaterial << '\n';
+            }
+            for (const auto& c : _controls)
+            {
+                file << "C\t" << c.Enabled << '\t' << c.Id << '\t' << runtimeEscape(c.Name) << '\t' << c.SourceBindingId << '\t'
+                     << static_cast<int>(c.Condition) << '\t' << c.ValueA << '\t' << c.ValueB << '\t' << c.Tolerance << '\t' << c.Hysteresis << '\t'
+                     << static_cast<int>(c.Target) << '\t' << c.ShaderPresetIndex << '\t' << c.TargetBindingId << '\t' << c.TargetValue << '\t' << c.TargetBool << '\t'
+                     << c.TargetComponent << '\t' << runtimeEscape(c.TargetId) << '\t' << c.TransitionSeconds << '\n';
+            }
+            file.close();
+            if (!file) return false;
+            std::filesystem::rename(temporary, _path, ec);
+            if (ec)
+            {
+                std::filesystem::remove(_path, ec);
+                ec.clear();
+                std::filesystem::rename(temporary, _path, ec);
+            }
+            if (!ec) _savedRevision = _revision;
+            return !ec;
+        }
+
+        void saveIfChanged() { if (_savedRevision != _revision) save(); }
+
+    private:
+        template<std::size_t N>
+        static void copyField(char (&destination)[N], const std::string& value)
+        {
+            std::snprintf(destination, N, "%s", value.c_str());
+        }
+
+        void load()
+        {
+            _path = runtimeBindingsPath();
+            std::ifstream file(_path);
+            if (!file) return;
+            std::string line;
+            while (std::getline(file, line))
+            {
+                if (line.starts_with("B\t"))
+                {
+                    std::vector<std::string> fields;
+                    std::size_t start = 2;
+                    for (;;)
+                    {
+                        const std::size_t tab = line.find('\t', start);
+                        fields.emplace_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start));
+                        if (tab == std::string::npos) break;
+                        start = tab + 1;
+                    }
+                    if (fields.size() < 27) continue;
+                    RuntimeBinding b;
+                    auto parseInt = [&](const std::size_t index, int& value) { return index < fields.size() && parseNumber(fields[index], value); };
+                    auto parseFloat = [&](const std::size_t index, float& value) { return index < fields.size() && parseNumber(fields[index], value); };
+                    auto parseB = [&](const std::size_t index, bool& value) { return index < fields.size() && parseBool(fields[index], value); };
+                    int source = 0, valueType = 0;
+                    if (!parseB(0, b.Enabled) || !parseInt(1, source) || !parseInt(2, b.Signal) || !parseFloat(3, b.Constant)) continue;
+                    b.Source = static_cast<RuntimeSourceKind>(std::clamp(source, 0, static_cast<int>(RuntimeSourceKind::BindingStatus)));
+                    copyField(b.Name, runtimeUnescape(fields[4])); copyField(b.TargetId, runtimeUnescape(fields[5]));
+                    parseInt(6, b.TargetComponent); parseInt(7, b.ProcessId); parseB(8, b.AutoReattach); parseInt(9, valueType);
+                    b.ValueType = static_cast<ProcessValueType>(std::clamp(valueType, 0, static_cast<int>(ProcessValueType::Bool)));
+                    copyField(b.ProcessName, runtimeUnescape(fields[10])); copyField(b.Module, runtimeUnescape(fields[11])); copyField(b.Address, runtimeUnescape(fields[12]));
+                    // fields 13..16 were the removed CLR type/member/instance/static fields. Keep their slots for v4 compatibility.
+                    parseB(17, b.Normalize); parseFloat(18, b.InputMin); parseFloat(19, b.InputMax);
+                    parseB(20, b.Invert); parseFloat(21, b.Scale); parseFloat(22, b.Offset); parseB(23, b.Clamp); parseFloat(24, b.OutputMin); parseFloat(25, b.OutputMax);
+                    if (fields.size() > 26) parseFloat(26, b.SmoothingHz);
+                    if (fields.size() > 27) parseFloat(27, b.UpdateHz);
+                    int rebindMode = static_cast<int>(ProcessRebindMode::NameExact);
+                    if (fields.size() > 28) parseInt(28, rebindMode);
+                    b.RebindMode = static_cast<ProcessRebindMode>(std::clamp(rebindMode, 0, static_cast<int>(ProcessRebindMode::AnyRegex)));
+                    if (fields.size() > 29) copyField(b.ProcessRebindPattern, runtimeUnescape(fields[29]));
+                    if (b.ProcessRebindPattern[0] == '\0' && b.ProcessName[0] != '\0') std::snprintf(b.ProcessRebindPattern, sizeof(b.ProcessRebindPattern), "%s", b.ProcessName);
+                    if (fields.size() > 30) parseNumber(fields[30], b.Id);
+                    int addressMode = static_cast<int>(ProcessAddressMode::AddressChain);
+                    if (fields.size() > 31) parseInt(31, addressMode);
+                    b.AddressMode = static_cast<ProcessAddressMode>(std::clamp(addressMode, 0, static_cast<int>(ProcessAddressMode::Signature)));
+                    if (fields.size() > 32) copyField(b.Signature, runtimeUnescape(fields[32]));
+                    if (fields.size() > 33) parseB(33, b.SignatureExecutableOnly);
+                    int signatureResolve = static_cast<int>(SignatureResultMode::MatchAddress);
+                    if (fields.size() > 34) parseInt(34, signatureResolve);
+                    b.SignatureResolve = static_cast<SignatureResultMode>(std::clamp(signatureResolve, 0, static_cast<int>(SignatureResultMode::RegisterRelativeCapture)));
+                    if (fields.size() > 35) parseInt(35, b.SignatureResultOffset);
+                    if (fields.size() > 36) parseInt(36, b.SignatureInstructionSize);
+                    if (fields.size() > 37) parseFloat(37, b.SignatureRetrySeconds);
+                    if (fields.size() > 38) parseParameterLinks(runtimeUnescape(fields[38]), b);
+                    int signatureRegister = static_cast<int>(RuntimeX64Register::R15);
+                    if (fields.size() > 39) parseInt(39, signatureRegister);
+                    b.SignatureRegister = static_cast<RuntimeX64Register>(std::clamp(signatureRegister, 0, static_cast<int>(RuntimeX64Register::R15)));
+                    if (fields.size() > 40) parseInt(40, b.SignatureRegisterDisplacementOffset);
+                    int displacementType = static_cast<int>(RuntimeDisplacementType::I32);
+                    if (fields.size() > 41) parseInt(41, displacementType);
+                    b.SignatureDisplacementType = static_cast<RuntimeDisplacementType>(std::clamp(displacementType, 0, static_cast<int>(RuntimeDisplacementType::Manual)));
+                    if (fields.size() > 42) parseInt(42, b.SignatureManualDisplacement);
+                    if (fields.size() > 43) parseFloat(43, b.SignatureCaptureTimeoutSeconds);
+                    if (fields.size() > 44) parseNumber(fields[44], b.StatusBindingId);
+                    if (fields.size() > 45) parseB(45, b.WriteMaterial);
+                    if (b.Id == 0) b.Id = _nextBindingId++;
+                    else _nextBindingId = std::max(_nextBindingId, b.Id + 1);
+                    _bindings.emplace_back(std::move(b));
+                }
+                else if (line.starts_with("C\t"))
+                {
+                    std::vector<std::string> fields;
+                    std::size_t start = 2;
+                    for (;;)
+                    {
+                        const std::size_t tab = line.find('\t', start);
+                        fields.emplace_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start));
+                        if (tab == std::string::npos) break;
+                        start = tab + 1;
+                    }
+                    if (fields.size() < 15) continue;
+                    RuntimeControlRule c;
+                    int condition = 0, target = 0;
+                    if (!parseBool(fields[0], c.Enabled) || !parseNumber(fields[1], c.Id)) continue;
+                    copyField(c.Name, runtimeUnescape(fields[2]));
+                    parseNumber(fields[3], c.SourceBindingId);
+                    parseNumber(fields[4], condition);
+                    c.Condition = static_cast<RuntimeControlCondition>(std::clamp(condition, 0, static_cast<int>(RuntimeControlCondition::FallingEdge)));
+                    parseNumber(fields[5], c.ValueA); parseNumber(fields[6], c.ValueB); parseNumber(fields[7], c.Tolerance); parseNumber(fields[8], c.Hysteresis);
+                    parseNumber(fields[9], target);
+                    c.Target = static_cast<RuntimeControlTarget>(std::clamp(target, 0, static_cast<int>(RuntimeControlTarget::MaterialParameter)));
+                    parseNumber(fields[10], c.ShaderPresetIndex); parseNumber(fields[11], c.TargetBindingId); parseNumber(fields[12], c.TargetValue); parseBool(fields[13], c.TargetBool);
+                    if (fields.size() > 14) parseNumber(fields[14], c.TargetComponent);
+                    if (fields.size() > 15) copyField(c.TargetId, runtimeUnescape(fields[15]));
+                    if (fields.size() > 16) parseNumber(fields[16], c.TransitionSeconds);
+                    if (c.Id == 0) c.Id = _nextControlId++;
+                    else _nextControlId = std::max(_nextControlId, c.Id + 1);
+                    _controls.emplace_back(std::move(c));
+                }
+            }
+            validateParameterLinks();
+            _savedRevision = _revision;
+        }
+
+        static std::string serializeParameterLinks(const RuntimeBinding& binding)
+        {
+            std::string result;
+            for (std::size_t i = 0; i < binding.ParameterLinks.size(); ++i)
+            {
+                const auto& link = binding.ParameterLinks[i];
+                if (!link.Enabled || link.BindingId == 0) continue;
+                if (!result.empty()) result.push_back(';');
+                result += std::to_string(i) + "=" + std::to_string(link.BindingId);
+            }
+            return result;
+        }
+
+        static void parseParameterLinks(const std::string_view specification, RuntimeBinding& binding)
+        {
+            std::size_t start = 0;
+            while (start < specification.size())
+            {
+                const std::size_t end = specification.find(';', start);
+                const std::string_view token = specification.substr(start, end == std::string_view::npos ? specification.size() - start : end - start);
+                const std::size_t equal = token.find('=');
+                if (equal != std::string_view::npos)
+                {
+                    int slot = -1;
+                    std::uint64_t id = 0;
+                    const auto [slotPtr, slotEc] = std::from_chars(token.data(), token.data() + equal, slot);
+                    const auto [idPtr, idEc] = std::from_chars(token.data() + equal + 1, token.data() + token.size(), id);
+                    if (slotEc == std::errc{} && idEc == std::errc{} && slotPtr == token.data() + equal && idPtr == token.data() + token.size() && slot >= 0 && slot < static_cast<int>(RuntimeParameterSlot::Count) && id != 0)
+                        binding.ParameterLinks[static_cast<std::size_t>(slot)] = {true, id};
+                }
+                if (end == std::string_view::npos) break;
+                start = end + 1;
+            }
+        }
+
+        static bool evaluateControlCondition(RuntimeControlRule& control, const float value) noexcept
+        {
+            const float a = control.ValueA;
+            const float b = control.ValueB;
+            const float lo = std::min(a, b);
+            const float hi = std::max(a, b);
+            const float h = std::max(control.Hysteresis, 0.0f);
+            const float tolerance = std::max(control.Tolerance, 0.000001f);
+            bool active = false;
+
+            switch (control.Condition)
+            {
+            case RuntimeControlCondition::Equal:
+                active = std::abs(value - a) <= tolerance + (control.ConditionActive ? h : 0.0f);
+                break;
+            case RuntimeControlCondition::NotEqual:
+                active = std::abs(value - a) > std::max(tolerance - (control.ConditionActive ? h : 0.0f), 0.000001f);
+                break;
+            case RuntimeControlCondition::Less:
+                active = control.ConditionActive ? value < a + h : value < a;
+                break;
+            case RuntimeControlCondition::LessEqual:
+                active = control.ConditionActive ? value <= a + h : value <= a;
+                break;
+            case RuntimeControlCondition::Greater:
+                active = control.ConditionActive ? value > a - h : value > a;
+                break;
+            case RuntimeControlCondition::GreaterEqual:
+                active = control.ConditionActive ? value >= a - h : value >= a;
+                break;
+            case RuntimeControlCondition::Between:
+                active = control.ConditionActive ? value >= lo - h && value <= hi + h : value >= lo && value <= hi;
+                break;
+            case RuntimeControlCondition::Outside:
+                active = control.ConditionActive ? value < lo + h || value > hi - h : value < lo || value > hi;
+                break;
+            case RuntimeControlCondition::RisingEdge:
+                active = control.PreviousInitialized && control.PreviousValue < a && value >= a;
+                break;
+            case RuntimeControlCondition::FallingEdge:
+                active = control.PreviousInitialized && control.PreviousValue > a && value <= a;
+                break;
+            }
+
+            control.PreviousValue = value;
+            control.PreviousInitialized = true;
+            control.ConditionActive = control.Condition == RuntimeControlCondition::RisingEdge || control.Condition == RuntimeControlCondition::FallingEdge ? false : active;
+            return active;
+        }
+
+        bool bindingDependsOn(const std::uint64_t startId, const std::uint64_t wantedId, std::set<std::uint64_t>& visited) const
+        {
+            if (startId == wantedId) return true;
+            if (!visited.insert(startId).second) return false;
+            const RuntimeBinding* binding = findBinding(startId);
+            if (!binding) return false;
+            for (const auto& link : binding->ParameterLinks)
+                if (link.Enabled && link.BindingId != 0 && bindingDependsOn(link.BindingId, wantedId, visited)) return true;
+            return false;
+        }
+
+        void validateParameterLinks()
+        {
+            for (auto& binding : _bindings)
+            {
+                for (auto& link : binding.ParameterLinks)
+                {
+                    if (!link.Enabled || link.BindingId == 0) continue;
+                    std::set<std::uint64_t> visited;
+                    if (!findBinding(link.BindingId) || link.BindingId == binding.Id || bindingDependsOn(link.BindingId, binding.Id, visited)) link = {};
+                }
+            }
+        }
+
+        bool readSource(RuntimeBinding& binding, const RuntimeSignalContext& context, float& output)
+        {
+            const auto signal = std::max(binding.Signal, 0);
+            switch (binding.Source)
+            {
+            case RuntimeSourceKind::Constant:
+                output = binding.Constant;
+                return true;
+            case RuntimeSourceKind::Time:
+                if (signal == 1) output = std::sin(static_cast<float>(context.Time));
+                else if (signal == 2) output = std::cos(static_cast<float>(context.Time));
+                else if (signal == 3) output = static_cast<float>(context.Time - std::floor(context.Time));
+                else output = static_cast<float>(context.Time);
+                return true;
+            case RuntimeSourceKind::Audio:
+                if (signal == 1) output = context.Audio.Peak;
+                else if (signal == 2) output = context.SmoothedBands ? std::accumulate(context.SmoothedBands->begin(), context.SmoothedBands->begin() + 4, 0.0f) / 4.0f : 0.0f;
+                else if (signal == 3) output = context.SmoothedBands ? std::accumulate(context.SmoothedBands->begin() + 4, context.SmoothedBands->begin() + 11, 0.0f) / 7.0f : 0.0f;
+                else if (signal == 4) output = context.SmoothedBands ? std::accumulate(context.SmoothedBands->begin() + 11, context.SmoothedBands->end(), 0.0f) / 5.0f : 0.0f;
+                else if (signal == 5) output = context.EffectiveGain;
+                else if (signal == 6) output = context.GainCorrection;
+                else output = context.Audio.Rms;
+                return true;
+            case RuntimeSourceKind::Media:
+            {
+                const Color32 color = context.MediaColor.value_or(Color32{0, 0, 0});
+                if (signal == 1) output = color.R / 255.0f;
+                else if (signal == 2) output = color.G / 255.0f;
+                else if (signal == 3) output = color.B / 255.0f;
+                else if (signal == 4) output = context.MediaPlaying ? 1.0f : 0.0f;
+                else output = context.MediaAmount;
+                return true;
+            }
+            case RuntimeSourceKind::Keyboard:
+                if (signal == 0) output = context.Keys.CapsLockActive ? 1.0f : 0.0f;
+                else if (signal == 1) output = context.Keys.ScrollLockActive ? 1.0f : 0.0f;
+                else if (signal == 2) output = std::accumulate(context.Keys.Down.begin(), context.Keys.Down.end(), 0.0f) / static_cast<float>(MatrixSize);
+                else
+                {
+                    float pulse = 0.0f;
+                    for (const auto& event : context.Keys.Events) if (event.Valid > 0.5f) pulse = std::max(pulse, std::exp(-std::max(static_cast<float>(context.Time) - event.Time, 0.0f) * 6.0f));
+                    output = pulse;
+                }
+                return true;
+            case RuntimeSourceKind::RPC:
+                if (!context.HasPerformance || context.Performance.CoreClock == 0) { binding.Error = "no firmware performance data"; return false; }
+                if (signal == 1) output = context.Performance.AverageScanPeriodTicks ? static_cast<float>(context.Performance.CoreClock) / context.Performance.AverageScanPeriodTicks : 0.0f;
+                else if (signal == 2) output = (context.Performance.BeginScanTicks + context.Performance.ScanTicks + context.Performance.EndScanTicks) * 1'000'000.0f / context.Performance.CoreClock;
+                else if (signal == 3) output = context.Performance.RGBTicks * 1'000'000.0f / context.Performance.CoreClock;
+                else if (signal == 4) output = context.Performance.AverageScanPeriodTicks * 1'000'000.0f / context.Performance.CoreClock;
+                else
+                {
+                    const std::uint32_t total = context.Performance.BeginScanTicks + context.Performance.ScanTicks + context.Performance.EndScanTicks + context.Performance.StateUpdateTicks + context.Performance.HIDTicks;
+                    output = context.Performance.AverageScanPeriodTicks ? total * 100.0f / context.Performance.AverageScanPeriodTicks : 0.0f;
+                }
+                return true;
+            case RuntimeSourceKind::Host:
+                output = context.AppCpu;
+                return true;
+            case RuntimeSourceKind::USB:
+                if (signal == 0) output = context.USBConnected ? 1.0f : 0.0f;
+                else if (signal == 1) output = static_cast<float>(context.USBRates.TxKiB);
+                else if (signal == 2) output = static_cast<float>(context.USBRates.RxKiB);
+                else if (signal == 3) output = static_cast<float>(context.USBRates.TxTransfers);
+                else if (signal == 4) output = static_cast<float>(context.USBRates.RxTransfers);
+                else output = static_cast<float>(context.USB.TxErrors + context.USB.RxErrors);
+                return true;
+            case RuntimeSourceKind::RGB:
+            {
+                if (!context.Framebuffer) { binding.Error = "no framebuffer"; return false; }
+                float r = 0.0f, g = 0.0f, b = 0.0f, lit = 0.0f;
+                for (std::size_t row = 0; row < ActiveProbeRows; ++row)
+                    for (std::size_t column = 0; column < Columns; ++column)
+                    {
+                        const auto& color = (*context.Framebuffer)[row * Columns + column];
+                        r += color.R; g += color.G; b += color.B;
+                        if (color.R || color.G || color.B) lit += 1.0f;
+                    }
+                constexpr float Count = static_cast<float>(ActiveProbeRows * Columns);
+                r /= 255.0f * Count; g /= 255.0f * Count; b /= 255.0f * Count;
+                if (signal == 1) output = lit / Count;
+                else if (signal == 2) output = r;
+                else if (signal == 3) output = g;
+                else if (signal == 4) output = b;
+                else output = r * 0.2126f + g * 0.7152f + b * 0.0722f;
+                return true;
+            }
+            case RuntimeSourceKind::NativeProcess:
+                return readNativeBinding(binding, output);
+            case RuntimeSourceKind::BindingStatus:
+            {
+                RuntimeBinding* target = findBinding(binding.StatusBindingId);
+                if (!target || target == &binding) { binding.Error = "status binding target is missing"; return false; }
+                if (signal == 0) output = target->HasValue ? 1.0f : 0.0f;
+                else if (signal == 1) output = target->LastReadSucceeded ? 1.0f : 0.0f;
+                else if (signal == 2) output = target->Enabled && target->RuntimeEnabled ? 1.0f : 0.0f;
+                else if (signal == 3) output = target->Source == RuntimeSourceKind::NativeProcess && runtimeProcessIsAlive(static_cast<pid_t>(target->ProcessId)) ? 1.0f : 0.0f;
+                else if (signal == 4)
+                {
+                    if (target->Source != RuntimeSourceKind::NativeProcess) output = target->HasValue ? 1.0f : 0.0f;
+                    else if (target->AddressMode == ProcessAddressMode::Signature) output = target->SignatureResolvedAddress != 0 ? 1.0f : 0.0f;
+                    else output = target->LastReadSucceeded ? 1.0f : 0.0f;
+                }
+                else if (signal == 5) output = target->Source == RuntimeSourceKind::NativeProcess && target->AddressMode == ProcessAddressMode::Signature && target->SignatureResolve == SignatureResultMode::RegisterRelativeCapture && target->SignatureResolvedAddress != 0 ? 1.0f : 0.0f;
+                else output = target->Error.empty() ? 0.0f : 1.0f;
+                binding.Error.clear();
+                return true;
+            }
+            }
+            return false;
+        }
+
+        std::filesystem::path _path = runtimeBindingsPath();
+        std::vector<RuntimeBinding> _bindings;
+        std::vector<RuntimeControlRule> _controls;
+        std::uint64_t _nextBindingId = 1;
+        std::uint64_t _nextControlId = 1;
+        std::uint64_t _revision = 0;
+        std::uint64_t _savedRevision = 0;
+        USBStatsSnapshot _lastUSB{};
+        RuntimeUSBRates _usbRates{};
+        double _rateTime = 0.0;
+    };
+
+    class RuntimeTelemetry
+    {
+    public:
+        void event(const double time, std::string category, std::string text)
+        {
+            std::lock_guard lock(_mutex);
+            _events.push_back({time, std::move(category), std::move(text)});
+            while (_events.size() > 512) _events.pop_front();
+        }
+
+        void packet(const double time, const bool tx, const PacketHeader& header, const std::span<const std::byte> bytes)
+        {
+            std::lock_guard lock(_mutex);
+            RuntimePacketRecord record;
+            record.Time = time;
+            record.Tx = tx;
+            record.Type = static_cast<std::uint16_t>(header.Type);
+            record.Version = header.Version;
+            record.PacketId = header.PacketId;
+            record.ResponseFor = header.ResponseFor;
+            record.PayloadLength = header.PayloadLength;
+            record.Bytes = bytes.size();
+            record.CapturedBytes = std::min(bytes.size(), record.Data.size());
+            std::copy_n(bytes.begin(), record.CapturedBytes, record.Data.begin());
+            _packets.push_back(record);
+            while (_packets.size() > 512) _packets.pop_front();
+        }
+
+        std::deque<RuntimeTimelineEvent> events() const { std::lock_guard lock(_mutex); return _events; }
+        std::deque<RuntimePacketRecord> packets() const { std::lock_guard lock(_mutex); return _packets; }
+        void clearEvents() { std::lock_guard lock(_mutex); _events.clear(); }
+        void clearPackets() { std::lock_guard lock(_mutex); _packets.clear(); }
+
+    private:
+        mutable std::mutex _mutex;
+        std::deque<RuntimeTimelineEvent> _events;
+        std::deque<RuntimePacketRecord> _packets;
+    };
+
+    static void mapSpectrumToColumns(const std::span<const float> analysisBands, std::array<float, Columns>& bands, const VisualizerSettings& settings, const float overallGain)
     {
         if (analysisBands.empty())
         {
@@ -4352,7 +7655,7 @@ void main()
         {
             int sourceBand;
             float level;
-            float gain = settings.ColumnGain[column] * settings.OverallGain;
+            float gain = settings.ColumnGain[column] * overallGain;
             if (column < bassColumns)
             {
                 const float t = column / static_cast<float>(bassColumns - 1);
@@ -4445,7 +7748,38 @@ void main()
         float Height;
     };
 
-    static void drawFramebufferPreview(const std::array<Color32, MatrixSize>& framebuffer, const float widthFraction = 0.55f, const float maxWidth = 532.0f)
+    static Color32 interpolatePreviewColor(const std::array<Color32, MatrixSize>& framebuffer, const std::uint8_t row, const std::uint8_t column, const float interpolation) noexcept
+    {
+        const Color32 center = framebuffer[static_cast<std::size_t>(row) * Columns + column];
+        const float amount = std::clamp(interpolation, 0.0f, 1.0f);
+        if (amount <= 0.0001f) return center;
+
+        float r = 0.0f, g = 0.0f, b = 0.0f, totalWeight = 0.0f;
+        for (int y = -1; y <= 1; ++y)
+        {
+            const int sampleRow = static_cast<int>(row) + y;
+            if (sampleRow < 0 || sampleRow >= static_cast<int>(ActiveProbeRows)) continue;
+            for (int x = -1; x <= 1; ++x)
+            {
+                const int sampleColumn = static_cast<int>(column) + x;
+                if (sampleColumn < 0 || sampleColumn >= static_cast<int>(Columns)) continue;
+                const float weight = (x == 0 ? 2.0f : 1.0f) * (y == 0 ? 2.0f : 1.0f);
+                const Color32 sample = framebuffer[static_cast<std::size_t>(sampleRow) * Columns + static_cast<std::size_t>(sampleColumn)];
+                r += sample.R * weight;
+                g += sample.G * weight;
+                b += sample.B * weight;
+                totalWeight += weight;
+            }
+        }
+        if (totalWeight <= 0.0f) return center;
+        const auto mixChannel = [amount, totalWeight](const std::uint8_t source, const float accumulated) -> std::uint8_t
+        {
+            return static_cast<std::uint8_t>(std::lround(std::clamp(source + (accumulated / totalWeight - source) * amount, 0.0f, 255.0f)));
+        };
+        return {mixChannel(center.R, r), mixChannel(center.G, g), mixChannel(center.B, b)};
+    }
+
+    static void drawFramebufferPreview(const std::array<Color32, MatrixSize>& framebuffer, const float widthFraction = 0.55f, const float maxWidth = 532.0f, const float interpolation = 0.0f)
     {
         // Approximate physical K552 ISO/TKL silhouette. Framebuffer rows 0..5 are the
         // six visible keyboard rows; row 6 is unused. Wide physical keys reuse the
@@ -4505,10 +7839,10 @@ void main()
 
         for (const auto& key : Keys)
         {
-            const auto& color = framebuffer[key.Row * Columns + key.Column];
-            // Keep actual RGB values unchanged for lit keys. Pure black framebuffer cells
-            // get a charcoal preview fill so the physical keyboard silhouette remains visible.
-            const ImU32 previewColor = color.R == 0 && color.G == 0 && color.B == 0 ? IM_COL32(22, 22, 22, 255) : IM_COL32(color.R, color.G, color.B, 255);
+            const Color32 color = interpolatePreviewColor(framebuffer, key.Row, key.Column, interpolation);
+            // Preview interpolation is visual-only: it approximates light bleed/color mixing between
+            // neighboring switches without touching the framebuffer actually sent to the keyboard.
+            const ImU32 previewColor = color.R == 0 && color.G == 0 && color.B == 0 ? IM_COL32(24, 24, 24, 255) : IM_COL32(color.R, color.G, color.B, 255);
             const ImVec2 min(origin.x + key.X * unit + gap, origin.y + key.Y * unit + gap);
             const ImVec2 max(origin.x + (key.X + key.Width) * unit - gap, origin.y + (key.Y + key.Height) * unit - gap);
             drawList->AddRectFilled(min, max, previewColor, 0.0f);
@@ -4517,7 +7851,7 @@ void main()
         ImGui::Dummy(ImVec2(LayoutWidth * unit, LayoutHeight * unit));
     }
 
-    static void drawShaderLivePanel(RawUSB& usb, SharedDeviceState& deviceState, const EvdevKeyboard& keyboardInput, const std::array<Color32, MatrixSize>& framebuffer, const float appCpuUsage, const bool scrollLockActive, const bool capsLockActive, const VisualizerSettings& settings)
+    static void drawShaderLivePanel(RawUSB& usb, SharedDeviceState& deviceState, const EvdevKeyboard& keyboardInput, const std::array<Color32, MatrixSize>& framebuffer, const float appCpuUsage, const bool scrollLockActive, const bool capsLockActive, VisualizerSettings& settings)
     {
         PerformanceSnapshot performance{};
         bool hasPerformance = false;
@@ -4534,12 +7868,17 @@ void main()
             ImGui::TableSetupColumn("Diagnostics", ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            drawFramebufferPreview(framebuffer, 1.0f, 410.0f);
+            drawFramebufferPreview(framebuffer, 1.0f, 410.0f, settings.LiveOutputInterpolation);
+            ImGui::SetNextItemWidth(410.0f);
+            ImGui::SliderFloat("Live output interpolation##ShaderLive", &settings.LiveOutputInterpolation, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Preview-only neighboring-key color mixing; USB framebuffer data is unchanged.");
 
             ImGui::TableNextColumn();
             ImGui::Text("Current shader: %s", settings.ShaderPresetIndex == 0 ? "Custom / current" : ShaderPresets[static_cast<std::size_t>(settings.ShaderPresetIndex - 1)].Name.c_str());
+            ImGui::Text("Firmware: %s   QRPC: v%u", FirmwareVersion, static_cast<unsigned>(ProtocolVersion));
             ImGui::Text("VID:PID: %04X:%04X", VendorId, ProductId);
-            ImGui::Text("Global brightness: %.0f%%", settings.GlobalBrightness * 100.0f);
+            ImGui::Text("Global brightness: %.0f%%   Preview interpolation: %.0f%%", settings.GlobalBrightness * 100.0f, settings.LiveOutputInterpolation * 100.0f);
+            ImGui::Text("Framebuffer: %zux%zu (%zu cells, %zu active RGB rows)", Columns, Rows, MatrixSize, ActiveProbeRows);
             ImGui::TextUnformatted("Device");
             ImGui::SameLine();
             ImGui::TextDisabled("%s", usb.isConnected() ? (usb.deviceName().empty() ? "Quartz K552X" : usb.deviceName().c_str()) : "Disconnected");
@@ -4650,6 +7989,998 @@ void main()
             }
             ImGui::EndTable();
         }
+    }
+
+
+    static const char* packetTypeLabel(const std::uint16_t type)
+    {
+        if (type == static_cast<std::uint16_t>(PacketType::FramebufferSet)) return "FramebufferSet";
+        if (type == static_cast<std::uint16_t>(PacketType::PerformanceRequest)) return "PerformanceRequest";
+        if (type == static_cast<std::uint16_t>(PacketType::PerformanceResponse)) return "PerformanceResponse";
+        if (type == static_cast<std::uint16_t>(PacketType::MatrixTimingProbeResult)) return "MatrixTimingProbeResult";
+        return "Other";
+    }
+
+    static void selectRuntimeProcess(RuntimeBinding& binding, const RuntimeProcessInfo& process)
+    {
+        binding.ProcessId = static_cast<int>(process.Pid);
+        std::snprintf(binding.ProcessName, sizeof(binding.ProcessName), "%s", process.Name.c_str());
+        binding.NextProcessSearch = 0.0;
+        captureRuntimeRebindPattern(binding, process);
+    }
+
+    static bool drawRuntimeTargetSelector(RuntimeBinding& binding, ShaderFramebuffer& shaderFramebuffer)
+    {
+        bool changed = false;
+        ImGui::SetNextItemWidth(300.0f);
+        if (ImGui::BeginCombo("Uniform id", binding.TargetId[0] ? binding.TargetId : "<select material uniform>"))
+        {
+            for (const auto& parameter : shaderFramebuffer.materialParameters())
+            {
+                const bool selected = parameter.PersistenceKey == binding.TargetId;
+                const std::string label = parameter.Label + "  [" + parameter.PersistenceKey + "]";
+                if (ImGui::Selectable(label.c_str(), selected))
+                {
+                    std::snprintf(binding.TargetId, sizeof(binding.TargetId), "%s", parameter.PersistenceKey.c_str());
+                    binding.TargetComponent = std::clamp(binding.TargetComponent, 0, std::max(parameter.Components - 1, 0));
+                    changed = true;
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (const auto* parameter = shaderFramebuffer.findMaterialParameter(binding.TargetId))
+        {
+            if (parameter->Components > 1)
+            {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(100.0f);
+                changed |= ImGui::SliderInt("Component", &binding.TargetComponent, 0, parameter->Components - 1);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s / %s", parameter->Label.c_str(), parameter->Integer ? (parameter->Boolean ? "bool" : "int") : "float");
+        }
+        else
+            ImGui::TextDisabled("Current shader does not expose this material id; the binding will wait.");
+        return changed;
+    }
+
+    static bool drawRuntimeProcessSelector(RuntimeBinding& binding, std::vector<RuntimeProcessInfo>& processes)
+    {
+        bool changed = false;
+        if (ImGui::SmallButton("Refresh processes")) processes = enumerateRuntimeProcesses();
+        ImGui::SameLine();
+        const std::string loweredSearch = runtimeLower(binding.ProcessSearch);
+        const std::size_t matching = static_cast<std::size_t>(std::ranges::count_if(processes, [&](const RuntimeProcessInfo& process) { return runtimeProcessMatchesSearch(process, loweredSearch); }));
+        ImGui::TextDisabled("%zu processes / %zu matching", processes.size(), matching);
+
+        const auto selectedIt = std::ranges::find_if(processes, [&](const RuntimeProcessInfo& process) { return process.Pid == binding.ProcessId; });
+        const std::string current = selectedIt != processes.end() ? std::to_string(selectedIt->Pid) + "  " + runtimeProcessDisplayTitle(*selectedIt) : binding.ProcessId > 0 ? std::to_string(binding.ProcessId) + "  " + binding.ProcessName : "<select process>";
+        ImGui::SetNextItemWidth(690.0f);
+        if (ImGui::BeginCombo("Process", current.c_str(), ImGuiComboFlags_HeightLargest))
+        {
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::InputTextWithHint("##ProcessSearch", "Find PID, process name, title/argv[0], executable path or command line...", binding.ProcessSearch, sizeof(binding.ProcessSearch));
+            ImGui::Separator();
+            if (ImGui::BeginTable("ProcessPicker", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp, ImVec2(780.0f, 330.0f)))
+            {
+                ImGui::TableSetupColumn("Process / title", ImGuiTableColumnFlags_WidthStretch, 0.42f);
+                ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_WidthFixed, 72.0f);
+                ImGui::TableSetupColumn("Executable / command", ImGuiTableColumnFlags_WidthStretch, 0.58f);
+                ImGui::TableHeadersRow();
+                for (const auto& process : processes)
+                {
+                    if (!runtimeProcessMatchesSearch(process, loweredSearch)) continue;
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    const std::string display = runtimeProcessDisplayTitle(process) + "##Process" + std::to_string(process.Pid);
+                    if (ImGui::Selectable(display.c_str(), process.Pid == binding.ProcessId))
+                    {
+                        selectRuntimeProcess(binding, process);
+                        changed = true;
+                    }
+                    if (ImGui::IsItemHovered())
+                    {
+                        ImGui::BeginTooltip();
+                        ImGui::Text("PID: %d", static_cast<int>(process.Pid));
+                        ImGui::Text("Name: %s", process.Name.c_str());
+                        ImGui::TextWrapped("Title / argv[0]: %s", process.Title.c_str());
+                        ImGui::TextWrapped("Executable: %s", process.Exe.c_str());
+                        ImGui::TextWrapped("Command line: %s", process.CommandLine.c_str());
+                        ImGui::EndTooltip();
+                    }
+                    ImGui::TableNextColumn(); ImGui::Text("%d", static_cast<int>(process.Pid));
+                    ImGui::TableNextColumn();
+                    if (!process.Exe.empty()) ImGui::TextUnformatted(process.Exe.c_str());
+                    if (!process.CommandLine.empty() && process.CommandLine != process.Exe)
+                    {
+                        if (!process.Exe.empty()) ImGui::TextDisabled("%s", process.CommandLine.c_str());
+                        else ImGui::TextUnformatted(process.CommandLine.c_str());
+                    }
+                }
+                ImGui::EndTable();
+            }
+            if (matching == 0) ImGui::TextDisabled("No process matches '%s'.", binding.ProcessSearch);
+            ImGui::EndCombo();
+        }
+
+        changed |= ImGui::Checkbox("Auto rebind when process restarts", &binding.AutoReattach);
+        if (binding.AutoReattach)
+        {
+            int mode = static_cast<int>(binding.RebindMode);
+            ImGui::SetNextItemWidth(300.0f);
+            if (ImGui::BeginCombo("Rebind using", runtimeRebindModeName(binding.RebindMode)))
+            {
+                for (int i = 0; i <= static_cast<int>(ProcessRebindMode::AnyRegex); ++i)
+                {
+                    const auto candidate = static_cast<ProcessRebindMode>(i);
+                    if (ImGui::Selectable(runtimeRebindModeName(candidate), mode == i))
+                    {
+                        binding.RebindMode = candidate;
+                        mode = i;
+                        const auto selected = std::ranges::find_if(processes, [&](const RuntimeProcessInfo& process) { return process.Pid == binding.ProcessId; });
+                        if (selected != processes.end()) captureRuntimeRebindPattern(binding, *selected);
+                        changed = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SetNextItemWidth(690.0f);
+            changed |= ImGui::InputText(runtimeRebindModeIsRegex(binding.RebindMode) ? "Rebind regex" : "Rebind value", binding.ProcessRebindPattern, sizeof(binding.ProcessRebindPattern));
+            if (runtimeRebindModeIsRegex(binding.RebindMode) && binding.ProcessRebindPattern[0])
+            {
+                try { [[maybe_unused]] const std::regex test(binding.ProcessRebindPattern, std::regex::ECMAScript | std::regex::icase); ImGui::SameLine(); ImGui::TextDisabled("regex OK"); }
+                catch (const std::regex_error& e) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1.0f, 0.48f, 0.48f, 1.0f), "invalid regex: %s", e.what()); }
+            }
+            ImGui::TextDisabled("If the PID disappears Quartz searches about once per second and rebinds to the newest matching process.");
+        }
+        return changed;
+    }
+
+    static const char* runtimeParameterSlotName(const RuntimeParameterSlot slot) noexcept
+    {
+        switch (slot)
+        {
+        case RuntimeParameterSlot::Normalize: return "Normalize";
+        case RuntimeParameterSlot::InputMin: return "Input min";
+        case RuntimeParameterSlot::InputMax: return "Input max";
+        case RuntimeParameterSlot::Invert: return "Invert";
+        case RuntimeParameterSlot::Scale: return "Scale";
+        case RuntimeParameterSlot::Offset: return "Offset";
+        case RuntimeParameterSlot::Clamp: return "Clamp";
+        case RuntimeParameterSlot::OutputMin: return "Output min";
+        case RuntimeParameterSlot::OutputMax: return "Output max";
+        case RuntimeParameterSlot::SmoothingHz: return "Smoothing";
+        case RuntimeParameterSlot::UpdateHz: return "Update rate";
+        case RuntimeParameterSlot::Count: break;
+        }
+        return "Parameter";
+    }
+
+    static bool drawRuntimeParameterLink(RuntimeBindingEngine& engine, RuntimeBinding& owner, const RuntimeParameterSlot slot)
+    {
+        bool changed = false;
+        auto& link = owner.ParameterLinks[static_cast<std::size_t>(slot)];
+        std::string preview = "Local";
+        if (link.Enabled)
+        {
+            if (const auto* source = engine.findBinding(link.BindingId))
+            {
+                preview = source->Name[0] ? std::string(source->Name) : ("Binding " + std::to_string(source->Id));
+                if (source->HasValue)
+                {
+                    char value[48];
+                    std::snprintf(value, sizeof(value), " = %.4g", source->Value);
+                    preview += value;
+                }
+            }
+            else preview = "Missing binding";
+        }
+        ImGui::PushID(static_cast<int>(slot));
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::BeginCombo("##ParameterSource", preview.c_str()))
+        {
+            if (ImGui::Selectable("Local value", !link.Enabled))
+            {
+                engine.setParameterLink(owner, slot, 0);
+                changed = true;
+            }
+            for (const auto& candidate : engine.bindings())
+            {
+                if (candidate.Id == owner.Id) continue;
+                const bool selected = link.Enabled && link.BindingId == candidate.Id;
+                const bool allowed = selected || engine.canParameterLink(owner.Id, candidate.Id);
+                if (!allowed) ImGui::BeginDisabled();
+                std::string label = std::string(candidate.Name[0] ? candidate.Name : "Binding") + "  [#" + std::to_string(candidate.Id) + "]";
+                if (ImGui::Selectable(label.c_str(), selected) && allowed)
+                {
+                    engine.setParameterLink(owner, slot, candidate.Id);
+                    changed = true;
+                }
+                if (!allowed && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Blocked because this dependency would create a circular binding loop.");
+                if (!allowed) ImGui::EndDisabled();
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Use another binding's output as %s. Local value is used until the linked binding has produced a value.", runtimeParameterSlotName(slot));
+        ImGui::PopID();
+        return changed;
+    }
+
+    static bool drawRuntimeLinkedFloat(RuntimeBindingEngine& engine, RuntimeBinding& binding, const RuntimeParameterSlot slot, const char* label, float& value, const float speed = 0.01f, const char* format = "%.3f")
+    {
+        bool changed = false;
+        ImGui::SetNextItemWidth(180.0f);
+        changed |= ImGui::DragFloat(label, &value, speed, 0.0f, 0.0f, format);
+        ImGui::SameLine();
+        changed |= drawRuntimeParameterLink(engine, binding, slot);
+        return changed;
+    }
+
+    static bool drawRuntimeLinkedBool(RuntimeBindingEngine& engine, RuntimeBinding& binding, const RuntimeParameterSlot slot, const char* label, bool& value)
+    {
+        bool changed = ImGui::Checkbox(label, &value);
+        ImGui::SameLine();
+        changed |= drawRuntimeParameterLink(engine, binding, slot);
+        return changed;
+    }
+
+    static bool drawRuntimeBinding(RuntimeBindingEngine& engine, ShaderFramebuffer& shaderFramebuffer, RuntimeBinding& binding, const std::size_t index, bool& erase)
+    {
+        bool changed = false;
+        ImGui::PushID("RuntimeBinding");
+        ImGui::PushID(static_cast<int>(binding.Id & 0x7fffffffULL));
+        const std::string bindingHeader = std::string(binding.Name[0] ? binding.Name : "Binding") + "###RuntimeBinding" + std::to_string(binding.Id);
+        if (!ImGui::CollapsingHeader(bindingHeader.c_str()))
+        {
+            ImGui::PopID();
+            ImGui::PopID();
+            return false;
+        }
+        changed |= ImGui::Checkbox("Enabled", &binding.Enabled);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remove")) erase = true;
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(220.0f);
+        changed |= ImGui::InputText("Name", binding.Name, sizeof(binding.Name));
+
+        int source = static_cast<int>(binding.Source);
+        ImGui::SetNextItemWidth(250.0f);
+        if (ImGui::BeginCombo("Source", runtimeSourceName(binding.Source)))
+        {
+            for (int i = 0; i <= static_cast<int>(RuntimeSourceKind::BindingStatus); ++i)
+            {
+                const auto candidate = static_cast<RuntimeSourceKind>(i);
+                if (ImGui::Selectable(runtimeSourceName(candidate), i == source))
+                {
+                    binding.Source = candidate;
+                    binding.Signal = 0;
+                    source = i;
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        const auto signals = runtimeSignalNames(binding.Source);
+        binding.Signal = std::clamp(binding.Signal, 0, std::max(static_cast<int>(signals.size()) - 1, 0));
+        if (signals.size() > 1)
+        {
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::BeginCombo("Signal", signals[static_cast<std::size_t>(binding.Signal)].data()))
+            {
+                for (int i = 0; i < static_cast<int>(signals.size()); ++i)
+                    if (ImGui::Selectable(signals[static_cast<std::size_t>(i)].data(), binding.Signal == i)) { binding.Signal = i; changed = true; }
+                ImGui::EndCombo();
+            }
+        }
+
+        if (binding.Source == RuntimeSourceKind::Constant)
+            changed |= ImGui::DragFloat("Constant value", &binding.Constant, 0.01f);
+
+        static std::vector<RuntimeProcessInfo> processes;
+        if (binding.Source == RuntimeSourceKind::NativeProcess && processes.empty())
+            processes = enumerateRuntimeProcesses();
+
+        if (binding.Source == RuntimeSourceKind::NativeProcess)
+        {
+            ImGui::SeparatorText("Native process memory");
+            changed |= drawRuntimeProcessSelector(binding, processes);
+            static std::vector<RuntimeProcessModule> modules;
+            static int modulePid = -1;
+            if (ImGui::SmallButton("Refresh modules") || modulePid != binding.ProcessId)
+            {
+                modules = binding.ProcessId > 0 ? enumerateRuntimeModules(static_cast<pid_t>(binding.ProcessId)) : std::vector<RuntimeProcessModule>{};
+                modulePid = binding.ProcessId;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%zu mapped modules", modules.size());
+            ImGui::SetNextItemWidth(410.0f);
+            const char* noModuleLabel = binding.AddressMode == ProcessAddressMode::Signature ? "<all mappings>" : "<absolute address>";
+            if (ImGui::BeginCombo("Module / base", binding.Module[0] ? binding.Module : noModuleLabel))
+            {
+                if (ImGui::Selectable(noModuleLabel, binding.Module[0] == '\0')) { binding.Module[0] = '\0'; changed = true; }
+                for (const auto& module : modules)
+                {
+                    std::ostringstream address;
+                    address << module.Name << "  0x" << std::hex << module.Base;
+                    if (ImGui::Selectable(address.str().c_str(), std::string_view(binding.Module) == module.Name))
+                    {
+                        std::snprintf(binding.Module, sizeof(binding.Module), "%s", module.Name.c_str());
+                        changed = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            static constexpr const char* AddressModes[] = {"Address / pointer chain", "IDA signature"};
+            int addressMode = static_cast<int>(binding.AddressMode);
+            ImGui::SetNextItemWidth(260.0f);
+            if (ImGui::Combo("Address source", &addressMode, AddressModes, static_cast<int>(std::size(AddressModes))))
+            {
+                binding.AddressMode = static_cast<ProcessAddressMode>(addressMode);
+                resetRuntimeSignatureScan(binding);
+                binding.SignatureConfigHash = 0;
+                changed = true;
+            }
+            if (binding.AddressMode == ProcessAddressMode::AddressChain)
+            {
+                changed |= ImGui::InputText("Address / pointer chain", binding.Address, sizeof(binding.Address));
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Examples: +0x1234   |   +0x1234 -> +0x28 -> +0x18   |   libgame.so+0x1234 -> +0x20");
+            }
+            else
+            {
+                const bool signatureChanged = ImGui::InputText("IDA signature", binding.Signature, sizeof(binding.Signature));
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("IDA-style bytes: DE AD ? BE EF ?   |   48 8B 05 ?? ?? ?? ??. Nibble wildcards such as A? and ?F are accepted.");
+                changed |= signatureChanged;
+                changed |= ImGui::Checkbox("Executable mappings only", &binding.SignatureExecutableOnly);
+                static constexpr const char* ResolveModes[] = {"Match address + offset", "x86-64 RIP-relative disp32", "Pointer stored at match + offset", "x86-64 register-relative capture"};
+                int resolveMode = static_cast<int>(binding.SignatureResolve);
+                ImGui::SetNextItemWidth(300.0f);
+                if (ImGui::Combo("Signature result", &resolveMode, ResolveModes, static_cast<int>(std::size(ResolveModes)))) { binding.SignatureResolve = static_cast<SignatureResultMode>(resolveMode); changed = true; }
+                ImGui::SetNextItemWidth(180.0f);
+                const char* resultOffsetLabel = binding.SignatureResolve == SignatureResultMode::RipRelative32 ? "Displacement offset" : binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture ? "Instruction offset" : "Result offset";
+                changed |= ImGui::InputInt(resultOffsetLabel, &binding.SignatureResultOffset);
+                if (binding.SignatureResolve == SignatureResultMode::RipRelative32)
+                {
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(140.0f);
+                    changed |= ImGui::InputInt("Instruction size", &binding.SignatureInstructionSize);
+                    binding.SignatureInstructionSize = std::max(binding.SignatureInstructionSize, 1);
+                }
+                else if (binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture)
+                {
+                    static constexpr const char* Registers[] = {"RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "RBP", "RSP", "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"};
+                    int reg = static_cast<int>(binding.SignatureRegister);
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(110.0f);
+                    if (ImGui::Combo("Base register", &reg, Registers, static_cast<int>(std::size(Registers)))) { binding.SignatureRegister = static_cast<RuntimeX64Register>(reg); changed = true; }
+                    static constexpr const char* Displacements[] = {"signed disp8", "signed disp32", "manual"};
+                    int displacementType = static_cast<int>(binding.SignatureDisplacementType);
+                    ImGui::SetNextItemWidth(180.0f);
+                    if (ImGui::Combo("Displacement", &displacementType, Displacements, static_cast<int>(std::size(Displacements)))) { binding.SignatureDisplacementType = static_cast<RuntimeDisplacementType>(displacementType); changed = true; }
+                    if (binding.SignatureDisplacementType == RuntimeDisplacementType::Manual)
+                    {
+                        ImGui::SameLine();
+                        ImGui::SetNextItemWidth(160.0f);
+                        changed |= ImGui::InputInt("Manual displacement", &binding.SignatureManualDisplacement);
+                    }
+                    else
+                    {
+                        ImGui::SameLine();
+                        ImGui::SetNextItemWidth(160.0f);
+                        changed |= ImGui::InputInt("Displacement offset", &binding.SignatureRegisterDisplacementOffset);
+                    }
+                    ImGui::SetNextItemWidth(180.0f);
+                    changed |= ImGui::DragFloat("Capture timeout", &binding.SignatureCaptureTimeoutSeconds, 0.1f, 0.1f, 120.0f, "%.1f s");
+                    ImGui::TextDisabled("A temporary hardware execution breakpoint captures the selected register when the matched instruction executes. The breakpoint is removed immediately after capture; normal reads then use process_vm_readv().");
+                }
+                ImGui::SetNextItemWidth(180.0f);
+                changed |= ImGui::DragFloat("Retry interval", &binding.SignatureRetrySeconds, 0.05f, 0.1f, 60.0f, "%.2f s");
+                changed |= ImGui::InputText("Result / pointer chain", binding.Address, sizeof(binding.Address));
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("The resolved signature address becomes the base. Use +0x0 for the result itself or chains such as +0x0 -> +0x18.");
+                if (ImGui::Button("Rescan signature"))
+                {
+                    resetRuntimeSignatureScan(binding);
+                    binding.SignatureConfigHash = 0;
+                    binding.NextUpdate = 0.0;
+                }
+                if (binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture && binding.SignatureInstructionAddress != 0 && binding.SignatureResolvedAddress == 0)
+                {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Retry register capture"))
+                    {
+                        binding.SignatureRegisterCapture.reset();
+                        binding.NextRegisterCapture = 0.0;
+                        binding.NextUpdate = 0.0;
+                    }
+                }
+                ImGui::SameLine();
+                if (binding.SignatureResolvedAddress != 0) ImGui::TextDisabled("resolved: 0x%llX", static_cast<unsigned long long>(binding.SignatureResolvedAddress));
+                else if (!binding.SignatureStatus.empty()) ImGui::TextDisabled("%s", binding.SignatureStatus.c_str());
+                if (binding.SignatureResolvedAddress == 0 && binding.SignatureProgress > 0.0f && binding.SignatureInstructionAddress == 0) ImGui::ProgressBar(binding.SignatureProgress, ImVec2(320.0f, 0.0f));
+                if (binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture)
+                {
+                    if (binding.SignatureMatchAddress != 0) ImGui::TextDisabled("Match 0x%llX   instruction 0x%llX", static_cast<unsigned long long>(binding.SignatureMatchAddress), static_cast<unsigned long long>(binding.SignatureInstructionAddress));
+                    if (binding.SignatureCapturedRegister != 0 || binding.SignatureResolvedAddress != 0) ImGui::TextDisabled("%s 0x%llX   displacement %lld", runtimeX64RegisterName(binding.SignatureRegister), static_cast<unsigned long long>(binding.SignatureCapturedRegister), static_cast<long long>(binding.SignatureCapturedDisplacement));
+                }
+                else ImGui::TextDisabled("The signature locates a stable instruction or data reference. RIP-relative mode resolves common x86-64 global references directly from the matched instruction.");
+            }
+            static constexpr const char* Types[] = {"u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "float", "double", "bool"};
+            int valueType = static_cast<int>(binding.ValueType);
+            if (ImGui::Combo("Value type", &valueType, Types, static_cast<int>(std::size(Types)))) { binding.ValueType = static_cast<ProcessValueType>(valueType); changed = true; }
+            ImGui::TextDisabled("Read-only through process_vm_readv(); ptrace_scope/permissions still apply.");
+        }
+        else if (binding.Source == RuntimeSourceKind::BindingStatus)
+        {
+            ImGui::SeparatorText("Binding status");
+            const RuntimeBinding* target = engine.findBinding(binding.StatusBindingId);
+            ImGui::SetNextItemWidth(320.0f);
+            if (ImGui::BeginCombo("Binding to inspect", target ? target->Name : "<select binding>"))
+            {
+                for (const auto& candidate : engine.bindings())
+                {
+                    if (candidate.Id == binding.Id) continue;
+                    const bool selected = candidate.Id == binding.StatusBindingId;
+                    if (ImGui::Selectable(candidate.Name, selected)) { binding.StatusBindingId = candidate.Id; changed = true; }
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::TextDisabled("Status values are normal 0/1 binding sources, so they can drive shader uniforms, parameter links, or control rules.");
+        }
+
+        ImGui::SeparatorText("Material binding");
+        changed |= ImGui::Checkbox("Write value to shader material", &binding.WriteMaterial);
+        if (binding.WriteMaterial) changed |= drawRuntimeTargetSelector(binding, shaderFramebuffer);
+        else ImGui::TextDisabled("Value-only binding: still available to parameter links, status sources and control rules.");
+
+        ImGui::SeparatorText("Transform");
+        ImGui::TextDisabled("Transform controls can use local values or the output of another binding. Circular dependencies are rejected when a link is selected and sanitized when bindings are loaded.");
+        changed |= drawRuntimeLinkedBool(engine, binding, RuntimeParameterSlot::Normalize, "Normalize input", binding.Normalize);
+        if (binding.Normalize || binding.ParameterLinks[static_cast<std::size_t>(RuntimeParameterSlot::Normalize)].Enabled)
+        {
+            changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::InputMin, "Input min", binding.InputMin);
+            changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::InputMax, "Input max", binding.InputMax);
+        }
+        changed |= drawRuntimeLinkedBool(engine, binding, RuntimeParameterSlot::Invert, "Invert", binding.Invert);
+        changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::Scale, "Scale", binding.Scale);
+        changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::Offset, "Offset", binding.Offset);
+        changed |= drawRuntimeLinkedBool(engine, binding, RuntimeParameterSlot::Clamp, "Clamp output", binding.Clamp);
+        if (binding.Clamp || binding.ParameterLinks[static_cast<std::size_t>(RuntimeParameterSlot::Clamp)].Enabled)
+        {
+            changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::OutputMin, "Output min", binding.OutputMin);
+            changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::OutputMax, "Output max", binding.OutputMax);
+        }
+        changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::SmoothingHz, "Smoothing", binding.SmoothingHz, 0.1f, "%.1f Hz");
+        changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::UpdateHz, "Update rate", binding.UpdateHz, 0.5f, "%.1f Hz");
+
+        if (binding.HasValue) ImGui::Text("Raw %.6g   ->   value %.6g", binding.RawValue, binding.Value);
+        else ImGui::TextDisabled("Waiting for first value...");
+        ImGui::SameLine();
+        ImGui::TextDisabled("read %s", binding.LastReadSucceeded ? "ok" : "not ready / failed");
+        if (!binding.Error.empty()) ImGui::TextColored(ImVec4(1.0f, 0.48f, 0.48f, 1.0f), "%s", binding.Error.c_str());
+
+        if (changed) engine.markChanged();
+        ImGui::PopID();
+        ImGui::PopID();
+        return changed;
+    }
+
+    static const char* runtimeControlConditionName(const RuntimeControlCondition condition)
+    {
+        static constexpr const char* Names[] = {"==", "!=", "<", "<=", ">", ">=", "between", "outside", "rising edge", "falling edge"};
+        return Names[std::clamp(static_cast<int>(condition), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static const char* runtimeControlTargetName(const RuntimeControlTarget target)
+    {
+        static constexpr const char* Names[] = {"Active shader", "Binding enabled", "Global brightness", "Send framebuffer", "Base color mode", "Material parameter"};
+        return Names[std::clamp(static_cast<int>(target), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static bool drawRuntimeControlMaterialTarget(RuntimeControlRule& control, ShaderFramebuffer& shaderFramebuffer)
+    {
+        bool changed = false;
+        ImGui::SetNextItemWidth(300.0f);
+        if (ImGui::BeginCombo("Uniform id##control", control.TargetId[0] ? control.TargetId : "<select material uniform>"))
+        {
+            for (const auto& parameter : shaderFramebuffer.materialParameters())
+            {
+                const bool selected = parameter.PersistenceKey == control.TargetId;
+                const std::string label = parameter.Label + "  [" + parameter.PersistenceKey + "]";
+                if (ImGui::Selectable(label.c_str(), selected))
+                {
+                    std::snprintf(control.TargetId, sizeof(control.TargetId), "%s", parameter.PersistenceKey.c_str());
+                    control.TargetComponent = std::clamp(control.TargetComponent, 0, std::max(parameter.Components - 1, 0));
+                    changed = true;
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (const auto* parameter = shaderFramebuffer.findMaterialParameter(control.TargetId); parameter && parameter->Components > 1)
+        {
+            ImGui::SameLine();
+            changed |= ImGui::SliderInt("Component##control", &control.TargetComponent, 0, parameter->Components - 1);
+        }
+        return changed;
+    }
+
+    static bool drawRuntimeControlRule(RuntimeBindingEngine& engine, ShaderFramebuffer& shaderFramebuffer, RuntimeControlRule& control, bool& erase)
+    {
+        bool changed = false;
+        ImGui::PushID("RuntimeControl");
+        ImGui::PushID(static_cast<int>(control.Id & 0x7fffffffULL));
+        const std::string header = std::string(control.Name[0] ? control.Name : "Control") + "###RuntimeControl" + std::to_string(control.Id);
+        if (!ImGui::CollapsingHeader(header.c_str())) { ImGui::PopID(); ImGui::PopID(); return false; }
+        changed |= ImGui::Checkbox("Enabled", &control.Enabled);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remove")) erase = true;
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(220.0f);
+        changed |= ImGui::InputText("Name", control.Name, sizeof(control.Name));
+
+        const RuntimeBinding* source = engine.findBinding(control.SourceBindingId);
+        ImGui::SetNextItemWidth(300.0f);
+        if (ImGui::BeginCombo("Source binding", source ? source->Name : "<select binding>"))
+        {
+            for (const auto& candidate : engine.bindings())
+            {
+                const bool selected = candidate.Id == control.SourceBindingId;
+                if (ImGui::Selectable(candidate.Name, selected)) { control.SourceBindingId = candidate.Id; changed = true; }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+
+        int condition = static_cast<int>(control.Condition);
+        ImGui::SetNextItemWidth(150.0f);
+        if (ImGui::Combo("Condition", &condition, "==\0!=\0<\0<=\0>\0>=\0between\0outside\0rising edge\0falling edge\0")) { control.Condition = static_cast<RuntimeControlCondition>(condition); changed = true; }
+        const bool twoValues = control.Condition == RuntimeControlCondition::Between || control.Condition == RuntimeControlCondition::Outside;
+        ImGui::SetNextItemWidth(150.0f);
+        changed |= ImGui::DragFloat(twoValues ? "Minimum" : "Compare value", &control.ValueA, 0.01f);
+        if (twoValues)
+        {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(150.0f);
+            changed |= ImGui::DragFloat("Maximum", &control.ValueB, 0.01f);
+        }
+        if (control.Condition == RuntimeControlCondition::Equal || control.Condition == RuntimeControlCondition::NotEqual)
+        {
+            ImGui::SetNextItemWidth(150.0f);
+            changed |= ImGui::DragFloat("Tolerance", &control.Tolerance, 0.0001f, 0.000001f, 1000.0f, "%.6f");
+        }
+        if (control.Condition != RuntimeControlCondition::RisingEdge && control.Condition != RuntimeControlCondition::FallingEdge)
+        {
+            ImGui::SetNextItemWidth(150.0f);
+            changed |= ImGui::DragFloat("Hysteresis", &control.Hysteresis, 0.001f, 0.0f, 1000.0f, "%.4f");
+        }
+
+        int target = static_cast<int>(control.Target);
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::Combo("Target", &target, "Active shader\0Binding enabled\0Global brightness\0Send framebuffer\0Base color mode\0Material parameter\0")) { control.Target = static_cast<RuntimeControlTarget>(target); changed = true; }
+        if (control.Target == RuntimeControlTarget::ActiveShader)
+        {
+            const int safeIndex = std::clamp(control.ShaderPresetIndex, 1, static_cast<int>(ShaderPresets.size()));
+            const char* preview = ShaderPresets[static_cast<std::size_t>(safeIndex - 1)].Name.c_str();
+            ImGui::SetNextItemWidth(300.0f);
+            if (ImGui::BeginCombo("Shader", preview))
+            {
+                for (std::size_t i = 0; i < ShaderPresets.size(); ++i)
+                {
+                    const bool selected = control.ShaderPresetIndex == static_cast<int>(i + 1);
+                    if (ImGui::Selectable(ShaderPresets[i].Name.c_str(), selected)) { control.ShaderPresetIndex = static_cast<int>(i + 1); changed = true; }
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SetNextItemWidth(160.0f);
+            changed |= ImGui::DragFloat("Crossfade", &control.TransitionSeconds, 0.02f, 0.0f, 10.0f, "%.2f s");
+        }
+        else if (control.Target == RuntimeControlTarget::BindingEnabled)
+        {
+            const RuntimeBinding* targetBinding = engine.findBinding(control.TargetBindingId);
+            ImGui::SetNextItemWidth(300.0f);
+            if (ImGui::BeginCombo("Target binding", targetBinding ? targetBinding->Name : "<select binding>"))
+            {
+                for (const auto& candidate : engine.bindings())
+                {
+                    if (candidate.Id == control.SourceBindingId) continue;
+                    const bool selected = candidate.Id == control.TargetBindingId;
+                    if (ImGui::Selectable(candidate.Name, selected)) { control.TargetBindingId = candidate.Id; changed = true; }
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            changed |= ImGui::Checkbox("Runtime enabled", &control.TargetBool);
+        }
+        else if (control.Target == RuntimeControlTarget::GlobalBrightness)
+        {
+            changed |= ImGui::SliderFloat("Brightness", &control.TargetValue, 0.0f, 1.0f, "%.3f");
+        }
+        else if (control.Target == RuntimeControlTarget::SendFramebuffer)
+        {
+            changed |= ImGui::Checkbox("Send framebuffer", &control.TargetBool);
+        }
+        else if (control.Target == RuntimeControlTarget::BaseColorMode)
+        {
+            int mode = std::clamp(static_cast<int>(std::lround(control.TargetValue)), 0, 2);
+            if (ImGui::Combo("Base color mode", &mode, "RGB wave\0Solid\0Shader\0")) { control.TargetValue = static_cast<float>(mode); changed = true; }
+        }
+        else if (control.Target == RuntimeControlTarget::MaterialParameter)
+        {
+            changed |= drawRuntimeControlMaterialTarget(control, shaderFramebuffer);
+            ImGui::SetNextItemWidth(180.0f);
+            changed |= ImGui::DragFloat("Target value", &control.TargetValue, 0.01f);
+        }
+
+        if (source)
+        {
+            ImGui::TextDisabled("Source %.6g   condition %s", source->Value, control.ConditionActive ? "active" : "inactive");
+        }
+        ImGui::TextDisabled("Rules are evaluated in list order; later active rules win when they target the same setting.");
+        if (changed) engine.markChanged();
+        ImGui::PopID();
+        ImGui::PopID();
+        return changed;
+    }
+
+    static void drawRuntimeBindingsPage(RuntimeBindingEngine& engine, ShaderFramebuffer& shaderFramebuffer)
+    {
+        ImGui::SeparatorText("Runtime data -> shader material");
+        ImGui::TextWrapped("Bindings produce reusable runtime values. They can drive persistent shader material ids, feed other bindings, expose native-process health/status, and act as sources for control rules.");
+        if (ImGui::Button("Add binding"))
+        {
+            engine.add();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Save bindings")) engine.save();
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", engine.path().string().c_str());
+
+        if (ImGui::CollapsingHeader("Quick bindings"))
+        {
+            auto addPreset = [&](const char* name, const RuntimeSourceKind source, const int signal, const char* target)
+            {
+                auto& binding = engine.add();
+                std::snprintf(binding.Name, sizeof(binding.Name), "%s", name);
+                binding.Source = source;
+                binding.Signal = signal;
+                std::snprintf(binding.TargetId, sizeof(binding.TargetId), "%s", target);
+                binding.Clamp = true;
+                binding.OutputMin = 0.0f;
+                binding.OutputMax = 1.0f;
+                binding.SmoothingHz = 8.0f;
+                binding.UpdateHz = source == RuntimeSourceKind::NativeProcess ? 20.0f : 60.0f;
+                return &binding;
+            };
+            if (ImGui::SmallButton("Native -> runtime.native")) addPreset("Native process value", RuntimeSourceKind::NativeProcess, 0, "runtime.native");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Status -> runtime.status")) addPreset("Binding status", RuntimeSourceKind::BindingStatus, 0, "runtime.status");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Audio -> runtime.audio")) addPreset("Audio RMS", RuntimeSourceKind::Audio, 0, "runtime.audio");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("CPU -> runtime.system"))
+            {
+                auto* binding = addPreset("Host CPU", RuntimeSourceKind::Host, 0, "runtime.system");
+                binding->Normalize = true;
+                binding->InputMin = 0.0f;
+                binding->InputMax = 100.0f;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Health tri-color setup"))
+            {
+                auto addHealthScalar = [&](const char* name, const char* target, const float value, const int component = 0)
+                {
+                    auto* binding = addPreset(name, RuntimeSourceKind::Constant, 0, target);
+                    binding->Constant = value;
+                    binding->TargetComponent = component;
+                    binding->Normalize = false;
+                    binding->Clamp = false;
+                    binding->SmoothingHz = 0.0f;
+                    return binding;
+                };
+                addHealthScalar("Health value", "health.value", 100.0f);
+                addHealthScalar("Health maximum", "health.maximum", 100.0f);
+                addHealthScalar("Healthy R", "health.color.high", 0.05f, 0);
+                addHealthScalar("Healthy G", "health.color.high", 1.00f, 1);
+                addHealthScalar("Healthy B", "health.color.high", 0.12f, 2);
+                addHealthScalar("Half health R", "health.color.mid", 1.00f, 0);
+                addHealthScalar("Half health G", "health.color.mid", 0.72f, 1);
+                addHealthScalar("Half health B", "health.color.mid", 0.02f, 2);
+                addHealthScalar("Critical R", "health.color.low", 1.00f, 0);
+                addHealthScalar("Critical G", "health.color.low", 0.02f, 1);
+                addHealthScalar("Critical B", "health.color.low", 0.01f, 2);
+            }
+            ImGui::TextDisabled("Dashboard and data shaders consume persistent material IDs. The health setup creates current/max plus green/yellow/red color bindings that can be replaced with any runtime source.");
+        }
+        if (shaderFramebuffer.materialParameters().empty()) ImGui::TextDisabled("Current shader has no reflected material parameters. Select a parameterized preset or add an active @ui uniform.");
+
+        std::optional<std::size_t> erase;
+        for (std::size_t i = 0; i < engine.bindings().size(); ++i)
+        {
+            bool shouldErase = false;
+            drawRuntimeBinding(engine, shaderFramebuffer, engine.bindings()[i], i, shouldErase);
+            if (shouldErase) erase = i;
+        }
+        if (erase) engine.erase(*erase);
+        if (engine.bindings().empty())
+        {
+            ImGui::Dummy(ImVec2(0.0f, 8.0f));
+            ImGui::TextDisabled("No bindings yet. Add one and point it at any reflected shader material id.");
+        }
+
+        ImGui::SeparatorText("Control rules");
+        ImGui::TextWrapped("Control rules consume any binding value and drive app state. Use normal comparisons/ranges with hysteresis, or edge triggers for one-shot switches. Binding-status sources make process/read/address health usable here too.");
+        if (ImGui::Button("Add control rule")) engine.addControl();
+        ImGui::SameLine();
+        ImGui::TextDisabled("Shader switches can crossfade by rendering the outgoing and incoming shaders simultaneously.");
+        std::optional<std::size_t> eraseControl;
+        for (std::size_t i = 0; i < engine.controls().size(); ++i)
+        {
+            bool shouldErase = false;
+            drawRuntimeControlRule(engine, shaderFramebuffer, engine.controls()[i], shouldErase);
+            if (shouldErase) eraseControl = i;
+        }
+        if (eraseControl) engine.eraseControl(*eraseControl);
+        if (engine.controls().empty()) ImGui::TextDisabled("No control rules yet.");
+    }
+
+    static void drawQRPCInspectorPage(RuntimeTelemetry& telemetry)
+    {
+        ImGui::SeparatorText("QRPC packet inspector");
+        static int selectedNewest = 0;
+        if (ImGui::Button("Clear packets")) { telemetry.clearPackets(); selectedNewest = 0; }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Assembled QRPC packets, not raw libusb transfer boundaries. Click a packet for a captured hex view.");
+        const auto packets = telemetry.packets();
+        if (!packets.empty()) selectedNewest = std::clamp(selectedNewest, 0, static_cast<int>(packets.size()) - 1);
+        if (ImGui::BeginTable("QRPCPackets", 8, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp, ImVec2(0.0f, 330.0f)))
+        {
+            ImGui::TableSetupColumn("t");
+            ImGui::TableSetupColumn("Dir");
+            ImGui::TableSetupColumn("Type");
+            ImGui::TableSetupColumn("Packet id");
+            ImGui::TableSetupColumn("Response for");
+            ImGui::TableSetupColumn("Payload");
+            ImGui::TableSetupColumn("Packet");
+            ImGui::TableSetupColumn("Version");
+            ImGui::TableHeadersRow();
+            int newestIndex = 0;
+            for (auto it = packets.rbegin(); it != packets.rend(); ++it, ++newestIndex)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::PushID(newestIndex);
+                const bool selected = selectedNewest == newestIndex;
+                if (ImGui::Selectable("##packet", selected, ImGuiSelectableFlags_SpanAllColumns, ImVec2(0.0f, ImGui::GetTextLineHeight())))
+                    selectedNewest = newestIndex;
+                ImGui::SameLine(); ImGui::Text("%.3f", it->Time);
+                ImGui::PopID();
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(it->Tx ? "Host -> Device" : "Device -> Host");
+                ImGui::TableNextColumn(); ImGui::Text("%s (0x%04X)", packetTypeLabel(it->Type), it->Type);
+                ImGui::TableNextColumn(); ImGui::Text("%u", it->PacketId);
+                ImGui::TableNextColumn(); ImGui::Text("%u", it->ResponseFor);
+                ImGui::TableNextColumn(); ImGui::Text("%u B", it->PayloadLength);
+                ImGui::TableNextColumn(); ImGui::Text("%zu B", it->Bytes);
+                ImGui::TableNextColumn(); ImGui::Text("%u", it->Version);
+            }
+            ImGui::EndTable();
+        }
+        ImGui::Text("Buffered packets: %zu / 512", packets.size());
+        if (!packets.empty())
+        {
+            const auto& packet = packets[packets.size() - 1 - static_cast<std::size_t>(selectedNewest)];
+            ImGui::SeparatorText("Packet bytes");
+            ImGui::Text("%s %s   packet %u   %zu/%zu B captured", packet.Tx ? "TX" : "RX", packetTypeLabel(packet.Type), packet.PacketId, packet.CapturedBytes, packet.Bytes);
+            if (ImGui::BeginChild("##PacketHex", ImVec2(0.0f, 160.0f), true, ImGuiWindowFlags_HorizontalScrollbar))
+            {
+                for (std::size_t offset = 0; offset < packet.CapturedBytes; offset += 16)
+                {
+                    char line[128]{};
+                    int written = std::snprintf(line, sizeof(line), "%04zX  ", offset);
+                    for (std::size_t i = 0; i < 16; ++i)
+                    {
+                        if (offset + i < packet.CapturedBytes)
+                            written += std::snprintf(line + written, sizeof(line) - static_cast<std::size_t>(written), "%02X ", std::to_integer<unsigned>(packet.Data[offset + i]));
+                        else
+                            written += std::snprintf(line + written, sizeof(line) - static_cast<std::size_t>(written), "   ");
+                    }
+                    written += std::snprintf(line + written, sizeof(line) - static_cast<std::size_t>(written), " |");
+                    for (std::size_t i = 0; i < 16 && offset + i < packet.CapturedBytes; ++i)
+                    {
+                        const unsigned byte = std::to_integer<unsigned>(packet.Data[offset + i]);
+                        if (written + 2 < static_cast<int>(sizeof(line))) line[written++] = byte >= 32 && byte < 127 ? static_cast<char>(byte) : '.';
+                    }
+                    if (written + 2 < static_cast<int>(sizeof(line))) { line[written++] = '|'; line[written] = '\0'; }
+                    ImGui::TextUnformatted(line);
+                }
+                ImGui::EndChild();
+            }
+        }
+    }
+
+    static void drawUSBProfilerPage(RawUSB& usb, const RuntimeBindingEngine& bindings)
+    {
+        const auto stats = usb.stats();
+        const auto& rates = bindings.usbRates();
+        ImGui::SeparatorText("USB transport");
+        ImGui::Text("Device: %04X:%04X   interface %d   OUT 0x%02X   IN 0x%02X", VendorId, ProductId, RPCInterfaceNumber, RPCOutEndpoint, RPCInEndpoint);
+        ImGui::Text("State: %s   product: %s", usb.isConnected() ? "connected" : "disconnected", usb.deviceName().empty() ? "Quartz K552X" : usb.deviceName().c_str());
+        ImGui::Text("TX %.2f KiB/s  %.1f transfers/s   RX %.2f KiB/s  %.1f transfers/s", rates.TxKiB, rates.TxTransfers, rates.RxKiB, rates.RxTransfers);
+        ImGui::Text("TX total %.2f MiB / %llu transfers   RX total %.2f MiB / %llu transfers", stats.TxBytes / (1024.0 * 1024.0), static_cast<unsigned long long>(stats.TxTransfers), stats.RxBytes / (1024.0 * 1024.0), static_cast<unsigned long long>(stats.RxTransfers));
+        ImGui::Text("Transfer latency: TX %.3f ms   RX %.3f ms", stats.LastTxMilliseconds, stats.LastRxMilliseconds);
+        ImGui::Text("Errors: TX %llu   RX %llu   connects %llu   disconnects %llu", static_cast<unsigned long long>(stats.TxErrors), static_cast<unsigned long long>(stats.RxErrors), static_cast<unsigned long long>(stats.Connects), static_cast<unsigned long long>(stats.Disconnects));
+        if (usb.lastError() != LIBUSB_SUCCESS) ImGui::TextColored(ImVec4(1.0f, 0.48f, 0.48f, 1.0f), "Last libusb status: %s", libusb_error_name(usb.lastError()));
+    }
+
+    static void drawInputAnalyzerPage(const EvdevKeyboard& keyboard, const ReactiveKeyState& keys, const RuntimeInputAnalytics& analytics)
+    {
+        const float held = std::accumulate(keys.Down.begin(), keys.Down.end(), 0.0f);
+        ImGui::SeparatorText("Global keyboard input");
+        ImGui::Text("evdev: %s", keyboard.connected() ? "connected" : "disconnected");
+        ImGui::TextWrapped("%s", keyboard.status().c_str());
+        ImGui::Text("Held mapped keys: %.0f   total presses: %llu   longest press: %.3f s   Caps %s   Scroll %s", held, static_cast<unsigned long long>(analytics.TotalPresses), analytics.LongestPress, keys.CapsLockActive ? "ON" : "off", keys.ScrollLockActive ? "ON" : "off");
+
+        std::array<Color32, MatrixSize> stateFramebuffer{};
+        for (std::size_t i = 0; i < MatrixSize; ++i)
+            if (keys.Down[i] > 0.5f) stateFramebuffer[i] = {220, 220, 220};
+        ImGui::TextUnformatted("Live state");
+        drawFramebufferPreview(stateFramebuffer, 0.55f, 532.0f, 0.12f);
+
+        const auto maxPressIt = std::max_element(analytics.PressCount.begin(), analytics.PressCount.end());
+        const std::uint64_t maxPresses = maxPressIt != analytics.PressCount.end() ? *maxPressIt : 0;
+        std::array<Color32, MatrixSize> heatmap{};
+        if (maxPresses != 0)
+        {
+            for (std::size_t i = 0; i < MatrixSize; ++i)
+            {
+                const float amount = std::sqrt(static_cast<float>(analytics.PressCount[i]) / static_cast<float>(maxPresses));
+                const auto value = static_cast<std::uint8_t>(std::lround(amount * 255.0f));
+                heatmap[i] = {value, value, value};
+            }
+        }
+        ImGui::Text("Press-count heatmap   max/key %llu", static_cast<unsigned long long>(maxPresses));
+        drawFramebufferPreview(heatmap, 0.55f, 532.0f, 0.08f);
+
+        ImGui::SeparatorText("Recent mapped key events");
+        if (ImGui::BeginTable("RecentKeyEvents", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp, ImVec2(0.0f, 230.0f)))
+        {
+            ImGui::TableSetupColumn("Slot");
+            ImGui::TableSetupColumn("Row");
+            ImGui::TableSetupColumn("Column");
+            ImGui::TableSetupColumn("Age");
+            ImGui::TableSetupColumn("Presses");
+            ImGui::TableSetupColumn("Held / last");
+            ImGui::TableHeadersRow();
+            for (std::size_t i = 0; i < keys.Events.size(); ++i)
+            {
+                const auto& event = keys.Events[i];
+                if (event.Valid < 0.5f) continue;
+                const std::size_t row = static_cast<std::size_t>(std::clamp(event.Row, 0.0f, static_cast<float>(Rows - 1)));
+                const std::size_t column = static_cast<std::size_t>(std::clamp(event.Column, 0.0f, static_cast<float>(Columns - 1)));
+                const std::size_t index = row * Columns + column;
+                const double heldFor = analytics.heldDuration(index, ImGui::GetTime());
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("%zu", i);
+                ImGui::TableNextColumn(); ImGui::Text("%zu", row);
+                ImGui::TableNextColumn(); ImGui::Text("%zu", column);
+                ImGui::TableNextColumn(); ImGui::Text("%.3f s", std::max(static_cast<float>(ImGui::GetTime()) - event.Time, 0.0f));
+                ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(analytics.PressCount[index]));
+                ImGui::TableNextColumn(); ImGui::Text("%.3f s", heldFor > 0.0 ? heldFor : analytics.LastDuration[index]);
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TextDisabled("Ctrl+Alt+Shift+Q remains the global recovery shortcut when the Quartz window is hidden.");
+    }
+
+    static void drawRGBProfilerPage(const std::array<Color32, MatrixSize>& framebuffer, const VisualizerSettings& settings, const RuntimeRGBAnalytics& analytics)
+    {
+        std::array<float, ActiveProbeRows> rowLuma{};
+        float r = 0.0f, g = 0.0f, b = 0.0f, lit = 0.0f, peak = 0.0f;
+        for (std::size_t row = 0; row < ActiveProbeRows; ++row)
+        {
+            for (std::size_t column = 0; column < Columns; ++column)
+            {
+                const auto& color = framebuffer[row * Columns + column];
+                const float rf = color.R / 255.0f, gf = color.G / 255.0f, bf = color.B / 255.0f;
+                const float luma = rf * 0.2126f + gf * 0.7152f + bf * 0.0722f;
+                r += rf; g += gf; b += bf; rowLuma[row] += luma; peak = std::max(peak, std::max({rf, gf, bf}));
+                if (color.R || color.G || color.B) lit += 1.0f;
+            }
+            rowLuma[row] /= static_cast<float>(Columns);
+        }
+        constexpr float Count = static_cast<float>(ActiveProbeRows * Columns);
+        r /= Count; g /= Count; b /= Count;
+        ImGui::SeparatorText("Framebuffer / RGB profiler");
+        ImGui::Text("Output %.1f Hz   changed this frame %zu / %.0f   EMA changed %.1f cells/frame", analytics.FrameRate, analytics.ChangedCells, Count, analytics.AverageChangedCells);
+        ImGui::Text("Active cells: %.0f / %.0f (%.1f%%)   peak channel %.1f%%", lit, Count, lit / Count * 100.0f, peak * 100.0f);
+        ImGui::Text("Average RGB: %.1f%% / %.1f%% / %.1f%%   luma %.1f%%", r * 100.0f, g * 100.0f, b * 100.0f, (r * 0.2126f + g * 0.7152f + b * 0.0722f) * 100.0f);
+        ImGui::Text("Frames profiled %llu   total cell changes %llu   Global brightness %.0f%%   preview interpolation %.0f%%", static_cast<unsigned long long>(analytics.Frames), static_cast<unsigned long long>(analytics.ChangedCellsTotal), settings.GlobalBrightness * 100.0f, settings.LiveOutputInterpolation * 100.0f);
+        ImGui::PlotHistogram("Luma distribution", analytics.LumaHistogram.data(), static_cast<int>(analytics.LumaHistogram.size()), 0, nullptr, 0.0f, 1.0f, ImVec2(-1.0f, 90.0f));
+        ImGui::PlotHistogram("Per-row luma", rowLuma.data(), static_cast<int>(rowLuma.size()), 0, nullptr, 0.0f, 1.0f, ImVec2(-1.0f, 100.0f));
+        drawFramebufferPreview(framebuffer, 0.55f, 532.0f, settings.LiveOutputInterpolation);
+    }
+
+    static void drawAudioLabPage(AudioSpectrum& audio, const AudioLevelSnapshot& level, const AutoGainState& autoGain, VisualizerSettings& settings, const std::array<float, FFTSize>& analysisBands, const std::array<float, Columns>& mappedBands, const std::array<float, Columns>& smoothedBands)
+    {
+        static std::array<float, 300> rmsHistory{};
+        static std::array<float, 300> peakHistory{};
+        static double nextHistory = 0.0;
+        if (ImGui::GetTime() >= nextHistory)
+        {
+            std::move(rmsHistory.begin() + 1, rmsHistory.end(), rmsHistory.begin());
+            std::move(peakHistory.begin() + 1, peakHistory.end(), peakHistory.begin());
+            rmsHistory.back() = level.Rms;
+            peakHistory.back() = level.Peak;
+            nextHistory = ImGui::GetTime() + 1.0 / 30.0;
+        }
+
+        ImGui::SeparatorText("Audio level / normalization");
+        ImGui::Text("Capture: %s", audio.source().c_str());
+        ImGui::Text("RMS %.5f   peak %.5f", level.Rms, level.Peak);
+        ImGui::PlotLines("RMS history", rmsHistory.data(), static_cast<int>(rmsHistory.size()), 0, nullptr, 0.0f, std::max(0.25f, *std::max_element(peakHistory.begin(), peakHistory.end())), ImVec2(-1.0f, 100.0f));
+        ImGui::PlotLines("Peak history", peakHistory.data(), static_cast<int>(peakHistory.size()), 0, nullptr, 0.0f, std::max(0.25f, *std::max_element(peakHistory.begin(), peakHistory.end())), ImVec2(-1.0f, 70.0f));
+
+        ImGui::Checkbox("Enable automatic overall gain", &settings.AutomaticOverallGain);
+        if (settings.AutomaticOverallGain)
+        {
+            ImGui::SliderFloat("Baseline gain", &settings.AutoGainBaseline, 0.10f, 6.0f, "%.2fx");
+            ImGui::SliderFloat("Target long-term RMS", &settings.AutoGainTargetRms, 0.01f, 0.50f, "%.3f");
+            ImGui::SliderFloat("Adaptation speed", &settings.AutoGainAdaptation, 0.02f, 2.0f, "%.2f /s", ImGuiSliderFlags_Logarithmic);
+            ImGui::SliderFloat("Minimum correction", &settings.AutoGainMinCorrection, 0.10f, 1.0f, "%.2fx");
+            ImGui::SliderFloat("Maximum correction", &settings.AutoGainMaxCorrection, 1.0f, 8.0f, "%.2fx");
+            ImGui::SliderFloat("Silence gate", &settings.AutoGainSilenceGate, 0.0f, 0.05f, "%.4f");
+            ImGui::Text("Learned RMS %.5f   correction %.3fx   effective gain %.3fx", autoGain.LongTermRms, autoGain.Correction, autoGain.EffectiveGain);
+            ImGui::TextDisabled("The baseline is the normal gain. Long-term media loudness only applies a slow bounded correction around it; silence is ignored.");
+        }
+        else
+        {
+            ImGui::SliderFloat("Manual overall gain", &settings.OverallGain, 0.10f, 4.0f, "%.2fx");
+            ImGui::Text("Effective gain %.3fx", autoGain.EffectiveGain);
+        }
+
+        ImGui::SeparatorText("Spectrum pipeline");
+        ImGui::PlotLines("FFT / log analysis", analysisBands.data(), settings.AnalysisBandCount, 0, nullptr, 0.0f, 1.0f, ImVec2(-1.0f, 120.0f));
+        ImGui::PlotHistogram("Mapped", mappedBands.data(), static_cast<int>(Columns), 0, nullptr, 0.0f, 1.0f, ImVec2(-1.0f, 90.0f));
+        ImGui::PlotHistogram("Attack / release output", smoothedBands.data(), static_cast<int>(Columns), 0, nullptr, 0.0f, 1.0f, ImVec2(-1.0f, 90.0f));
+    }
+
+    static void drawTimelinePage(RuntimeTelemetry& telemetry)
+    {
+        if (ImGui::Button("Clear timeline")) telemetry.clearEvents();
+        ImGui::SameLine();
+        ImGui::TextDisabled("USB/media/input/runtime events");
+        const auto events = telemetry.events();
+        if (ImGui::BeginTable("RuntimeTimeline", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp, ImVec2(0.0f, 470.0f)))
+        {
+            ImGui::TableSetupColumn("t", ImGuiTableColumnFlags_WidthFixed, 85.0f);
+            ImGui::TableSetupColumn("Category", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+            ImGui::TableSetupColumn("Event", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+            for (auto it = events.rbegin(); it != events.rend(); ++it)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("%.3f", it->Time);
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(it->Category.c_str());
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(it->Text.c_str());
+            }
+            ImGui::EndTable();
+        }
+    }
+
+    static void drawFirmwarePage(const PerformanceSnapshot& performance, const bool hasPerformance, const MatrixTimingProbeResult<ActiveProbeRows>& timingProbe, const bool hasTimingProbe)
+    {
+        ImGui::SeparatorText("Firmware identity");
+        ImGui::Text("Quartz K552X firmware %s", FirmwareVersion);
+        ImGui::Text("QRPC protocol v%u   VID:PID %04X:%04X", static_cast<unsigned>(ProtocolVersion), VendorId, ProductId);
+        ImGui::Text("RPC interface %d   bulk OUT 0x%02X   bulk IN 0x%02X", RPCInterfaceNumber, RPCOutEndpoint, RPCInEndpoint);
+        ImGui::Text("Framebuffer %zux%zu logical / %zux%zu active RGB   Color32 %zu B", Columns, Rows, Columns, ActiveProbeRows, sizeof(Color32));
+        ImGui::Text("PacketHeader %zu B   framebuffer payload %zu B", sizeof(PacketHeader), sizeof(FramebufferSetPayload<MatrixSize>));
+        ImGui::SeparatorText("Live firmware telemetry");
+        if (hasPerformance) drawPerformance(performance); else ImGui::TextDisabled("Waiting for PerformanceResponse...");
+        ImGui::SeparatorText("Matrix settle probe");
+        if (hasTimingProbe) drawTimingProbe(timingProbe); else ImGui::TextDisabled("No matrix timing probe result received yet.");
     }
 
     template<typename T>
@@ -4776,7 +9107,105 @@ void main()
         return changed;
     }
 
-    static void drawShaderEditorPage(RawUSB& usb, SharedDeviceState& deviceState, const EvdevKeyboard& keyboardInput, ShaderFramebuffer& shaderFramebuffer, ShaderEditorState& shaderEditor, ViewPage& page, std::array<char, ShaderSourceCapacity>& vertexShaderSource, std::array<char, ShaderSourceCapacity>& fragmentShaderSource, std::array<char, ShaderPathCapacity>& vertexLoadPath, std::array<char, ShaderPathCapacity>& fragmentLoadPath, VisualizerSettings& settings, const std::array<Color32, MatrixSize>& framebuffer, const float appCpuUsage, const bool scrollLockActive, const bool capsLockActive)
+
+    static bool drawShaderMaterialEditor(ShaderFramebuffer& shaderFramebuffer, const float maxHeight = 150.0f)
+    {
+        auto& parameters = shaderFramebuffer.materialParameters();
+        if (parameters.empty())
+        {
+            ImGui::TextDisabled("No reflected user uniforms. Add an active uniform to GLSL, e.g. uniform float uSpeed;");
+            ImGui::TextDisabled("Optional metadata: // @ui min=0 max=4 step=0.01 default=1 label=\"Speed\"  |  use @ui color for vec3/vec4.");
+            return false;
+        }
+
+        bool changed = false;
+        const float height = std::min(maxHeight, 34.0f + static_cast<float>(parameters.size()) * ImGui::GetFrameHeightWithSpacing());
+        if (ImGui::BeginChild("##ShaderMaterialParameters", ImVec2(0.0f, height), true))
+        {
+            for (auto& parameter : parameters)
+            {
+                ImGui::PushID(parameter.Name.c_str());
+                ImGui::SetNextItemWidth(std::min(330.0f, ImGui::GetContentRegionAvail().x * 0.58f));
+                bool itemChanged = false;
+                const float minValue = parameter.HasMin ? parameter.Min : 0.0f;
+                const float maxValue = parameter.HasMax ? parameter.Max : 0.0f;
+                if (parameter.Boolean)
+                {
+                    if (parameter.Components == 1)
+                    {
+                        bool value = parameter.IntValue[0] != 0;
+                        if (ImGui::Checkbox(parameter.Label.c_str(), &value)) { parameter.IntValue[0] = value ? 1 : 0; itemChanged = true; }
+                    }
+                    else
+                    {
+                        ImGui::TextUnformatted(parameter.Label.c_str());
+                        for (int component = 0; component < parameter.Components; ++component)
+                        {
+                            if (component != 0) ImGui::SameLine();
+                            ImGui::PushID(component);
+                            bool value = parameter.IntValue[static_cast<std::size_t>(component)] != 0;
+                            const char* names[] = {"X", "Y", "Z", "W"};
+                            if (ImGui::Checkbox(names[component], &value)) { parameter.IntValue[static_cast<std::size_t>(component)] = value ? 1 : 0; itemChanged = true; }
+                            ImGui::PopID();
+                        }
+                    }
+                }
+                else if (parameter.Color)
+                {
+                    itemChanged = parameter.Components == 3
+                        ? ImGui::ColorEdit3(parameter.Label.c_str(), parameter.FloatValue.data(), ImGuiColorEditFlags_Float)
+                        : ImGui::ColorEdit4(parameter.Label.c_str(), parameter.FloatValue.data(), ImGuiColorEditFlags_Float);
+                }
+                else if (parameter.Integer)
+                {
+                    const float speed = std::max(parameter.Step, 1.0f);
+                    switch (parameter.Components)
+                    {
+                    case 1: itemChanged = ImGui::DragInt(parameter.Label.c_str(), parameter.IntValue.data(), speed, parameter.HasMin ? static_cast<int>(std::lround(minValue)) : 0, parameter.HasMax ? static_cast<int>(std::lround(maxValue)) : 0); break;
+                    case 2: itemChanged = ImGui::DragInt2(parameter.Label.c_str(), parameter.IntValue.data(), speed, parameter.HasMin ? static_cast<int>(std::lround(minValue)) : 0, parameter.HasMax ? static_cast<int>(std::lround(maxValue)) : 0); break;
+                    case 3: itemChanged = ImGui::DragInt3(parameter.Label.c_str(), parameter.IntValue.data(), speed, parameter.HasMin ? static_cast<int>(std::lround(minValue)) : 0, parameter.HasMax ? static_cast<int>(std::lround(maxValue)) : 0); break;
+                    case 4: itemChanged = ImGui::DragInt4(parameter.Label.c_str(), parameter.IntValue.data(), speed, parameter.HasMin ? static_cast<int>(std::lround(minValue)) : 0, parameter.HasMax ? static_cast<int>(std::lround(maxValue)) : 0); break;
+                    default: break;
+                    }
+                }
+                else
+                {
+                    switch (parameter.Components)
+                    {
+                    case 1: itemChanged = ImGui::DragFloat(parameter.Label.c_str(), parameter.FloatValue.data(), parameter.Step, minValue, maxValue, "%.3f"); break;
+                    case 2: itemChanged = ImGui::DragFloat2(parameter.Label.c_str(), parameter.FloatValue.data(), parameter.Step, minValue, maxValue, "%.3f"); break;
+                    case 3: itemChanged = ImGui::DragFloat3(parameter.Label.c_str(), parameter.FloatValue.data(), parameter.Step, minValue, maxValue, "%.3f"); break;
+                    case 4: itemChanged = ImGui::DragFloat4(parameter.Label.c_str(), parameter.FloatValue.data(), parameter.Step, minValue, maxValue, "%.3f"); break;
+                    default: break;
+                    }
+                }
+
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Reset"))
+                {
+                    if (parameter.Integer || parameter.Boolean) parameter.IntValue = parameter.IntDefault;
+                    else parameter.FloatValue = parameter.FloatDefault;
+                    itemChanged = true;
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", shaderUniformTypeName(parameter.Type));
+                if (ImGui::IsItemHovered())
+                {
+                    if (parameter.PersistenceKey == parameter.Name)
+                        ImGui::SetTooltip("%s", parameter.Name.c_str());
+                    else
+                        ImGui::SetTooltip("%s\\nPersistent id: %s", parameter.Name.c_str(), parameter.PersistenceKey.c_str());
+                }
+                changed |= itemChanged;
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndChild();
+        if (changed) shaderFramebuffer.markMaterialChanged();
+        return changed;
+    }
+
+    static void drawShaderEditorPage(RawUSB& usb, SharedDeviceState& deviceState, const EvdevKeyboard& keyboardInput, ShaderFramebuffer& shaderFramebuffer, ShaderTransitionState& shaderTransition, ShaderEditorState& shaderEditor, ViewPage& page, std::array<char, ShaderSourceCapacity>& vertexShaderSource, std::array<char, ShaderSourceCapacity>& fragmentShaderSource, std::array<char, ShaderPathCapacity>& vertexLoadPath, std::array<char, ShaderPathCapacity>& fragmentLoadPath, VisualizerSettings& settings, const std::array<Color32, MatrixSize>& framebuffer, const float appCpuUsage, const bool scrollLockActive, const bool capsLockActive)
     {
         initializeShaderEditors(shaderEditor, vertexShaderSource.data(), fragmentShaderSource.data());
         if (ImGui::Button("< Back"))
@@ -4842,11 +9271,7 @@ void main()
                 const bool selected = settings.ShaderPresetIndex == static_cast<int>(i + 1);
                 if (ImGui::Selectable(ShaderPresets[i].Name.c_str(), selected))
                 {
-                    settings.ShaderPresetIndex = static_cast<int>(i + 1);
-                    setShaderSource(fragmentShaderSource, ShaderPresets[i].FragmentSource);
-                    shaderEditor.Fragment.SetText(fragmentShaderSource.data());
-                    compileShaders(shaderFramebuffer, shaderEditor, vertexShaderSource, fragmentShaderSource);
-                    saveShaderSources(vertexShaderSource, fragmentShaderSource);
+                    switchShaderPreset(shaderFramebuffer, shaderTransition, shaderEditor, vertexShaderSource, fragmentShaderSource, settings, static_cast<int>(i + 1), glfwGetTime(), settings.ShaderTransitionSeconds);
                 }
                 if (selected)
                     ImGui::SetItemDefaultFocus();
@@ -4870,6 +9295,11 @@ void main()
         ImGui::ColorEdit3("##ShaderScrollColorIDE", settings.ShaderScrollLockColor.data(), ImGuiColorEditFlags_NoInputs);
         ImGui::SameLine();
         ImGui::TextDisabled("Ctrl+wheel/+/- zoom  |  Ctrl+0 reset  |  Ctrl+F find  |  Ctrl+Z/Y undo/redo");
+        if (ImGui::CollapsingHeader("Material parameters", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            drawShaderMaterialEditor(shaderFramebuffer, 120.0f);
+            ImGui::TextDisabled("OpenGL reflects active uniform names/types; @ui comments add editor hints such as ranges, defaults, labels and color pickers.");
+        }
         ImGui::Separator();
 
         if (ImGui::BeginTabBar("ShaderStages"))
@@ -4895,12 +9325,12 @@ void main()
                 if (ImGui::Button("Default##fragment"))
                 {
                     settings.ShaderPresetIndex = 1;
-                    setShaderSource(fragmentShaderSource, DefaultFragmentShaderSource);
+                    setShaderSource(fragmentShaderSource, ShaderPresets.front().FragmentSource);
                     shaderEditor.Fragment.SetText(fragmentShaderSource.data());
                     compileShaders(shaderFramebuffer, shaderEditor, vertexShaderSource, fragmentShaderSource);
                     saveShaderSources(vertexShaderSource, fragmentShaderSource);
                 }
-                const float previewReserve = 268.0f;
+                const float previewReserve = 280.0f;
                 const float editorHeight = std::max(140.0f, ImGui::GetContentRegionAvail().y - previewReserve - ImGui::GetTextLineHeightWithSpacing());
                 const bool changed = renderShaderTextEditor(shaderEditor.Fragment, "##FragmentEditor", ImVec2(-1.0f, editorHeight), shaderEditor, settings);
                 const auto fragmentCursor = shaderEditor.Fragment.GetCurrentCursorPosition();
@@ -4914,6 +9344,7 @@ void main()
                         compileShaders(shaderFramebuffer, shaderEditor, vertexShaderSource, fragmentShaderSource);
                 }
                 drawShaderLivePanel(usb, deviceState, keyboardInput, framebuffer, appCpuUsage, scrollLockActive, capsLockActive, settings);
+                ImGui::Dummy(ImVec2(0.0f, 10.0f));
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Vertex shader"))
@@ -4940,7 +9371,7 @@ void main()
                     compileShaders(shaderFramebuffer, shaderEditor, vertexShaderSource, fragmentShaderSource);
                     saveShaderSources(vertexShaderSource, fragmentShaderSource);
                 }
-                const float previewReserve = 268.0f;
+                const float previewReserve = 280.0f;
                 const float editorHeight = std::max(140.0f, ImGui::GetContentRegionAvail().y - previewReserve - ImGui::GetTextLineHeightWithSpacing());
                 const bool changed = renderShaderTextEditor(shaderEditor.Vertex, "##VertexEditor", ImVec2(-1.0f, editorHeight), shaderEditor, settings);
                 const auto vertexCursor = shaderEditor.Vertex.GetCurrentCursorPosition();
@@ -4953,6 +9384,7 @@ void main()
                         compileShaders(shaderFramebuffer, shaderEditor, vertexShaderSource, fragmentShaderSource);
                 }
                 drawShaderLivePanel(usb, deviceState, keyboardInput, framebuffer, appCpuUsage, scrollLockActive, capsLockActive, settings);
+                ImGui::Dummy(ImVec2(0.0f, 10.0f));
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -4974,10 +9406,10 @@ void main()
 
     static void drawPermanentHeader(RawUSB& usb)
     {
-        ImGui::Text("Quartz K552X  |  USB %s  |  %04X:%04X", usb.isConnected() ? "connected" : "disconnected", VendorId, ProductId);
+        ImGui::Text("Quartz K552X  |  USB %s  |  FW %s  |  %04X:%04X", usb.isConnected() ? "connected" : "disconnected", FirmwareVersion, VendorId, ProductId);
         ImGui::SameLine();
-        if (ImGui::SmallButton("Hide window and icon")) hideWindow(glfwGetCurrentContext());
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Restore globally with Ctrl + Alt + Shift + Q");
+        if (ImGui::SmallButton("Terminate")) glfwSetWindowShouldClose(glfwGetCurrentContext(), GLFW_TRUE);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Exit Quartz completely. The normal window close button only hides the window.");
         const char* credits = "Made by Raony Reis, not affiliated with Redragon";
         const float creditWidth = ImGui::CalcTextSize(credits).x;
         const float right = ImGui::GetWindowContentRegionMax().x;
@@ -4986,7 +9418,7 @@ void main()
         ImGui::Separator();
     }
 
-    static void drawUi(RawUSB& usb, AudioSpectrum& audio, MediaColorProvider& mediaColor, const EvdevKeyboard& keyboardInput, ShaderFramebuffer& shaderFramebuffer, ShaderEditorState& shaderEditor, ViewPage& page, std::array<char, ShaderSourceCapacity>& vertexShaderSource, std::array<char, ShaderSourceCapacity>& fragmentShaderSource, std::array<char, ShaderPathCapacity>& vertexLoadPath, std::array<char, ShaderPathCapacity>& fragmentLoadPath, VisualizerSettings& settings, const std::array<float, FFTSize>& analysisBands, const std::array<float, Columns>& mappedBands, const std::array<float, Columns>& smoothedBands, const std::array<Color32, MatrixSize>& framebuffer, SharedDeviceState& deviceState, std::uint64_t sentFrames, std::uint64_t droppedFrames, const float appCpuUsage, const bool scrollLockActive, const bool capsLockActive)
+    static void drawUi(RawUSB& usb, AudioSpectrum& audio, MediaColorProvider& mediaColor, const EvdevKeyboard& keyboardInput, ShaderFramebuffer& shaderFramebuffer, ShaderTransitionState& shaderTransition, ShaderEditorState& shaderEditor, ViewPage& page, std::array<char, ShaderSourceCapacity>& vertexShaderSource, std::array<char, ShaderSourceCapacity>& fragmentShaderSource, std::array<char, ShaderPathCapacity>& vertexLoadPath, std::array<char, ShaderPathCapacity>& fragmentLoadPath, VisualizerSettings& settings, const std::array<float, FFTSize>& analysisBands, const std::array<float, Columns>& mappedBands, const std::array<float, Columns>& smoothedBands, const std::array<Color32, MatrixSize>& framebuffer, SharedDeviceState& deviceState, RuntimeBindingEngine& runtimeBindings, RuntimeTelemetry& runtimeTelemetry, const AutoGainState& autoGain, const AudioLevelSnapshot& audioLevel, const ReactiveKeyState& reactiveKeys, const RuntimeInputAnalytics& inputAnalytics, const RuntimeRGBAnalytics& rgbAnalytics, std::uint64_t sentFrames, std::uint64_t droppedFrames, const float appCpuUsage, const bool scrollLockActive, const bool capsLockActive)
     {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(viewport->WorkPos);
@@ -4996,7 +9428,7 @@ void main()
         drawPermanentHeader(usb);
         if (page == ViewPage::ShaderEditor)
         {
-            drawShaderEditorPage(usb, deviceState, keyboardInput, shaderFramebuffer, shaderEditor, page, vertexShaderSource, fragmentShaderSource, vertexLoadPath, fragmentLoadPath, settings, framebuffer, appCpuUsage, scrollLockActive, capsLockActive);
+            drawShaderEditorPage(usb, deviceState, keyboardInput, shaderFramebuffer, shaderTransition, shaderEditor, page, vertexShaderSource, fragmentShaderSource, vertexLoadPath, fragmentLoadPath, settings, framebuffer, appCpuUsage, scrollLockActive, capsLockActive);
             ImGui::End();
             return;
         }
@@ -5022,6 +9454,9 @@ void main()
         defaultButton("AutoReconnect", settings.AutoReconnect, defaults.AutoReconnect);
         ImGui::SliderFloat("Global brightness", &settings.GlobalBrightness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
         defaultButton("GlobalBrightness", settings.GlobalBrightness, defaults.GlobalBrightness);
+        ImGui::SliderFloat("Live output interpolation", &settings.LiveOutputInterpolation, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Preview-only spatial color mixing. 0 = exact framebuffer, 1 = strongest neighboring-key blend. It never changes data sent over USB.");
+        defaultButton("LiveOutputInterpolation", settings.LiveOutputInterpolation, defaults.LiveOutputInterpolation);
         ImGui::SameLine();
         if (ImGui::Button("Reset all settings"))
         {
@@ -5050,8 +9485,34 @@ void main()
                 defaultButton("LimitMainLoop", settings.LimitMainLoop, defaults.LimitMainLoop);
                 ImGui::SliderInt("Analysis bands", &settings.AnalysisBandCount, 32, static_cast<int>(FFTSize));
                 defaultButton("AnalysisBandCount", settings.AnalysisBandCount, defaults.AnalysisBandCount);
-                ImGui::SliderFloat("Overall gain", &settings.OverallGain, 0.10f, 4.00f, "%.2fx");
-                defaultButton("OverallGain", settings.OverallGain, defaults.OverallGain);
+                ImGui::Checkbox("Automatic overall gain", &settings.AutomaticOverallGain);
+                defaultButton("AutomaticOverallGain", settings.AutomaticOverallGain, defaults.AutomaticOverallGain);
+                if (settings.AutomaticOverallGain)
+                {
+                    ImGui::SliderFloat("Baseline gain", &settings.AutoGainBaseline, 0.10f, 6.00f, "%.2fx");
+                    defaultButton("AutoGainBaseline", settings.AutoGainBaseline, defaults.AutoGainBaseline);
+                    ImGui::Text("Auto gain: RMS %.4f  learned %.4f  correction %.3fx  effective %.3fx", audioLevel.Rms, autoGain.LongTermRms, autoGain.Correction, autoGain.EffectiveGain);
+                    if (ImGui::TreeNode("Automatic gain tuning"))
+                    {
+                        ImGui::SliderFloat("Target RMS", &settings.AutoGainTargetRms, 0.01f, 0.50f, "%.3f");
+                        defaultButton("AutoGainTargetRms", settings.AutoGainTargetRms, defaults.AutoGainTargetRms);
+                        ImGui::SliderFloat("Adaptation", &settings.AutoGainAdaptation, 0.02f, 2.0f, "%.2f /s", ImGuiSliderFlags_Logarithmic);
+                        defaultButton("AutoGainAdaptation", settings.AutoGainAdaptation, defaults.AutoGainAdaptation);
+                        ImGui::SliderFloat("Min correction", &settings.AutoGainMinCorrection, 0.10f, 1.0f, "%.2fx");
+                        defaultButton("AutoGainMinCorrection", settings.AutoGainMinCorrection, defaults.AutoGainMinCorrection);
+                        ImGui::SliderFloat("Max correction", &settings.AutoGainMaxCorrection, 1.0f, 8.0f, "%.2fx");
+                        defaultButton("AutoGainMaxCorrection", settings.AutoGainMaxCorrection, defaults.AutoGainMaxCorrection);
+                        ImGui::SliderFloat("Silence gate", &settings.AutoGainSilenceGate, 0.0f, 0.05f, "%.4f");
+                        defaultButton("AutoGainSilenceGate", settings.AutoGainSilenceGate, defaults.AutoGainSilenceGate);
+                        ImGui::TextDisabled("Baseline is the normal gain; the long-term loudness estimate only applies a slow bounded correction around it.");
+                        ImGui::TreePop();
+                    }
+                }
+                else
+                {
+                    ImGui::SliderFloat("Overall gain", &settings.OverallGain, 0.10f, 4.00f, "%.2fx");
+                    defaultButton("OverallGain", settings.OverallGain, defaults.OverallGain);
+                }
                 ImGui::SliderFloat("Attack", &settings.AttackSpeed, 0.1f, 80.0f, "%.2f");
                 defaultButton("AttackSpeed", settings.AttackSpeed, defaults.AttackSpeed);
                 ImGui::SliderFloat("Release", &settings.ReleaseSpeed, 0.1f, 80.0f, "%.2f");
@@ -5113,6 +9574,10 @@ void main()
                     ImGui::Text("Active shader surface: %dx%d -> 16x7 QRPC framebuffer", shaderFramebuffer.width(), shaderFramebuffer.height());
                     ImGui::Combo("Framebuffer approximation", &settings.ShaderDownsampleMode, downsampleModes, 3);
                     defaultButton("ShaderDownsampleMode", settings.ShaderDownsampleMode, defaults.ShaderDownsampleMode);
+                    ImGui::SliderFloat("Shader crossfade", &settings.ShaderTransitionSeconds, 0.0f, 5.0f, "%.2f s");
+                    defaultButton("ShaderTransitionSeconds", settings.ShaderTransitionSeconds, defaults.ShaderTransitionSeconds);
+                    ImGui::SameLine();
+                    ImGui::TextDisabled(shaderTransition.Active ? "transition active" : "manual/control shader switch transition");
                     ImGui::Checkbox("Recompile on text change", &settings.ShaderRecompileOnChange);
                     defaultButton("ShaderRecompileOnChange", settings.ShaderRecompileOnChange, defaults.ShaderRecompileOnChange);
                     ImGui::Checkbox("Key-state shader uniforms", &settings.ShaderKeyStateUniforms);
@@ -5138,11 +9603,7 @@ void main()
                             const bool selected = settings.ShaderPresetIndex == static_cast<int>(i + 1);
                             if (ImGui::Selectable(ShaderPresets[i].Name.c_str(), selected))
                             {
-                                settings.ShaderPresetIndex = static_cast<int>(i + 1);
-                                setShaderSource(fragmentShaderSource, ShaderPresets[i].FragmentSource);
-                                if (shaderEditor.Initialized) shaderEditor.Fragment.SetText(fragmentShaderSource.data());
-                                compileShaders(shaderFramebuffer, shaderEditor, vertexShaderSource, fragmentShaderSource);
-                                saveShaderSources(vertexShaderSource, fragmentShaderSource);
+                                switchShaderPreset(shaderFramebuffer, shaderTransition, shaderEditor, vertexShaderSource, fragmentShaderSource, settings, static_cast<int>(i + 1), glfwGetTime(), settings.ShaderTransitionSeconds);
                             }
                             if (selected)
                                 ImGui::SetItemDefaultFocus();
@@ -5151,12 +9612,12 @@ void main()
                     }
                     if (defaultButton("ShaderPresetIndex", settings.ShaderPresetIndex, defaults.ShaderPresetIndex))
                     {
-                        const int presetIndex = std::clamp(settings.ShaderPresetIndex - 1, 0, static_cast<int>(ShaderPresets.size()) - 1);
-                        setShaderSource(fragmentShaderSource, ShaderPresets[presetIndex].FragmentSource);
-                        if (shaderEditor.Initialized) shaderEditor.Fragment.SetText(fragmentShaderSource.data());
-                        compileShaders(shaderFramebuffer, shaderEditor, vertexShaderSource, fragmentShaderSource);
-                        saveShaderSources(vertexShaderSource, fragmentShaderSource);
+                        const int presetIndex = std::clamp(settings.ShaderPresetIndex, 1, static_cast<int>(ShaderPresets.size()));
+                        switchShaderPreset(shaderFramebuffer, shaderTransition, shaderEditor, vertexShaderSource, fragmentShaderSource, settings, presetIndex, glfwGetTime(), settings.ShaderTransitionSeconds);
                     }
+                    ImGui::SeparatorText("Material parameters");
+                    drawShaderMaterialEditor(shaderFramebuffer, 170.0f);
+                    ImGui::TextDisabled("Arbitrary active float/int/bool/vector uniforms are reflected automatically. Engine uniforms stay reserved unless explicitly annotated with // @ui.");
                     ImGui::TextDisabled("Uniforms: uTime, uResolution, uBands[16], uMediaColor, uMediaAmount, uSolidColor, uWaveSpeed, uFeatherRows, uSaturation, uForceFullRow, uFullRow");
                     if (ImGui::Button("Compile shaders"))
                     {
@@ -5168,7 +9629,7 @@ void main()
                     {
                         settings.ShaderPresetIndex = 1;
                         setShaderSource(vertexShaderSource, DefaultVertexShaderSource);
-                        setShaderSource(fragmentShaderSource, DefaultFragmentShaderSource);
+                        setShaderSource(fragmentShaderSource, ShaderPresets.front().FragmentSource);
                         if (shaderEditor.Initialized) { shaderEditor.Vertex.SetText(vertexShaderSource.data()); shaderEditor.Fragment.SetText(fragmentShaderSource.data()); }
                         compileShaders(shaderFramebuffer, shaderEditor, vertexShaderSource, fragmentShaderSource);
                         saveShaderSources(vertexShaderSource, fragmentShaderSource);
@@ -5292,7 +9753,8 @@ void main()
                 if (settings.ShowFramebuffer)
                 {
                     ImGui::TextUnformatted("Keyboard framebuffer");
-                    drawFramebufferPreview(framebuffer);
+                    drawFramebufferPreview(framebuffer, 0.55f, 532.0f, settings.LiveOutputInterpolation);
+                    ImGui::TextDisabled("Preview interpolation %.0f%% (visual only)", settings.LiveOutputInterpolation * 100.0f);
                 }
                 ImGui::EndTabItem();
             }
@@ -5311,9 +9773,106 @@ void main()
                 receivedPackets = deviceState.ReceivedPackets;
             }
 
+            if (ImGui::BeginTabItem("Device"))
+            {
+                const std::size_t framebufferPayloadBytes = sizeof(FramebufferSetPayload<MatrixSize>);
+                const std::size_t framebufferPacketBytes = sizeof(PacketHeader) + framebufferPayloadBytes;
+                const double configuredTxKiB = settings.Enabled && settings.SendFramebuffer ? framebufferPacketBytes * static_cast<double>(settings.FrameRate) / 1024.0 : 0.0;
+                const char* outputMode = settings.BaseColorMode == 0 ? "RGB wave" : settings.BaseColorMode == 1 ? "Solid" : "Shader framebuffer";
+                const char* shaderName = settings.ShaderPresetIndex == 0 ? "Custom / current" : ShaderPresets[static_cast<std::size_t>(settings.ShaderPresetIndex - 1)].Name.c_str();
+
+                ImGui::SeparatorText("Identity");
+                ImGui::Text("Product: %s", connected ? (usb.deviceName().empty() ? "Quartz K552X" : usb.deviceName().c_str()) : "Disconnected");
+                ImGui::Text("Firmware: %s", FirmwareVersion);
+                ImGui::Text("VID:PID: %04X:%04X", VendorId, ProductId);
+                ImGui::Text("QRPC protocol: v%u   interface %d   OUT 0x%02X   IN 0x%02X", static_cast<unsigned>(ProtocolVersion), RPCInterfaceNumber, static_cast<unsigned>(RPCOutEndpoint), static_cast<unsigned>(RPCInEndpoint));
+                ImGui::Text("Packet header: %zu B   framebuffer payload: %zu B   full frame packet: %zu B", sizeof(PacketHeader), framebufferPayloadBytes, framebufferPacketBytes);
+                ImGui::Text("Logical framebuffer: %zux%zu = %zu cells   active RGB area: %zux%zu", Columns, Rows, MatrixSize, Columns, ActiveProbeRows);
+
+                ImGui::SeparatorText("Session / output");
+                ImGui::Text("Client uptime: %.1f s   App CPU: %.2f%%", ImGui::GetTime(), appCpuUsage);
+                ImGui::Text("TX frames: %llu   dropped/busy: %llu   RX packets: %llu", static_cast<unsigned long long>(sentFrames), static_cast<unsigned long long>(droppedFrames), static_cast<unsigned long long>(receivedPackets));
+                ImGui::Text("Output mode: %s   target: %d Hz   estimated framebuffer TX: %.1f KiB/s", outputMode, settings.FrameRate, configuredTxKiB);
+                if (settings.BaseColorMode == 2) ImGui::Text("Shader: %s   render target: %dx%d   downsample mode: %d   material params: %zu", shaderName, settings.ShaderFramebufferWidth, settings.ShaderFramebufferHeight, settings.ShaderDownsampleMode, shaderFramebuffer.materialParameters().size());
+                ImGui::Text("Brightness: %.0f%%   live-preview interpolation: %.0f%%", settings.GlobalBrightness * 100.0f, settings.LiveOutputInterpolation * 100.0f);
+
+                ImGui::SeparatorText("Host input / window");
+                ImGui::Text("evdev: %s", keyboardInput.connected() ? "connected" : "disconnected");
+                if (!keyboardInput.deviceName().empty()) ImGui::Text("Input device: %s", keyboardInput.deviceName().c_str());
+                ImGui::TextWrapped("%s", keyboardInput.status().c_str());
+                ImGui::Text("Caps Lock: %s   Scroll Lock: %s", capsLockActive ? "on" : "off", scrollLockActive ? "on" : "off");
+                ImGui::TextDisabled("Closing the GLFW window hides it. Ctrl + Alt + Shift + Q restores it globally. Use Terminate in the permanent header to actually exit.");
+
+                ImGui::SeparatorText("Runtime files");
+                const std::string configFile = settingsPath().string();
+                const std::string vertexFile = vertexShaderPath().string();
+                const std::string fragmentFile = fragmentShaderPath().string();
+                const std::string materialFile = shaderMaterialPath().string();
+                const std::string bindingsFile = runtimeBindings.path().string();
+                ImGui::TextWrapped("Settings: %s", configFile.c_str());
+                ImGui::TextWrapped("Vertex shader: %s", vertexFile.c_str());
+                ImGui::TextWrapped("Fragment shader: %s", fragmentFile.c_str());
+                ImGui::TextWrapped("Material parameters: %s", materialFile.c_str());
+                ImGui::TextWrapped("Runtime bindings: %s", bindingsFile.c_str());
+                ImGui::EndTabItem();
+            }
+
+
+            if (ImGui::BeginTabItem("RE / Bindings"))
+            {
+                drawRuntimeBindingsPage(runtimeBindings, shaderFramebuffer);
+                ImGui::EndTabItem();
+            }
+
+            if (ImGui::BeginTabItem("QRPC Inspector"))
+            {
+                drawQRPCInspectorPage(runtimeTelemetry);
+                ImGui::EndTabItem();
+            }
+
+            if (ImGui::BeginTabItem("USB"))
+            {
+                drawUSBProfilerPage(usb, runtimeBindings);
+                ImGui::EndTabItem();
+            }
+
+            if (ImGui::BeginTabItem("Input Analyzer"))
+            {
+                drawInputAnalyzerPage(keyboardInput, reactiveKeys, inputAnalytics);
+                ImGui::EndTabItem();
+            }
+
+            if (ImGui::BeginTabItem("RGB Profiler"))
+            {
+                drawRGBProfilerPage(framebuffer, settings, rgbAnalytics);
+                ImGui::EndTabItem();
+            }
+
+            if (ImGui::BeginTabItem("Audio Lab"))
+            {
+                drawAudioLabPage(audio, audioLevel, autoGain, settings, analysisBands, mappedBands, smoothedBands);
+                ImGui::EndTabItem();
+            }
+
+            if (ImGui::BeginTabItem("Timeline"))
+            {
+                drawTimelinePage(runtimeTelemetry);
+                ImGui::EndTabItem();
+            }
+
+            if (ImGui::BeginTabItem("Firmware"))
+            {
+                drawFirmwarePage(performance, hasPerformance, timingProbe, hasTimingProbe);
+                ImGui::EndTabItem();
+            }
+
             if (ImGui::BeginTabItem("Performance"))
             {
-                ImGui::Text("Packets received: %llu", static_cast<unsigned long long>(receivedPackets));
+                const std::size_t framebufferPacketBytes = sizeof(PacketHeader) + sizeof(FramebufferSetPayload<MatrixSize>);
+                const double configuredTxKiB = settings.Enabled && settings.SendFramebuffer ? framebufferPacketBytes * static_cast<double>(settings.FrameRate) / 1024.0 : 0.0;
+                ImGui::Text("Host CPU: %.2f%%   target framebuffer rate: %d Hz   estimated TX: %.1f KiB/s", appCpuUsage, settings.FrameRate, configuredTxKiB);
+                ImGui::Text("Packets received: %llu   frames sent: %llu   dropped/busy: %llu", static_cast<unsigned long long>(receivedPackets), static_cast<unsigned long long>(sentFrames), static_cast<unsigned long long>(droppedFrames));
+                ImGui::Separator();
                 if (hasPerformance)
                     drawPerformance(performance);
                 else
@@ -5358,7 +9917,11 @@ int main(int argc, char* argv[])
         glfwTerminate();
         return EXIT_FAILURE;
     }
-
+    glfwSetWindowCloseCallback(window, [](GLFWwindow* target)
+    {
+        glfwSetWindowShouldClose(target, GLFW_FALSE);
+        glfwHideWindow(target);
+    });
 
     glfwMakeContextCurrent(window);
 #ifdef GLFW_LOCK_KEY_MODS
@@ -5403,6 +9966,7 @@ int main(int argc, char* argv[])
     AudioSpectrum audio;
     MediaColorProvider mediaColor;
     ShaderFramebuffer shaderFramebuffer;
+    ShaderTransitionState shaderTransition;
     ShaderEditorState shaderEditor;
     ViewPage page = ViewPage::Main;
     std::array<char, ShaderSourceCapacity> vertexShaderSource{};
@@ -5416,9 +9980,9 @@ int main(int argc, char* argv[])
     const auto defaultFragmentPath = fragmentShaderPath().string();
     std::snprintf(vertexLoadPath.data(), vertexLoadPath.size(), "%s", defaultVertexPath.c_str());
     std::snprintf(fragmentLoadPath.data(), fragmentLoadPath.size(), "%s", defaultFragmentPath.c_str());
-    if (std::string_view(fragmentShaderSource.data()) == LegacyDefaultFragmentShaderSource)
+    if (std::string_view(fragmentShaderSource.data()) == LegacyDefaultFragmentShaderSource || std::string_view(fragmentShaderSource.data()) == DefaultFragmentShaderSource)
     {
-        setShaderSource(fragmentShaderSource, DefaultFragmentShaderSource);
+        setShaderSource(fragmentShaderSource, ShaderPresets.front().FragmentSource);
         saveTextFile(fragmentShaderPath(), fragmentShaderSource);
     }
     settings.ShaderPresetIndex = detectShaderPreset(fragmentShaderSource.data());
@@ -5436,9 +10000,22 @@ int main(int argc, char* argv[])
     float appCpuUsage = 0.0f;
     EvdevKeyboard keyboardInput;
     ReactiveKeyState reactiveKeys;
+    RuntimeInputAnalytics inputAnalytics;
+    RuntimeRGBAnalytics rgbAnalytics;
+    RuntimeBindingEngine runtimeBindings;
+    RuntimeTelemetry runtimeTelemetry;
+    AutoGainState autoGain;
+    autoGain.reset(settings);
+    AudioLevelSnapshot audioLevel{};
 
+    loadShaderMaterialValueCache();
     shaderFramebuffer.initialize(settings.ShaderFramebufferWidth, settings.ShaderFramebufferHeight);
     compileShaders(shaderFramebuffer, shaderEditor, vertexShaderSource, fragmentShaderSource);
+
+    usb.setPacketObserver([&](const bool tx, const PacketHeader& packet, const std::span<const std::byte> bytes)
+    {
+        runtimeTelemetry.packet(glfwGetTime(), tx, packet, bytes);
+    });
 
     usb.setPacketHandler([&](const PacketHeader& packet)
     {
@@ -5489,11 +10066,18 @@ int main(int argc, char* argv[])
 
     const double startTime = glfwGetTime();
     keyboardInput.start(startTime);
+    runtimeTelemetry.event(startTime, "Application", "Quartz runtime studio started");
     double nextVisualizerFrame = startTime;
     double nextStatisticsRequest = startTime;
     double nextReconnectAttempt = startTime;
     double nextSettingsSave = startTime + 0.50;
     std::string savedSettings = serializeSettings(settings);
+    std::uint64_t savedMaterialRevision = shaderFramebuffer.materialRevision();
+    bool lastUSBConnected = usb.isConnected();
+    std::string lastMediaTitle = mediaColor.mediaTitle();
+    bool lastMediaPlaying = mediaColor.playing();
+    bool lastCapsLock = reactiveKeys.CapsLockActive;
+    bool lastScrollLock = reactiveKeys.ScrollLockActive;
     if (hidden)
     {
         glfwHideWindow(window);
@@ -5503,14 +10087,36 @@ int main(int argc, char* argv[])
         if (keyboardInput.consumeRestoreRequest()) restoreWindow(window);
         const double currentFrame = glfwGetTime();
         appCpuUsage = appCpuMeter.update(currentFrame);
+        runtimeBindings.updateRates(usb.stats(), currentFrame);
         glfwPollEvents();
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
         reactiveKeys = keyboardInput.snapshot();
+        for (std::size_t i = 0; i < MatrixSize; ++i)
+        {
+            const bool down = reactiveKeys.Down[i] > 0.5f;
+            const bool wasDown = inputAnalytics.Previous[i] > 0.5f;
+            if (down != wasDown)
+            {
+                const std::size_t row = i / Columns, column = i % Columns;
+                runtimeTelemetry.event(currentFrame, "Input", "r" + std::to_string(row) + " c" + std::to_string(column) + (down ? " down" : " up"));
+            }
+        }
+        inputAnalytics.update(reactiveKeys, currentFrame);
         const bool scrollLockActive = reactiveKeys.ScrollLockActive;
         const bool capsLockActive = reactiveKeys.CapsLockActive;
+        if (capsLockActive != lastCapsLock)
+        {
+            runtimeTelemetry.event(currentFrame, "Input", std::string("Caps Lock ") + (capsLockActive ? "on" : "off"));
+            lastCapsLock = capsLockActive;
+        }
+        if (scrollLockActive != lastScrollLock)
+        {
+            runtimeTelemetry.event(currentFrame, "Input", std::string("Scroll Lock ") + (scrollLockActive ? "on" : "off"));
+            lastScrollLock = scrollLockActive;
+        }
 
         settings.AnalysisBandCount = std::clamp(settings.AnalysisBandCount, 32, static_cast<int>(FFTSize));
         settings.BassEndBand = std::clamp(settings.BassEndBand, 0, settings.AnalysisBandCount - 1);
@@ -5519,11 +10125,34 @@ int main(int argc, char* argv[])
         settings.ShaderFramebufferWidth = std::clamp(settings.ShaderFramebufferWidth, static_cast<int>(Columns), MaxShaderDimension);
         settings.ShaderFramebufferHeight = std::clamp(settings.ShaderFramebufferHeight, static_cast<int>(Rows), MaxShaderDimension);
         settings.ShaderEditorZoom = std::clamp(std::round(settings.ShaderEditorZoom * 10.0f) / 10.0f, 0.60f, 2.50f);
+        settings.ShaderTransitionSeconds = std::clamp(settings.ShaderTransitionSeconds, 0.0f, 10.0f);
+        settings.AutoGainBaseline = std::clamp(settings.AutoGainBaseline, 0.05f, 20.0f);
+        settings.AutoGainTargetRms = std::clamp(settings.AutoGainTargetRms, 0.005f, 0.75f);
+        settings.AutoGainAdaptation = std::clamp(settings.AutoGainAdaptation, 0.01f, 5.0f);
+        settings.AutoGainMinCorrection = std::clamp(settings.AutoGainMinCorrection, 0.05f, 10.0f);
+        settings.AutoGainMaxCorrection = std::clamp(settings.AutoGainMaxCorrection, settings.AutoGainMinCorrection, 20.0f);
+        settings.AutoGainSilenceGate = std::clamp(settings.AutoGainSilenceGate, 0.0f, 0.25f);
         settings.GlobalBrightness = std::clamp(settings.GlobalBrightness, 0.0f, 1.0f);
+        settings.LiveOutputInterpolation = std::clamp(settings.LiveOutputInterpolation, 0.0f, 1.0f);
         settings.FeatherRows = std::max(settings.FeatherRows, 0.01f);
         settings.MaxFrequency = std::max(settings.MaxFrequency, settings.MinFrequency + 1.0f);
         settings.MaxDb = std::max(settings.MaxDb, settings.MinDb + 0.1f);
         mediaColor.setPollInterval(settings.MediaPollInterval);
+
+        const bool usbConnectedNow = usb.isConnected();
+        if (usbConnectedNow != lastUSBConnected)
+        {
+            runtimeTelemetry.event(currentFrame, "USB", usbConnectedNow ? "Device connected" : "Device disconnected");
+            lastUSBConnected = usbConnectedNow;
+        }
+        const std::string mediaTitleNow = mediaColor.mediaTitle();
+        const bool mediaPlayingNow = mediaColor.playing();
+        if (mediaTitleNow != lastMediaTitle || mediaPlayingNow != lastMediaPlaying)
+        {
+            runtimeTelemetry.event(currentFrame, "Media", mediaPlayingNow ? "Playing: " + mediaTitleNow : "Paused/stopped: " + mediaTitleNow);
+            lastMediaTitle = mediaTitleNow;
+            lastMediaPlaying = mediaPlayingNow;
+        }
 
         if (settings.AutoReconnect && !usb.isConnected() && currentFrame >= nextReconnectAttempt)
         {
@@ -5534,8 +10163,10 @@ int main(int argc, char* argv[])
         const double visualizerFrameTime = 1.0 / std::max(1, settings.FrameRate);
         if (settings.Enabled && currentFrame >= nextVisualizerFrame)
         {
+            audioLevel = audio.levelSnapshot();
+            autoGain.update(audioLevel, settings, static_cast<float>(visualizerFrameTime));
             audio.getBands(std::span(analysisBands).first(settings.AnalysisBandCount), settings.MinFrequency, settings.MaxFrequency, settings.MinDb, settings.MaxDb);
-            mapSpectrumToColumns(std::span<const float>(analysisBands).first(settings.AnalysisBandCount), mappedBands, settings);
+            mapSpectrumToColumns(std::span<const float>(analysisBands).first(settings.AnalysisBandCount), mappedBands, settings, autoGain.EffectiveGain);
             smoothBands(mappedBands, smoothedBands, settings, static_cast<float>(visualizerFrameTime));
 
             const float colorAlpha = 1.0f - std::exp(-settings.ColorTransitionSpeed * static_cast<float>(visualizerFrameTime));
@@ -5547,15 +10178,62 @@ int main(int argc, char* argv[])
             if (std::abs(targetColorAmount - mediaColorAmount) < 0.001f)
                 mediaColorAmount = targetColorAmount;
 
-            if (settings.BaseColorMode == 2)
+            PerformanceSnapshot runtimePerformance{};
+            bool runtimeHasPerformance = false;
+            {
+                std::lock_guard lock(deviceState.Mutex);
+                runtimePerformance = deviceState.Performance;
+                runtimeHasPerformance = deviceState.HasPerformance;
+            }
+            RuntimeSignalContext runtimeContext;
+            runtimeContext.Time = currentFrame;
+            runtimeContext.DeltaTime = static_cast<float>(visualizerFrameTime);
+            runtimeContext.Audio = audioLevel;
+            runtimeContext.MappedBands = &mappedBands;
+            runtimeContext.SmoothedBands = &smoothedBands;
+            runtimeContext.MediaColor = visualizerColor;
+            runtimeContext.MediaAmount = mediaColorAmount;
+            runtimeContext.MediaPlaying = mediaColor.playing();
+            runtimeContext.Keys = reactiveKeys;
+            runtimeContext.Performance = runtimePerformance;
+            runtimeContext.HasPerformance = runtimeHasPerformance;
+            runtimeContext.AppCpu = appCpuUsage;
+            runtimeContext.USBConnected = usb.isConnected();
+            runtimeContext.USB = usb.stats();
+            runtimeContext.USBRates = runtimeBindings.usbRates();
+            runtimeContext.Framebuffer = &framebuffer;
+            runtimeContext.EffectiveGain = autoGain.EffectiveGain;
+            runtimeContext.GainCorrection = autoGain.Correction;
+            runtimeBindings.update(runtimeContext, shaderFramebuffer);
+            const RuntimeControlOutput controlOutput = runtimeBindings.evaluateControls(shaderFramebuffer);
+            if (controlOutput.ShaderPresetIndex && *controlOutput.ShaderPresetIndex != settings.ShaderPresetIndex)
+            {
+                if (switchShaderPreset(shaderFramebuffer, shaderTransition, shaderEditor, vertexShaderSource, fragmentShaderSource, settings, *controlOutput.ShaderPresetIndex, currentFrame, controlOutput.ShaderTransitionSeconds, false))
+                    runtimeBindings.applyMaterialValues(shaderFramebuffer);
+            }
+
+            const int effectiveBaseColorMode = controlOutput.BaseColorMode.value_or(settings.BaseColorMode);
+            const float effectiveBrightness = controlOutput.GlobalBrightness.value_or(settings.GlobalBrightness);
+            const bool effectiveSendFramebuffer = controlOutput.SendFramebuffer.value_or(settings.SendFramebuffer);
+            if (effectiveBaseColorMode == 2)
             {
                 if (!shaderFramebuffer.render(currentFrame, smoothedBands, settings, visualizerColor, mediaColorAmount, reactiveKeys, framebuffer))
                     framebuffer.fill({0, 0, 0});
+                if (shaderTransition.Active)
+                {
+                    const float duration = std::max(shaderTransition.Duration, 0.0001f);
+                    const float linear = std::clamp(static_cast<float>((currentFrame - shaderTransition.StartedAt) / duration), 0.0f, 1.0f);
+                    const float blend = linear * linear * (3.0f - 2.0f * linear);
+                    if (shaderTransition.Previous.render(currentFrame, smoothedBands, settings, visualizerColor, mediaColorAmount, reactiveKeys, shaderTransition.Frame))
+                        for (std::size_t i = 0; i < MatrixSize; ++i) framebuffer[i] = lerpColorLinear(shaderTransition.Frame[i], framebuffer[i], blend);
+                    if (linear >= 1.0f) shaderTransition.cancel();
+                }
             }
             else
                 renderAudioRGB(framebuffer, smoothedBands, settings, visualizerColor, mediaColorAmount, static_cast<float>(currentFrame * settings.WaveSpeed));
-            applyGlobalBrightness(framebuffer, settings.GlobalBrightness);
-            if (settings.SendFramebuffer && usb.isConnected())
+            applyGlobalBrightness(framebuffer, effectiveBrightness);
+            rgbAnalytics.update(framebuffer, currentFrame);
+            if (effectiveSendFramebuffer && usb.isConnected())
             {
                 if (sendFramebuffer(usb, framebuffer))
                     ++sentFrames;
@@ -5574,12 +10252,15 @@ int main(int argc, char* argv[])
             nextStatisticsRequest = currentFrame + std::max(0.05f, settings.StatisticsInterval);
         }
 
-        drawUi(usb, audio, mediaColor, keyboardInput, shaderFramebuffer, shaderEditor, page, vertexShaderSource, fragmentShaderSource, vertexLoadPath, fragmentLoadPath, settings, analysisBands, mappedBands, smoothedBands, framebuffer, deviceState, sentFrames, droppedFrames, appCpuUsage, scrollLockActive, capsLockActive);
+        drawUi(usb, audio, mediaColor, keyboardInput, shaderFramebuffer, shaderTransition, shaderEditor, page, vertexShaderSource, fragmentShaderSource, vertexLoadPath, fragmentLoadPath, settings, analysisBands, mappedBands, smoothedBands, framebuffer, deviceState, runtimeBindings, runtimeTelemetry, autoGain, audioLevel, reactiveKeys, inputAnalytics, rgbAnalytics, sentFrames, droppedFrames, appCpuUsage, scrollLockActive, capsLockActive);
         if (currentFrame >= nextSettingsSave)
         {
             const std::string currentSettings = serializeSettings(settings);
             if (currentSettings != savedSettings && saveSettings(settings))
                 savedSettings = currentSettings;
+            if (shaderFramebuffer.materialRevision() != savedMaterialRevision && shaderFramebuffer.saveMaterialValues())
+                savedMaterialRevision = shaderFramebuffer.materialRevision();
+            runtimeBindings.saveIfChanged();
             nextSettingsSave = currentFrame + 0.50;
         }
         ImGui::Render();
@@ -5599,7 +10280,10 @@ int main(int argc, char* argv[])
 
     saveSettings(settings);
     saveShaderSources(vertexShaderSource, fragmentShaderSource);
+    shaderFramebuffer.saveMaterialValues();
+    runtimeBindings.save();
     keyboardInput.stop();
+    shaderTransition.cancel();
     shaderFramebuffer.shutdown();
     usb.shutdown();
     mediaColor.stop();
