@@ -19,3 +19,6 @@
 [submodule "vendor/libhat"]
 	path = vendor/libhat
 	url = https://github.com/BasedInc/libhat.git
+[submodule "vendor/quickjs"]
+	path = vendor/quickjs
+	url = https://github.com/bellard/quickjs

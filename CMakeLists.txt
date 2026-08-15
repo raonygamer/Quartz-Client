@@ -29,6 +29,22 @@ add_subdirectory(vendor/libusb)
 add_subdirectory(vendor/zydis)
 add_subdirectory(vendor/libhat)
 
+add_library(quickjs STATIC
+        vendor/quickjs/quickjs.c
+        vendor/quickjs/dtoa.c
+        vendor/quickjs/libregexp.c
+        vendor/quickjs/libunicode.c
+        vendor/quickjs/cutils.c
+)
+target_include_directories(quickjs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/vendor/quickjs)
+target_compile_definitions(quickjs PRIVATE _GNU_SOURCE CONFIG_VERSION=\"2026-06-04\")
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(quickjs PRIVATE -fwrapv)
+endif()
+if(UNIX)
+    target_link_libraries(quickjs PUBLIC m)
+endif()
+
 file(GLOB_RECURSE QUARTZ_CLIENT_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
@@ -69,6 +85,7 @@ target_link_libraries(QuartzClient PRIVATE
         usb-1.0
         Zydis
         libhat::libhat
+        quickjs
 )
 
 target_compile_features(QuartzClient PRIVATE cxx_std_20)

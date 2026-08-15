@@ -12,7 +12,7 @@ This is a **personal project written for my own devices and my own usage**. It i
 
 Quartz Client is actively developed and already used alongside the Quartz K552X firmware. The codebase has moved well past the original monolithic `Main.cpp`: UI, USB/RPC, native-process tooling, runtime bindings, profiles, rendering, device state and platform integration now live in dedicated subsystems.
 
-The application is written in modern **C++20** and uses **OpenGL**, **Dear ImGui**, raw **libusb**, **Zydis** and **libhat**.
+The application is written in modern **C++20** and uses **OpenGL**, **Dear ImGui**, raw **libusb**, **Zydis**, **libhat** and embedded **QuickJS**.
 
 ## Features
 
@@ -55,6 +55,21 @@ Quartz exposes host/device/application state through a runtime binding graph rat
 - Controls with conditions, actions and nested grouping
 - Profiles and profile hotkeys
 - Runtime status/error feedback and rescan/rebind operations
+- QuickJS scripted bindings with persistent per-binding state, binding/control/value-bank lookup helpers and execution timeouts
+
+#### QuickJS scripted bindings
+
+A binding can use **QuickJS script** as its source when a graph expression is easier to describe in code. The script is a function body and receives a small `q` API; it is compiled once and then reused at the binding's normal `UpdateHz`.
+
+```js
+const shield = q.binding("Player Shield") ?? 0;
+const maxShield = q.binding("Player Max Shield") ?? 1;
+q.state.low ??= false;
+q.state.low = shield / maxShield < 0.25;
+return { value: shield / maxShield, string: q.state.low ? "LOW" : "OK" };
+```
+
+Scripts can read binding values/raw values/strings/addresses, value-bank entries and control state. `q.state` persists between updates, exact addresses are exposed as JavaScript `BigInt`, and scripts may return a number, boolean, string, BigInt address or `{ value, string, address }`. There are deliberately no QuickJS filesystem/network helpers wired in. Each binding also has a short execution deadline so a bad loop does not permanently hang the client.
 
 ### Reverse engineering workspace
 

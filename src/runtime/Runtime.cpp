@@ -121,6 +121,7 @@ namespace quartz::client
         case RuntimeSourceKind::ValueBank: return "Value bank";
         case RuntimeSourceKind::StringConstant: return "String constant";
         case RuntimeSourceKind::ProfileState: return "Binding profile state";
+        case RuntimeSourceKind::Script: return "QuickJS script";
         }
         return "Unknown";
     }
@@ -152,6 +153,7 @@ namespace quartz::client
         case RuntimeSourceKind::ValueBank: return {"Value", "Boolean", "Integer", "Has value", "Changed this frame", "String length", "Address present"};
         case RuntimeSourceKind::StringConstant: return {"Text present", "Length"};
         case RuntimeSourceKind::ProfileState: return {"Active profile id", "Selected profile active", "Selected profile enabled", "Selected binding members", "Selected control members"};
+        case RuntimeSourceKind::Script: return {"Result"};
         }
         return {"Value"};
     }

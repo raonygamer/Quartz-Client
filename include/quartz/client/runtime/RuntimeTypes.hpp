@@ -35,7 +35,8 @@ namespace quartz::client
         ObjectStatus,
         ValueBank,
         StringConstant,
-        ProfileState
+        ProfileState,
+        Script
     };
 
     enum class RuntimeParameterSlot : int
@@ -370,6 +371,13 @@ namespace quartz::client
         bool StoreToBank = false;
         float UnboundValue = 0.0f;
         char StringConstant[256]{};
+        char Script[8192] = "return q.previous;";
+        float ScriptTimeoutMs = 2.0f;
+        double ScriptLastMilliseconds = 0.0;
+        std::uint64_t ScriptRunCount = 0;
+        std::uint64_t ScriptCompileCount = 0;
+        std::uint64_t ScriptTimeoutCount = 0;
+        std::string ScriptLastLog;
         RuntimeAggregateOperation AggregateOperation = RuntimeAggregateOperation::Average;
         RuntimeCompareCondition CompareCondition = RuntimeCompareCondition::Greater;
         RuntimeMassCompareResult CompareResult = RuntimeMassCompareResult::Any;

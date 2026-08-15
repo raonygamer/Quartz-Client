@@ -1,4 +1,5 @@
 #include "quartz/client/Model.hpp"
+#include "quartz/client/runtime/QuickJS.hpp"
 
 namespace quartz::client
 {
@@ -936,12 +937,15 @@ namespace quartz::client
         ImGui::SetNextItemWidth(250.0f);
         if (ImGui::BeginCombo("Source", runtimeSourceName(binding.Source)))
         {
-            for (int i = 0; i <= static_cast<int>(RuntimeSourceKind::ProfileState); ++i)
+            for (int i = 0; i <= static_cast<int>(RuntimeSourceKind::Script); ++i)
             {
                 const auto candidate = static_cast<RuntimeSourceKind>(i);
                 if (ImGui::Selectable(runtimeSourceName(candidate), i == source))
                 {
+                    if (binding.Source == RuntimeSourceKind::Script || candidate == RuntimeSourceKind::Script) runtimeResetScriptBinding(binding.Id);
                     binding.Source = candidate;
+                    binding.HasString = false;
+                    binding.StringValue.clear();
                     binding.Signal = 0;
                     binding.HasValue = false;
                     binding.LastReadSucceeded = false;
@@ -987,6 +991,32 @@ namespace quartz::client
             ImGui::SeparatorText("String value");
             changed |= ImGui::InputText("Text", binding.StringConstant, sizeof(binding.StringConstant));
             ImGui::TextDisabled("String bindings expose a numeric presence/length signal plus a real string side-channel for string-aware controls and the value bank.");
+        }
+        else if (binding.Source == RuntimeSourceKind::Script)
+        {
+            ImGui::SeparatorText("QuickJS script");
+            ImGui::TextWrapped("The text below is a JavaScript function body. Return a number/bool/string/BigInt address, or { value, string, address }. Scripts are synchronous, sandboxed from filesystem/network APIs, compiled once, and run at this binding's update rate.");
+            const bool scriptChanged = ImGui::InputTextMultiline("Script", binding.Script, sizeof(binding.Script), ImVec2(-1.0f, 180.0f), ImGuiInputTextFlags_AllowTabInput);
+            if (scriptChanged) { binding.NextUpdate = 0.0; changed = true; }
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::DragFloat("Execution timeout", &binding.ScriptTimeoutMs, 0.1f, 0.1f, 100.0f, "%.1f ms")) { binding.ScriptTimeoutMs = std::clamp(binding.ScriptTimeoutMs, 0.1f, 100.0f); changed = true; }
+            if (ImGui::Button("Run now")) binding.NextUpdate = 0.0;
+            ImGui::SameLine();
+            if (ImGui::Button("Reset script state")) { runtimeResetScriptBinding(binding.Id); binding.NextUpdate = 0.0; binding.ScriptLastLog.clear(); }
+            ImGui::SameLine(); ImGui::TextDisabled("runs %llu | compiles %llu | timeouts %llu | last %.3f ms", static_cast<unsigned long long>(binding.ScriptRunCount), static_cast<unsigned long long>(binding.ScriptCompileCount), static_cast<unsigned long long>(binding.ScriptTimeoutCount), binding.ScriptLastMilliseconds);
+            if (!binding.ScriptLastLog.empty()) ImGui::TextDisabled("log: %s", binding.ScriptLastLog.c_str());
+            if (ImGui::TreeNode("QuickJS API"))
+            {
+                ImGui::BulletText("q.binding(idOrName) / q.raw(idOrName) - current transformed/raw numeric binding value");
+                ImGui::BulletText("q.text(idOrName) / q.address(idOrName) - string or exact address (address is a BigInt)");
+                ImGui::BulletText("q.bank(idOrName) - typed value-bank value");
+                ImGui::BulletText("q.control(idOrName) / q.triggered(idOrName) - control state");
+                ImGui::BulletText("q.time / q.deltaTime / q.previous / q.previousRaw - current runtime context");
+                ImGui::BulletText("q.state - persistent per-binding JS object; Reset script state recreates it");
+                ImGui::BulletText("q.log(...) - stores a short message in the binding status UI");
+                ImGui::TextDisabled("Bindings execute by priority. Reading another binding returns its latest already-produced value; use priority to order scripted dependencies.");
+                ImGui::TreePop();
+            }
         }
         else if (binding.Source == RuntimeSourceKind::ProfileState)
         {

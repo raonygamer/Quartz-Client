@@ -1,5 +1,6 @@
 #pragma once
 #include "quartz/client/runtime/RuntimeTypes.hpp"
+#include "quartz/client/runtime/QuickJS.hpp"
 #include "quartz/client/shader/ShaderFramebuffer.hpp"
 
 namespace quartz::client
@@ -8,7 +9,7 @@ namespace quartz::client
     {
     public:
         RuntimeBindingEngine() { load(); }
-        ~RuntimeBindingEngine() { save(); }
+        ~RuntimeBindingEngine() { for (const auto& binding : _bindings) if (binding.Source == RuntimeSourceKind::Script) runtimeResetScriptBinding(binding.Id); save(); }
 
         std::vector<RuntimeBinding>& bindings() noexcept { return _bindings; }
         const std::vector<RuntimeBinding>& bindings() const noexcept { return _bindings; }
@@ -138,8 +139,8 @@ namespace quartz::client
             ++_revision;
         }
 
-        RuntimeObjectPointer* findPointer(const std::uint64_t id) noexcept { const auto it = std::ranges::find_if(_pointers, [&](const RuntimeObjectPointer& p) { return p.Id == id; }); return it == _pointers.end() ? nullptr : &*it; }
-        const RuntimeObjectPointer* findPointer(const std::uint64_t id) const noexcept { const auto it = std::ranges::find_if(_pointers, [&](const RuntimeObjectPointer& p) { return p.Id == id; }); return it == _pointers.end() ? nullptr : &*it; }
+        RuntimeObjectPointer* findPointer(const std::uint64_t id) noexcept { ensureRuntimeCaches(); const auto it = _pointerLookup.find(id); return it == _pointerLookup.end() ? nullptr : &_pointers[it->second]; }
+        const RuntimeObjectPointer* findPointer(const std::uint64_t id) const noexcept { ensureRuntimeCaches(); const auto it = _pointerLookup.find(id); return it == _pointerLookup.end() ? nullptr : &_pointers[it->second]; }
 
         RuntimeObjectDescriptor& addObject()
         {
@@ -234,6 +235,7 @@ namespace quartz::client
         {
             if (index >= _bindings.size()) return;
             const std::uint64_t erasedId = _bindings[index].Id;
+            runtimeResetScriptBinding(erasedId);
             _bindings.erase(_bindings.begin() + static_cast<std::ptrdiff_t>(index));
             for (auto& binding : _bindings)
             {
@@ -269,65 +271,26 @@ namespace quartz::client
 
         void markChanged() noexcept { ++_revision; }
 
-        RuntimeBinding* findBinding(const std::uint64_t id) noexcept
-        {
-            const auto it = std::ranges::find(_bindings, id, &RuntimeBinding::Id);
-            return it == _bindings.end() ? nullptr : &*it;
-        }
+        RuntimeBinding* findBinding(const std::uint64_t id) noexcept { ensureRuntimeCaches(); const auto it = _bindingLookup.find(id); return it == _bindingLookup.end() ? nullptr : &_bindings[it->second]; }
+        const RuntimeBinding* findBinding(const std::uint64_t id) const noexcept { ensureRuntimeCaches(); const auto it = _bindingLookup.find(id); return it == _bindingLookup.end() ? nullptr : &_bindings[it->second]; }
+        RuntimeBinding* findBindingByName(const std::string_view name) noexcept { ensureRuntimeCaches(); const auto it = _bindingNameLookup.find(name); return it == _bindingNameLookup.end() ? nullptr : &_bindings[it->second]; }
+        const RuntimeBinding* findBindingByName(const std::string_view name) const noexcept { ensureRuntimeCaches(); const auto it = _bindingNameLookup.find(name); return it == _bindingNameLookup.end() ? nullptr : &_bindings[it->second]; }
 
-        const RuntimeBinding* findBinding(const std::uint64_t id) const noexcept
-        {
-            const auto it = std::ranges::find(_bindings, id, &RuntimeBinding::Id);
-            return it == _bindings.end() ? nullptr : &*it;
-        }
+        RuntimeControlRule* findControl(const std::uint64_t id) noexcept { ensureRuntimeCaches(); const auto it = _controlLookup.find(id); return it == _controlLookup.end() ? nullptr : &_controls[it->second]; }
+        const RuntimeControlRule* findControl(const std::uint64_t id) const noexcept { ensureRuntimeCaches(); const auto it = _controlLookup.find(id); return it == _controlLookup.end() ? nullptr : &_controls[it->second]; }
+        RuntimeControlRule* findControlByName(const std::string_view name) noexcept { ensureRuntimeCaches(); const auto it = _controlNameLookup.find(name); return it == _controlNameLookup.end() ? nullptr : &_controls[it->second]; }
+        const RuntimeControlRule* findControlByName(const std::string_view name) const noexcept { ensureRuntimeCaches(); const auto it = _controlNameLookup.find(name); return it == _controlNameLookup.end() ? nullptr : &_controls[it->second]; }
 
-        RuntimeControlRule* findControl(const std::uint64_t id) noexcept
-        {
-            const auto it = std::ranges::find(_controls, id, &RuntimeControlRule::Id);
-            return it == _controls.end() ? nullptr : &*it;
-        }
+        RuntimeValueBankEntry* findBankValue(const std::uint64_t id) noexcept { ensureRuntimeCaches(); const auto it = _bankLookup.find(id); return it == _bankLookup.end() ? nullptr : &_bank[it->second]; }
+        const RuntimeValueBankEntry* findBankValue(const std::uint64_t id) const noexcept { ensureRuntimeCaches(); const auto it = _bankLookup.find(id); return it == _bankLookup.end() ? nullptr : &_bank[it->second]; }
+        RuntimeValueBankEntry* findBankValueByName(const std::string_view name) noexcept { ensureRuntimeCaches(); const auto it = _bankNameLookup.find(name); return it == _bankNameLookup.end() ? nullptr : &_bank[it->second]; }
+        const RuntimeValueBankEntry* findBankValueByName(const std::string_view name) const noexcept { ensureRuntimeCaches(); const auto it = _bankNameLookup.find(name); return it == _bankNameLookup.end() ? nullptr : &_bank[it->second]; }
 
-        const RuntimeControlRule* findControl(const std::uint64_t id) const noexcept
-        {
-            const auto it = std::ranges::find(_controls, id, &RuntimeControlRule::Id);
-            return it == _controls.end() ? nullptr : &*it;
-        }
+        RuntimeBindingProfile* findProfile(const std::uint64_t id) noexcept { ensureRuntimeCaches(); const auto it = _profileLookup.find(id); return it == _profileLookup.end() ? nullptr : &_profiles[it->second]; }
+        const RuntimeBindingProfile* findProfile(const std::uint64_t id) const noexcept { ensureRuntimeCaches(); const auto it = _profileLookup.find(id); return it == _profileLookup.end() ? nullptr : &_profiles[it->second]; }
 
-        RuntimeValueBankEntry* findBankValue(const std::uint64_t id) noexcept
-        {
-            const auto it = std::ranges::find(_bank, id, &RuntimeValueBankEntry::Id);
-            return it == _bank.end() ? nullptr : &*it;
-        }
-
-        const RuntimeValueBankEntry* findBankValue(const std::uint64_t id) const noexcept
-        {
-            const auto it = std::ranges::find(_bank, id, &RuntimeValueBankEntry::Id);
-            return it == _bank.end() ? nullptr : &*it;
-        }
-
-        RuntimeBindingProfile* findProfile(const std::uint64_t id) noexcept
-        {
-            const auto it = std::ranges::find(_profiles, id, &RuntimeBindingProfile::Id);
-            return it == _profiles.end() ? nullptr : &*it;
-        }
-
-        const RuntimeBindingProfile* findProfile(const std::uint64_t id) const noexcept
-        {
-            const auto it = std::ranges::find(_profiles, id, &RuntimeBindingProfile::Id);
-            return it == _profiles.end() ? nullptr : &*it;
-        }
-
-        RuntimeObjectDescriptor* findObject(const std::uint64_t id) noexcept
-        {
-            const auto it = std::ranges::find(_objects, id, &RuntimeObjectDescriptor::Id);
-            return it == _objects.end() ? nullptr : &*it;
-        }
-
-        const RuntimeObjectDescriptor* findObject(const std::uint64_t id) const noexcept
-        {
-            const auto it = std::ranges::find(_objects, id, &RuntimeObjectDescriptor::Id);
-            return it == _objects.end() ? nullptr : &*it;
-        }
+        RuntimeObjectDescriptor* findObject(const std::uint64_t id) noexcept { ensureRuntimeCaches(); const auto it = _objectLookup.find(id); return it == _objectLookup.end() ? nullptr : &_objects[it->second]; }
+        const RuntimeObjectDescriptor* findObject(const std::uint64_t id) const noexcept { ensureRuntimeCaches(); const auto it = _objectLookup.find(id); return it == _objectLookup.end() ? nullptr : &_objects[it->second]; }
 
         RuntimeObjectField* findObjectField(RuntimeObjectDescriptor& object, const std::uint64_t id) noexcept
         {
@@ -379,17 +342,12 @@ namespace quartz::client
 
         void applyMaterialValues(ShaderFramebuffer& shader) const noexcept
         {
-            std::vector<const RuntimeBinding*> order;
-            order.reserve(_bindings.size());
-            for (const auto& binding : _bindings) order.push_back(&binding);
-            std::ranges::sort(order, [](const RuntimeBinding* a, const RuntimeBinding* b)
+            ensureRuntimeCaches();
+            for (const std::size_t index : _bindingEvaluationOrder)
             {
-                if (a->Priority != b->Priority) return a->Priority < b->Priority;
-                return a->Id < b->Id;
-            });
-            for (const RuntimeBinding* binding : order)
-                if (binding->Enabled && binding->RuntimeEnabled && binding->WriteMaterial && binding->HasValue)
-                    shader.setMaterialParameter(binding->TargetId, binding->TargetComponent, binding->Value);
+                const auto& binding = _bindings[index];
+                if (binding.Enabled && binding.RuntimeEnabled && binding.WriteMaterial && binding.HasValue) shader.setMaterialParameter(binding.TargetId, binding.TargetComponent, binding.Value);
+            }
         }
 
         void updateRates(const USBStatsSnapshot& stats, const double now)
@@ -426,17 +384,10 @@ namespace quartz::client
             for (auto& binding : _bindings) binding.RuntimeEnabled = true;
             for (auto& control : _controls) control.RuntimeEnabled = true;
 
-            std::vector<RuntimeBinding*> order;
-            order.reserve(_bindings.size());
-            for (auto& binding : _bindings) order.push_back(&binding);
-            std::ranges::sort(order, [](const RuntimeBinding* a, const RuntimeBinding* b)
+            ensureRuntimeCaches();
+            for (const std::size_t bindingIndex : _bindingEvaluationOrder)
             {
-                if (a->Priority != b->Priority) return a->Priority < b->Priority;
-                return a->Id < b->Id;
-            });
-            for (RuntimeBinding* bindingPtr : order)
-            {
-                auto& binding = *bindingPtr;
+                auto& binding = _bindings[bindingIndex];
                 if (!binding.Enabled || !binding.RuntimeEnabled || context.Time < binding.NextUpdate) continue;
                 const float updateHz = std::clamp(parameterValue(binding, RuntimeParameterSlot::UpdateHz, binding.UpdateHz), 0.5f, 500.0f);
                 binding.NextUpdate = context.Time + 1.0 / updateHz;
@@ -517,21 +468,13 @@ namespace quartz::client
         {
             for (auto& control : _controls) control.TriggeredThisFrame = false;
             RuntimeControlOutput output = _pendingOutput;
-            std::vector<RuntimeControlRule*> order;
-            order.reserve(_controls.size());
-            for (auto& control : _controls) order.push_back(&control);
-            std::ranges::sort(order, [](const RuntimeControlRule* a, const RuntimeControlRule* b)
-            {
-                if (a->Priority != b->Priority) return a->Priority < b->Priority;
-                return a->Id < b->Id;
-            });
-
+            ensureRuntimeCaches();
             for (int pass = 0; pass < _controlPassLimit; ++pass)
             {
                 bool mutated = false;
-                for (RuntimeControlRule* controlPtr : order)
+                for (const std::size_t controlIndex : _controlEvaluationOrder)
                 {
-                    auto& control = *controlPtr;
+                    auto& control = _controls[controlIndex];
                     if (!control.Enabled || !control.RuntimeEnabled) { control.ConditionActive = false; continue; }
                     RuntimeBinding* source = findBinding(control.SourceBindingId);
                     if (!source || !source->Enabled || !source->HasValue) { control.ConditionActive = false; continue; }
@@ -574,7 +517,7 @@ namespace quartz::client
             const auto temporary = std::filesystem::path(_path.string() + ".tmp");
             std::ofstream file(temporary, std::ios::trunc);
             if (!file) return false;
-            file << "# Quartz runtime material bindings v10\n";
+            file << "# Quartz runtime material bindings v11\n";
             for (const auto& b : _bindings)
             {
                 file << "B\t" << b.Enabled << '\t' << static_cast<int>(b.Source) << '\t' << b.Signal << '\t' << b.Constant << '\t'
@@ -593,7 +536,8 @@ namespace quartz::client
                      << static_cast<int>(b.AggregateOperation) << '\t' << static_cast<int>(b.CompareCondition) << '\t' << static_cast<int>(b.CompareResult) << '\t'
                      << b.CompareA << '\t' << b.CompareB << '\t' << b.CompareTolerance << '\t' << runtimeEscape(serializeReferences(b.References)) << '\t'
                      << b.BankValueId << '\t' << b.StoreBankValueId << '\t' << b.StoreToBank << '\t' << runtimeEscape(b.StringConstant) << '\t' << runtimeEscape(serializeActions(b.Actions)) << '\t' << b.ProfileId << '\t'
-                     << static_cast<int>(b.SignaturePatternKind) << '\t' << b.Order << '\t' << runtimeEscape(b.Group) << '\t' << b.ObjectPointerId << '\n';
+                     << static_cast<int>(b.SignaturePatternKind) << '\t' << b.Order << '\t' << runtimeEscape(b.Group) << '\t' << b.ObjectPointerId << '\t'
+                     << runtimeEscape(b.Script) << '\t' << b.ScriptTimeoutMs << '\n';
             }
             for (const auto& c : _controls)
             {
@@ -639,6 +583,34 @@ namespace quartz::client
         void saveIfChanged() { if (_savedRevision != _revision) save(); }
 
     private:
+        struct TransparentStringHash
+        {
+            using is_transparent = void;
+            std::size_t operator()(const std::string_view value) const noexcept { return std::hash<std::string_view>{}(value); }
+            std::size_t operator()(const std::string& value) const noexcept { return (*this)(std::string_view(value)); }
+            std::size_t operator()(const char* value) const noexcept { return (*this)(std::string_view(value ? value : "")); }
+        };
+        using StringLookup = std::unordered_map<std::string, std::size_t, TransparentStringHash, std::equal_to<>>;
+
+        void ensureRuntimeCaches() const
+        {
+            if (_runtimeCacheRevision == _revision) return;
+            _bindingLookup.clear(); _controlLookup.clear(); _bankLookup.clear(); _profileLookup.clear(); _objectLookup.clear(); _pointerLookup.clear();
+            _bindingNameLookup.clear(); _controlNameLookup.clear(); _bankNameLookup.clear();
+            _bindingEvaluationOrder.clear(); _controlEvaluationOrder.clear();
+            _bindingLookup.reserve(_bindings.size()); _bindingNameLookup.reserve(_bindings.size()); _bindingEvaluationOrder.reserve(_bindings.size());
+            for (std::size_t i = 0; i < _bindings.size(); ++i) { _bindingLookup.emplace(_bindings[i].Id, i); if (_bindings[i].Name[0]) _bindingNameLookup.try_emplace(_bindings[i].Name, i); _bindingEvaluationOrder.push_back(i); }
+            _controlLookup.reserve(_controls.size()); _controlNameLookup.reserve(_controls.size()); _controlEvaluationOrder.reserve(_controls.size());
+            for (std::size_t i = 0; i < _controls.size(); ++i) { _controlLookup.emplace(_controls[i].Id, i); if (_controls[i].Name[0]) _controlNameLookup.try_emplace(_controls[i].Name, i); _controlEvaluationOrder.push_back(i); }
+            _bankLookup.reserve(_bank.size()); _bankNameLookup.reserve(_bank.size()); for (std::size_t i = 0; i < _bank.size(); ++i) { _bankLookup.emplace(_bank[i].Id, i); if (_bank[i].Name[0]) _bankNameLookup.try_emplace(_bank[i].Name, i); }
+            _profileLookup.reserve(_profiles.size()); for (std::size_t i = 0; i < _profiles.size(); ++i) _profileLookup.emplace(_profiles[i].Id, i);
+            _objectLookup.reserve(_objects.size()); for (std::size_t i = 0; i < _objects.size(); ++i) _objectLookup.emplace(_objects[i].Id, i);
+            _pointerLookup.reserve(_pointers.size()); for (std::size_t i = 0; i < _pointers.size(); ++i) _pointerLookup.emplace(_pointers[i].Id, i);
+            std::ranges::sort(_bindingEvaluationOrder, [&](const std::size_t a, const std::size_t b) { if (_bindings[a].Priority != _bindings[b].Priority) return _bindings[a].Priority < _bindings[b].Priority; return _bindings[a].Id < _bindings[b].Id; });
+            std::ranges::sort(_controlEvaluationOrder, [&](const std::size_t a, const std::size_t b) { if (_controls[a].Priority != _controls[b].Priority) return _controls[a].Priority < _controls[b].Priority; return _controls[a].Id < _controls[b].Id; });
+            _runtimeCacheRevision = _revision;
+        }
+
         template<std::size_t N>
         static void copyField(char (&destination)[N], const std::string& value)
         {
@@ -671,7 +643,7 @@ namespace quartz::client
                     auto parseB = [&](const std::size_t index, bool& value) { return index < fields.size() && parseBool(fields[index], value); };
                     int source = 0, valueType = 0;
                     if (!parseB(0, b.Enabled) || !parseInt(1, source) || !parseInt(2, b.Signal) || !parseFloat(3, b.Constant)) continue;
-                    b.Source = static_cast<RuntimeSourceKind>(std::clamp(source, 0, static_cast<int>(RuntimeSourceKind::ProfileState)));
+                    b.Source = static_cast<RuntimeSourceKind>(std::clamp(source, 0, static_cast<int>(RuntimeSourceKind::Script)));
                     copyField(b.Name, runtimeUnescape(fields[4])); copyField(b.TargetId, runtimeUnescape(fields[5]));
                     parseInt(6, b.TargetComponent); parseInt(7, b.ProcessId); parseB(8, b.AutoReattach); parseInt(9, valueType);
                     b.ValueType = static_cast<ProcessValueType>(std::clamp(valueType, 0, static_cast<int>(ProcessValueType::Bool)));
@@ -737,6 +709,9 @@ namespace quartz::client
                     if (fields.size() > 66) parseInt(66, b.Order);
                     if (fields.size() > 67) copyField(b.Group, runtimeUnescape(fields[67]));
                     if (fields.size() > 68) parseNumber(fields[68], b.ObjectPointerId);
+                    if (fields.size() > 69) copyField(b.Script, runtimeUnescape(fields[69]));
+                    if (fields.size() > 70) parseFloat(70, b.ScriptTimeoutMs);
+                    b.ScriptTimeoutMs = std::clamp(b.ScriptTimeoutMs, 0.1f, 100.0f);
                     if (b.Id == 0) b.Id = _nextBindingId++;
                     else _nextBindingId = std::max(_nextBindingId, b.Id + 1);
                     _bindings.emplace_back(std::move(b));
@@ -1165,6 +1140,7 @@ namespace quartz::client
                 return false;
             case RuntimeBindingOperation::ResetState:
                 invalidateBindingOutput(binding);
+                if (binding.Source == RuntimeSourceKind::Script) runtimeResetScriptBinding(binding.Id);
                 binding.RawValue = 0.0f;
                 binding.Value = 0.0f;
                 binding.LastUpdate = 0.0;
@@ -1979,6 +1955,8 @@ namespace quartz::client
                 else output = static_cast<float>(profile->ControlIds.size());
                 binding.StringValue = profile->Name; binding.HasString = true; binding.Error.clear(); return true;
             }
+            case RuntimeSourceKind::Script:
+                return runtimeEvaluateScriptBinding(*this, binding, context, output);
             }
             return false;
         }
@@ -2009,6 +1987,10 @@ namespace quartz::client
         int _previousShaderPreset = 0;
         std::string _observedShaderId;
         std::string _previousShaderId;
+        mutable std::unordered_map<std::uint64_t, std::size_t> _bindingLookup, _controlLookup, _bankLookup, _profileLookup, _objectLookup, _pointerLookup;
+        mutable StringLookup _bindingNameLookup, _controlNameLookup, _bankNameLookup;
+        mutable std::vector<std::size_t> _bindingEvaluationOrder, _controlEvaluationOrder;
+        mutable std::uint64_t _runtimeCacheRevision = std::numeric_limits<std::uint64_t>::max();
         double _rateTime = 0.0;
         double _lastRuntimeTime = 0.0;
     };
