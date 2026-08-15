@@ -13,6 +13,43 @@ namespace quartz::client::ui
             if (view.starts_with("0x") || view.starts_with("0X")) { view.remove_prefix(2); base = 16; }
             const auto [ptr, ec] = std::from_chars(view.data(), view.data() + view.size(), value, base); return ec == std::errc{} && ptr == view.data() + view.size();
         }
+
+        std::optional<ProcessValueType> bindingValueType(const MemoryScanValueType type) noexcept
+        {
+            switch (type)
+            {
+            case MemoryScanValueType::U8: return ProcessValueType::U8;
+            case MemoryScanValueType::I8: return ProcessValueType::I8;
+            case MemoryScanValueType::U16: return ProcessValueType::U16;
+            case MemoryScanValueType::I16: return ProcessValueType::I16;
+            case MemoryScanValueType::U32: return ProcessValueType::U32;
+            case MemoryScanValueType::I32: return ProcessValueType::I32;
+            case MemoryScanValueType::U64: case MemoryScanValueType::Pointer: return ProcessValueType::U64;
+            case MemoryScanValueType::I64: return ProcessValueType::I64;
+            case MemoryScanValueType::Float: return ProcessValueType::Float;
+            case MemoryScanValueType::Double: return ProcessValueType::Double;
+            case MemoryScanValueType::Bool: return ProcessValueType::Bool;
+            default: return std::nullopt;
+            }
+        }
+
+        void createValueBinding(RuntimeBindingEngine& engine, const pid_t pid, const RuntimeProcessInfo* process, const std::uintptr_t address, const ProcessValueType type)
+        {
+            auto& binding = engine.add();
+            std::snprintf(binding.Name, sizeof(binding.Name), "Scan %llX", static_cast<unsigned long long>(address));
+            binding.Source = RuntimeSourceKind::NativeProcess;
+            binding.ProcessId = static_cast<int>(pid);
+            if (process) std::snprintf(binding.ProcessName, sizeof(binding.ProcessName), "%s", process->Name.c_str());
+            binding.AddressMode = ProcessAddressMode::AddressChain;
+            std::snprintf(binding.Address, sizeof(binding.Address), "0x%llX", static_cast<unsigned long long>(address));
+            binding.ValueType = type;
+            binding.WriteMaterial = false;
+            binding.Normalize = false;
+            binding.Clamp = false;
+            binding.SmoothingHz = 0.0f;
+            binding.UpdateHz = 30.0f;
+            binding.AutoReattach = false;
+        }
     }
 
     void MemoryScannerPage::render(PageContext& context, PageManager& manager)
@@ -72,13 +109,19 @@ namespace quartz::client::ui
         ImGui::Text("Candidates: %llu", static_cast<unsigned long long>(stats.Candidates)); ImGui::SameLine(); ImGui::TextDisabled("%s%s", stats.Status.c_str(), _status.empty() ? "" : (" | " + _status).c_str());
 
         const auto rows = _scanner.results(256);
+        const auto bindType = bindingValueType(_scanner.valueType());
         if (!rows.empty() && ImGui::BeginTable("MemoryScanResults", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable, ImVec2(0.0f, 260.0f)))
         {
-            ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 150.0f); ImGui::TableSetupColumn("Value"); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 62.0f); ImGui::TableHeadersRow();
+            ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 150.0f); ImGui::TableSetupColumn("Value"); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 125.0f); ImGui::TableHeadersRow();
             for (const auto& row : rows)
             {
                 ImGui::PushID(static_cast<int>(row.Address & 0x7fffffffULL)); ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::Text("0x%llX", static_cast<unsigned long long>(row.Address)); ImGui::TableNextColumn(); ImGui::TextUnformatted(row.Value.c_str()); ImGui::TableNextColumn();
                 if (ImGui::SmallButton("Inspect")) { auto& inspector = runtimeMemoryInspectorState(); inspector.Pid = _pid; inspector.Address = row.Address; runtimeRefreshMemoryInspector(inspector); manager.open("native"); }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!bindType.has_value());
+                if (ImGui::SmallButton("Bind") && bindType) { createValueBinding(context.runtimeBindings, _pid, selected, row.Address, *bindType); _status = "created native value binding"; }
+                ImGui::EndDisabled();
+                if (!bindType && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("String and byte-array scan results do not map directly to a numeric runtime binding yet.");
                 ImGui::PopID();
             }
             ImGui::EndTable();
@@ -101,7 +144,7 @@ namespace quartz::client::ui
             if (ImGui::Button("Copy pattern")) ImGui::SetClipboardText(_derivedPattern.c_str()); ImGui::SameLine();
             if (ImGui::Button("Create native-address binding"))
             {
-                auto& binding = context.runtimeBindings.add(); std::snprintf(binding.Name, sizeof(binding.Name), "%s", "Derived signature"); binding.Source = RuntimeSourceKind::NativeAddress; binding.ProcessId = _pid; binding.AddressMode = ProcessAddressMode::Signature; binding.SignaturePatternKind = RuntimeSignaturePatternKind::HexadecimalPattern; binding.SignatureExecutableOnly = true; binding.WriteMaterial = false; binding.Clamp = false; binding.SmoothingHz = 0.0f; std::snprintf(binding.Signature, sizeof(binding.Signature), "%s", _derivedPattern.c_str()); _status = "created NativeAddress binding";
+                auto& binding = context.runtimeBindings.add(); std::snprintf(binding.Name, sizeof(binding.Name), "%s", "Derived signature"); binding.Source = RuntimeSourceKind::NativeAddress; binding.ProcessId = _pid; if (selected) std::snprintf(binding.ProcessName, sizeof(binding.ProcessName), "%s", selected->Name.c_str()); binding.AddressMode = ProcessAddressMode::Signature; binding.SignaturePatternKind = RuntimeSignaturePatternKind::HexadecimalPattern; binding.SignatureExecutableOnly = true; binding.WriteMaterial = false; binding.Clamp = false; binding.SmoothingHz = 0.0f; std::snprintf(binding.Signature, sizeof(binding.Signature), "%s", _derivedPattern.c_str()); _status = "created NativeAddress binding";
             }
         }
     }

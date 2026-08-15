@@ -36,7 +36,7 @@ namespace quartz::client::ui
             switch (section)
             {
             case PageSection::Visual: return "VISUAL";
-            case PageSection::Runtime: return "RUNTIME";
+            case PageSection::Runtime: return "REVERSE ENGINEERING";
             case PageSection::Device: return "DEVICE";
             case PageSection::Diagnostics: return "DIAGNOSTICS";
             case PageSection::Other: return "OTHER";

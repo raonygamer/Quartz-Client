@@ -55,9 +55,13 @@ namespace quartz::client
         [[nodiscard]] MemoryScanValueType valueType() const noexcept;
 
     private:
+        void invalidateResultCache() const noexcept { _cachedResults.clear(); _cachedResultLimit = 0; }
+
         std::shared_ptr<MemoryScanJobState> _job;
         std::unique_ptr<MemoryScanSnapshot> _snapshot;
         MemoryScanStats _lastStats;
+        mutable std::vector<MemoryScanResultRow> _cachedResults;
+        mutable std::size_t _cachedResultLimit = 0;
     };
 
     const char* memoryScanValueTypeName(MemoryScanValueType type) noexcept;

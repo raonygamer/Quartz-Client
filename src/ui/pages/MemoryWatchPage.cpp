@@ -4,8 +4,29 @@
 
 namespace quartz::client::ui
 {
-    namespace { bool parseWatchAddress(const char* text, std::uintptr_t& value) { if (!text || !*text) return false; std::string_view view(text); int base = 10; if (view.starts_with("0x") || view.starts_with("0X")) { view.remove_prefix(2); base = 16; } const auto [ptr, ec] = std::from_chars(view.data(), view.data() + view.size(), value, base); return ec == std::errc{} && ptr == view.data() + view.size(); } }
-    void MemoryWatchPage::render(PageContext&, PageManager& manager)
+    namespace
+    {
+        bool parseWatchAddress(const char* text, std::uintptr_t& value)
+        {
+            if (!text || !*text) return false;
+            std::string_view view(text); int base = 10;
+            if (view.starts_with("0x") || view.starts_with("0X")) { view.remove_prefix(2); base = 16; }
+            const auto [ptr, ec] = std::from_chars(view.data(), view.data() + view.size(), value, base); return ec == std::errc{} && ptr == view.data() + view.size();
+        }
+
+        ProcessValueType watchBindingType(const int size) noexcept
+        {
+            switch (std::clamp(size, 0, 3))
+            {
+            case 0: return ProcessValueType::U8;
+            case 1: return ProcessValueType::U16;
+            case 2: return ProcessValueType::U32;
+            default: return ProcessValueType::U64;
+            }
+        }
+    }
+
+    void MemoryWatchPage::render(PageContext& context, PageManager& manager)
     {
         if (_processes.empty()) _processes = enumerateRuntimeProcesses();
         ImGui::TextWrapped("Hardware data breakpoints answer the classic 'who writes/reads this address?' question. x86 provides write-only or read/write data traps (not read-only) and only four debug-address slots per thread; Quartz uses one slot and mirrors it onto newly created threads.");
@@ -18,7 +39,34 @@ namespace quartz::client::ui
         ImGui::SetNextItemWidth(120.0f); ImGui::InputInt("Hit limit", &_maxHits); ImGui::SameLine(); ImGui::TextDisabled("0 = unlimited");
         if (_watch.running()) ImGui::BeginDisabled();
         if (ImGui::Button("Start watch")) { std::uintptr_t address = 0; static constexpr std::size_t Widths[] = {1, 2, 4, 8}; if (!parseWatchAddress(_address.data(), address)) _status = "invalid address"; else _watch.start(_pid, address, Widths[std::clamp(_size, 0, 3)], static_cast<MemoryWatchAccess>(_access), static_cast<std::size_t>(std::max(_maxHits, 0)), _status); }
-        if (_watch.running()) ImGui::EndDisabled(); ImGui::SameLine(); if (!_watch.running()) ImGui::BeginDisabled(); if (ImGui::Button("Stop")) _watch.stop(); if (!_watch.running()) ImGui::EndDisabled(); ImGui::SameLine(); if (ImGui::Button("Clear hits")) _watch.clearHits();
+        if (_watch.running()) ImGui::EndDisabled();
+        ImGui::SameLine(); if (!_watch.running()) ImGui::BeginDisabled(); if (ImGui::Button("Stop")) _watch.stop(); if (!_watch.running()) ImGui::EndDisabled();
+        ImGui::SameLine(); if (ImGui::Button("Clear hits")) _watch.clearHits();
+        ImGui::SameLine();
+        if (ImGui::Button("Bind watched value"))
+        {
+            std::uintptr_t address = 0;
+            if (!parseWatchAddress(_address.data(), address)) _status = "invalid address";
+            else if (_pid <= 0) _status = "select a process first";
+            else
+            {
+                auto& binding = context.runtimeBindings.add();
+                std::snprintf(binding.Name, sizeof(binding.Name), "Watch %llX", static_cast<unsigned long long>(address));
+                binding.Source = RuntimeSourceKind::NativeProcess;
+                binding.ProcessId = static_cast<int>(_pid);
+                if (selected) std::snprintf(binding.ProcessName, sizeof(binding.ProcessName), "%s", selected->Name.c_str());
+                binding.AddressMode = ProcessAddressMode::AddressChain;
+                std::snprintf(binding.Address, sizeof(binding.Address), "0x%llX", static_cast<unsigned long long>(address));
+                binding.ValueType = watchBindingType(_size);
+                binding.WriteMaterial = false;
+                binding.Normalize = false;
+                binding.Clamp = false;
+                binding.SmoothingHz = 0.0f;
+                binding.UpdateHz = 30.0f;
+                binding.AutoReattach = false;
+                _status = "created binding for watched value";
+            }
+        }
         const std::string watchStatus = _watch.status(); if (!watchStatus.empty()) ImGui::TextWrapped("%s", watchStatus.c_str()); if (!_status.empty()) ImGui::TextDisabled("%s", _status.c_str());
         const auto hits = _watch.hits();
         if (ImGui::BeginTable("MemoryWatchHits", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable, ImVec2(0.0f, 360.0f)))

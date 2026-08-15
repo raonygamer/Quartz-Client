@@ -2,6 +2,7 @@
 #include "quartz/client/Model.hpp"
 #include "quartz/client/async/ThreadPool.hpp"
 #include <atomic>
+#include <bit>
 #include <cstring>
 #if QUARTZ_HAS_ZYDIS
 #include <Zydis/Zydis.h>
@@ -297,7 +298,7 @@ namespace quartz::client
         MemoryScanStats done = stats(); done.Running = false;
         {
             std::lock_guard lock(_job->Mutex);
-            if (_job->Result) _snapshot = std::move(_job->Result);
+            if (_job->Result) { _snapshot = std::move(_job->Result); invalidateResultCache(); }
             done.Status = _job->Status;
         }
         _lastStats = std::move(done); _job.reset();
@@ -310,7 +311,7 @@ namespace quartz::client
         if (comparisonNeedsPrevious(request.Comparison)) { error = "this comparison requires Next Scan"; return false; }
         ParsedScanValue parsed;
         if (!parseRequestValues(request, 0, parsed, error)) return false;
-        _snapshot.reset(); _lastStats = {};
+        _snapshot.reset(); invalidateResultCache(); _lastStats = {};
         auto job = std::make_shared<MemoryScanJobState>(); _job = job;
         async::globalThreadPool().submit([job, request, parsed](std::stop_token stop)
         {
@@ -366,7 +367,7 @@ namespace quartz::client
         if (request.Comparison == MemoryScanComparison::UnknownInitial) { error = "Unknown initial value is only valid for New Scan"; return false; }
         ParsedScanValue parsed;
         if (!parseRequestValues(request, _snapshot->Width, parsed, error)) return false;
-        auto job = std::make_shared<MemoryScanJobState>(); job->Result = std::move(_snapshot); job->Candidates.store(job->Result->Candidates, std::memory_order_relaxed);
+        auto job = std::make_shared<MemoryScanJobState>(); job->Result = std::move(_snapshot); invalidateResultCache(); job->Candidates.store(job->Result->Candidates, std::memory_order_relaxed);
         std::uint64_t total = 0; for (const auto& part : job->Result->Regions) total += part.ScanLength; job->TotalBytes.store(total, std::memory_order_relaxed); _job = job;
         async::globalThreadPool().submit([job, request, parsed](std::stop_token stop)
         {
@@ -400,22 +401,33 @@ namespace quartz::client
 
     std::vector<MemoryScanResultRow> MemoryScanner::results(const std::size_t limit) const
     {
-        std::vector<MemoryScanResultRow> rows;
-        if (!_snapshot || limit == 0) return rows;
-        rows.reserve(std::min<std::uint64_t>(_snapshot->Candidates, limit));
+        if (!_snapshot || limit == 0) return {};
+        if (_cachedResultLimit >= limit)
+        {
+            const std::size_t count = std::min(limit, _cachedResults.size());
+            return {_cachedResults.begin(), _cachedResults.begin() + static_cast<std::ptrdiff_t>(count)};
+        }
+
+        _cachedResults.clear();
+        _cachedResultLimit = limit;
+        _cachedResults.reserve(std::min<std::uint64_t>(_snapshot->Candidates, limit));
         for (const auto& part : _snapshot->Regions)
         {
-            const std::size_t slots = part.Candidates.size() * 64;
-            for (std::size_t i = 0; i < slots && rows.size() < limit; ++i)
+            for (std::size_t wordIndex = 0; wordIndex < part.Candidates.size() && _cachedResults.size() < limit; ++wordIndex)
             {
-                if (!bit(part.Candidates, i)) continue;
-                const std::size_t offset = part.FirstOffset + i * part.Step;
-                if (offset + _snapshot->Width > part.Bytes.size()) continue;
-                rows.push_back({part.Base + offset, formatValue(_snapshot->Type, part.Bytes.data() + offset, _snapshot->Width)});
+                std::uint64_t word = part.Candidates[wordIndex];
+                while (word != 0 && _cachedResults.size() < limit)
+                {
+                    const unsigned bitIndex = std::countr_zero(word);
+                    const std::size_t i = wordIndex * 64 + bitIndex;
+                    const std::size_t offset = part.FirstOffset + i * part.Step;
+                    if (offset + _snapshot->Width <= part.Bytes.size()) _cachedResults.push_back({part.Base + offset, formatValue(_snapshot->Type, part.Bytes.data() + offset, _snapshot->Width)});
+                    word &= word - 1;
+                }
             }
-            if (rows.size() >= limit) break;
+            if (_cachedResults.size() >= limit) break;
         }
-        return rows;
+        return _cachedResults;
     }
 
     std::string deriveRuntimeBytePattern(const pid_t pid, const std::uintptr_t start, const std::uintptr_t end, const bool wildcardRelocations, std::string& error)

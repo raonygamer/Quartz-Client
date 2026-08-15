@@ -1,9 +1,60 @@
 #include "quartz/client/ui/pages/BindingsPage.hpp"
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
+#include <set>
 
 namespace quartz::client::ui
 {
+    namespace
+    {
+        struct GroupPath { std::string Outer; std::string Inner; };
+        GroupPath splitGroup(const char* value)
+        {
+            const std::string group = value ? trim(value) : std::string{};
+            const std::size_t slash = group.find('/');
+            if (slash == std::string::npos) return {group, {}};
+            return {trim(group.substr(0, slash)), trim(group.substr(slash + 1))};
+        }
+
+        void drawBindingCards(RuntimeBindingEngine& engine, ShaderFramebuffer& shaderFramebuffer)
+        {
+            std::vector<RuntimeBinding*> order; order.reserve(engine.bindings().size()); for (auto& binding : engine.bindings()) order.push_back(&binding);
+            std::ranges::stable_sort(order, [](const RuntimeBinding* a, const RuntimeBinding* b) { if (a->Order != b->Order) return a->Order < b->Order; if (a->Priority != b->Priority) return a->Priority < b->Priority; return a->Id < b->Id; });
+            std::optional<std::size_t> erase;
+            auto drawOne = [&](RuntimeBinding& binding)
+            {
+                bool shouldErase = false;
+                ImGui::PushID(static_cast<int>(binding.Id & 0x7fffffffULL));
+                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 5.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
+                if (ImGui::BeginChild("##BindingCard", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY)) drawRuntimeBinding(engine, shaderFramebuffer, binding, shouldErase);
+                ImGui::EndChild(); ImGui::PopStyleVar(2); ImGui::PopID(); ImGui::Dummy(ImVec2(0.0f, 8.0f));
+                if (shouldErase) erase = static_cast<std::size_t>(&binding - engine.bindings().data());
+            };
+
+            for (auto* binding : order) if (splitGroup(binding->Group).Outer.empty()) drawOne(*binding);
+            std::set<std::string> outerGroups;
+            for (const auto* binding : order) { const auto path = splitGroup(binding->Group); if (!path.Outer.empty()) outerGroups.insert(path.Outer); }
+            for (const auto& outer : outerGroups)
+            {
+                if (!ImGui::CollapsingHeader((outer + "###BindingGroup/" + outer).c_str(), ImGuiTreeNodeFlags_DefaultOpen)) continue;
+                ImGui::Indent(8.0f);
+                for (auto* binding : order) { const auto path = splitGroup(binding->Group); if (path.Outer == outer && path.Inner.empty()) drawOne(*binding); }
+                std::set<std::string> innerGroups;
+                for (const auto* binding : order) { const auto path = splitGroup(binding->Group); if (path.Outer == outer && !path.Inner.empty()) innerGroups.insert(path.Inner); }
+                for (const auto& inner : innerGroups)
+                {
+                    if (!ImGui::CollapsingHeader((inner + "###BindingSubgroup/" + outer + "/" + inner).c_str(), ImGuiTreeNodeFlags_DefaultOpen)) continue;
+                    ImGui::Indent(8.0f);
+                    for (auto* binding : order) { const auto path = splitGroup(binding->Group); if (path.Outer == outer && path.Inner == inner) drawOne(*binding); }
+                    ImGui::Unindent(8.0f);
+                }
+                ImGui::Unindent(8.0f);
+            }
+            if (erase) engine.erase(*erase);
+        }
+    }
+
     void BindingsPage::render(PageContext& context, PageManager& manager)
     {
         auto& engine = context.runtimeBindings;
@@ -14,6 +65,7 @@ namespace quartz::client::ui
         if (ImGui::Button("+ Binding")) engine.add();
         ImGui::SameLine(); if (ImGui::Button("Save graph")) engine.save();
         ImGui::SameLine(); ImGui::TextDisabled("%s", engine.path().string().c_str());
+        ImGui::TextDisabled("Grouping supports Group/Subgroup. A plain Group still works exactly as before.");
         if (ImGui::CollapsingHeader("Quick create", ImGuiTreeNodeFlags_DefaultOpen))
         {
             auto addPreset = [&](const char* name, const RuntimeSourceKind source, const int signal, const char* target)
@@ -31,7 +83,7 @@ namespace quartz::client::ui
             if (ImGui::SmallButton("Active profile")) { auto* b = addPreset("Active profile", RuntimeSourceKind::ProfileState, 0, "runtime.profile"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; }
         }
         if (shaderFramebuffer.materialParameters().empty()) ImGui::TextDisabled("Current shader has no reflected material parameters; value-only bindings still work normally.");
-        drawGroupedBindings(engine, shaderFramebuffer);
+        drawBindingCards(engine, shaderFramebuffer);
         if (engine.bindings().empty()) ImGui::TextDisabled("No bindings yet.");
     }
 }
