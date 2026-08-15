@@ -1,5 +1,6 @@
 #pragma once
 #include "Forward.hpp"
+#include "shader/ShaderPreset.hpp"
 
 namespace quartz::client
 {
