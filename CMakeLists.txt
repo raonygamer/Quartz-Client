@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.23)
 
 project(QuartzClient
     VERSION 0.1.0
@@ -15,11 +15,19 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 set(OpenGL_GL_PREFERENCE GLVND)
 
+set(LIBHAT_TESTING OFF CACHE BOOL "" FORCE)
+set(LIBHAT_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LIBHAT_INSTALL_TARGET OFF CACHE BOOL "" FORCE)
+set(LIBHAT_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+set(LIBHAT_FEATURE_AVX512 ON CACHE BOOL "" FORCE)
+set(LIBHAT_HINT_X86_64 ON CACHE BOOL "" FORCE)
+
 add_subdirectory(protocol)
 add_subdirectory(vendor/glad)
 add_subdirectory(vendor/glfw)
 add_subdirectory(vendor/libusb)
 add_subdirectory(vendor/zydis)
+add_subdirectory(vendor/libhat)
 
 file(GLOB_RECURSE QUARTZ_CLIENT_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
@@ -60,6 +68,7 @@ target_link_libraries(QuartzClient PRIVATE
         glfw
         usb-1.0
         Zydis
+        libhat::libhat
 )
 
 target_compile_features(QuartzClient PRIVATE cxx_std_20)

@@ -1,4 +1,6 @@
 #include "quartz/client/Model.hpp"
+#include <libhat/scanner.hpp>
+#include <libhat/signature.hpp>
 
 namespace quartz::client
 {
@@ -1124,8 +1126,16 @@ namespace quartz::client
         }
 
         const auto opcodePatterns = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? parseRuntimeOpcodePattern(binding.Signature) : std::vector<std::string>{};
-        const std::size_t ScanBudget = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? 32 * 1024 : 256 * 1024;
-        const std::size_t ReadChunk = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? 32 * 1024 : 128 * 1024;
+        hat::signature libhatSignature;
+        if (binding.SignaturePatternKind == RuntimeSignaturePatternKind::HexadecimalPattern)
+        {
+            libhatSignature.reserve(binding.SignatureBytes.size());
+            for (std::size_t i = 0; i < binding.SignatureBytes.size(); ++i)
+                libhatSignature.emplace_back(static_cast<std::byte>(binding.SignatureBytes[i]), static_cast<std::byte>(binding.SignatureMasks[i]));
+        }
+        const hat::scan_hint libhatHint = binding.SignatureExecutableOnly ? hat::scan_hint::x86_64 : hat::scan_hint::none;
+        const std::size_t ScanBudget = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? 32 * 1024 : 8 * 1024 * 1024;
+        const std::size_t ReadChunk = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? 32 * 1024 : 4 * 1024 * 1024;
         const std::size_t scanOverlap = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? std::min<std::size_t>(std::max<std::size_t>(opcodePatterns.size() * 15, 15) - 1, 4095) : binding.SignatureBytes.size() > 1 ? binding.SignatureBytes.size() - 1 : 0;
         std::size_t budget = ScanBudget;
         std::vector<std::uint8_t> buffer;
@@ -1155,12 +1165,27 @@ namespace quartz::client
                 binding.SignatureCursor = region.End;
                 continue;
             }
-            const std::size_t last = buffer.size() - binding.SignatureBytes.size();
-            for (std::size_t offset = 0; offset <= last; ++offset)
+            std::optional<std::size_t> matchOffset;
+            if (binding.SignaturePatternKind == RuntimeSignaturePatternKind::HexadecimalPattern)
             {
-                std::size_t opcodeLength = 0;
-                const bool matched = binding.SignaturePatternKind == RuntimeSignaturePatternKind::HexadecimalPattern ? runtimeSignatureMatches(buffer, offset, binding) : runtimeOpcodePatternMatches(std::span<const std::uint8_t>(buffer).subspan(offset), binding.SignatureCursor + offset, opcodePatterns, opcodeLength);
-                if (!matched) continue;
+                const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(buffer.data()), buffer.size()};
+                const auto result = hat::find_pattern(bytes, libhatSignature, hat::scan_alignment::X1, libhatHint);
+                if (result.has_result()) matchOffset = static_cast<std::size_t>(result.get() - bytes.data());
+            }
+            else
+            {
+                const std::size_t last = buffer.size() - binding.SignatureBytes.size();
+                for (std::size_t offset = 0; offset <= last; ++offset)
+                {
+                    std::size_t opcodeLength = 0;
+                    if (!runtimeOpcodePatternMatches(std::span<const std::uint8_t>(buffer).subspan(offset), binding.SignatureCursor + offset, opcodePatterns, opcodeLength)) continue;
+                    matchOffset = offset;
+                    break;
+                }
+            }
+            if (matchOffset)
+            {
+                const std::size_t offset = *matchOffset;
                 const std::uintptr_t match = binding.SignatureCursor + offset;
                 std::uintptr_t resolved = 0;
                 if (binding.SignatureResolve == SignatureResultMode::MatchAddress)

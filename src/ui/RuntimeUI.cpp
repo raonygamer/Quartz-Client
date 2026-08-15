@@ -2,6 +2,24 @@
 
 namespace quartz::client
 {
+    void drawIndeterminateProgressBar(ImVec2 size)
+    {
+        if (size.x <= 0.0f) size.x = ImGui::GetContentRegionAvail().x;
+        if (size.y <= 0.0f) size.y = ImGui::GetFrameHeight();
+        const ImVec2 min = ImGui::GetCursorScreenPos();
+        const ImVec2 max{min.x + size.x, min.y + size.y};
+        ImGui::Dummy(size);
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        const float rounding = ImGui::GetStyle().FrameRounding;
+        drawList->AddRectFilled(min, max, ImGui::GetColorU32(ImGuiCol_FrameBg), rounding);
+        const float segmentWidth = std::max(size.x * 0.28f, 24.0f);
+        const float phase = std::fmod(static_cast<float>(ImGui::GetTime()) * 0.85f, 1.0f);
+        const float left = min.x - segmentWidth + (size.x + segmentWidth) * phase;
+        const float clippedLeft = std::max(left, min.x);
+        const float clippedRight = std::min(left + segmentWidth, max.x);
+        if (clippedRight > clippedLeft) drawList->AddRectFilled({clippedLeft, min.y}, {clippedRight, max.y}, ImGui::GetColorU32(ImGuiCol_PlotHistogram), rounding);
+    }
+
     void mapSpectrumToColumns(const std::span<const float> analysisBands, std::array<float, Columns>& bands, const VisualizerSettings& settings, const float overallGain)
     {
         if (analysisBands.empty())
@@ -1192,7 +1210,7 @@ namespace quartz::client
                 ImGui::SameLine();
                 if (binding.SignatureResolvedAddress != 0) ImGui::TextDisabled("resolved: 0x%llX", static_cast<unsigned long long>(binding.SignatureResolvedAddress));
                 else if (!binding.SignatureStatus.empty()) ImGui::TextDisabled("%s", binding.SignatureStatus.c_str());
-                if (binding.SignatureResolvedAddress == 0 && binding.SignatureProgress > 0.0f && binding.SignatureInstructionAddress == 0) ImGui::ProgressBar(binding.SignatureProgress, ImVec2(320.0f, 0.0f));
+                if (binding.SignatureResolvedAddress == 0 && binding.SignatureInstructionAddress == 0 && binding.SignatureStatus.starts_with("Scanning pattern")) drawIndeterminateProgressBar(ImVec2(320.0f, 0.0f));
                 if (binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture)
                 {
                     if (binding.SignatureMatchAddress != 0) ImGui::TextDisabled("Match 0x%llX   instruction 0x%llX", static_cast<unsigned long long>(binding.SignatureMatchAddress), static_cast<unsigned long long>(binding.SignatureInstructionAddress));
