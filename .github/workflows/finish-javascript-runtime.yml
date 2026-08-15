@@ -29,20 +29,24 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build
+        id: build
+        continue-on-error: true
         shell: bash
         run: |
-          set +e
+          set -o pipefail
           cmake --build build -j2 2>&1 | tee /tmp/quartz-build.log
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            {
-              echo '## Compiler output'
-              echo '```text'
-              tail -n 180 /tmp/quartz-build.log
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit "$status"
-          fi
+
+      - name: Upload compiler log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: javascript-runtime-build-log
+          path: /tmp/quartz-build.log
+          if-no-files-found: ignore
+
+      - name: Require successful build
+        if: steps.build.outcome != 'success'
+        run: exit 1
 
       - name: Commit product changes
         run: |
