@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   prerelease:
-    if: startsWith(github.event.head_commit.message, 'refactor: split Quartz client into subsystem architecture (#1)')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
