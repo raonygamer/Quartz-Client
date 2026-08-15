@@ -22,6 +22,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev libudev-dev
 
+      - name: Repair migration generator
+        run: python3 tools/fix_async_ui_migration.py
+
       - name: Apply migration
         run: python3 tools/apply_async_ui_migration.py
 
