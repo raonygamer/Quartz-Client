@@ -1,0 +1,141 @@
+name: Publish refactor prerelease
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  prerelease:
+    if: startsWith(github.event.head_commit.message, 'refactor: split Quartz client into subsystem architecture (#1)')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev libudev-dev
+
+      - name: Configure release build
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build release
+        run: cmake --build build -j2
+
+      - name: Publish 1.1.0 prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > /tmp/release-notes.md <<'EOF'
+          # Quartz Client 1.1.0 pre-release
+
+          **Authored by ChatGPT cuz raony was too lazy on the bed.**
+
+          Quartz Client started as a keyboard RGB/diagnostics client and **ended up being a minified Cheat Engine by fun**.
+
+          This release is the big checkpoint after retiring the original monolithic `Main.cpp`. It covers the architecture split and the host tooling that grew on top of it since then.
+
+          ## Architecture / project structure
+
+          - Split the former ~13k-line monolithic `src/Main.cpp` into real subsystem headers and translation units.
+          - Added `Application` orchestration instead of keeping process lifetime in the entry point.
+          - Split GLFW/OpenGL window lifetime, ImGui lifetime, UI pages, device state, settings, shaders, audio/media, native tooling and runtime logic into semantic modules.
+          - Added polymorphic page management and grouped application navigation.
+          - Split USB responsibilities into raw libusb transport, QRPC session/framing and the compatibility-facing `RawUSB` layer.
+          - Shared host/device protocol definitions through `Quartz-Protocol` remain the single source of truth.
+          - Removed the temporary source-migration generators/workflow used during the refactor.
+
+          ## Device / rendering / desktop tooling
+
+          - Direct RGB framebuffer streaming to Quartz firmware.
+          - Shader-driven keyboard rendering with live vertex/fragment editing, presets, materials and runtime uniforms.
+          - Supersampled framebuffer rendering and configurable downsampling.
+          - Audio spectrum visualization, gain controls and reactive effects.
+          - MPRIS media player selection and artwork-color integration, including paused/no-player fallback behavior.
+          - Device selection, connection state, firmware performance telemetry, matrix timing probes and USB/QRPC diagnostics.
+          - KDE StatusNotifier tray/window integration and minimize/start-minimized behavior.
+          - Host/application CPU and runtime telemetry surfaces.
+
+          ## Runtime bindings / controls / profiles
+
+          - Built a runtime binding engine for native-process values, exact/native addresses, binding references, shader state, device/USB/RPC telemetry, keyboard/audio/media state, aggregates, comparisons, value-bank state and object fields.
+          - Added runtime controls with conditions, targets, extra actions, binding operations and a real no-op target.
+          - Added nested grouping for bindings and controls using `Outer/Inner` group paths.
+          - Added profiles/profile hotkeys and persistent runtime value-bank state.
+          - Added live binding state feedback, including address-resolution scanning pulses and clearer runtime status indicators.
+          - Added reusable object descriptors and persistent pointer instances for mapping structured native objects.
+
+          ## Async native/signature tooling
+
+          - Added a shared `std::jthread`-based worker pool with stop-token shutdown and priority queues.
+          - Added BasedInc/libhat and moved hexadecimal signature scans into asynchronous jobs.
+          - Signature scanning uses chunked external-memory reads plus libhat pattern matching, nibble wildcards/masks, cancellation, generation IDs and live throughput telemetry.
+          - Added quick one-shot libhat signature search directly in the Reverse Engineering workspace.
+          - Quick signature results can jump directly to memory/disassembly, the value watch list, hardware access watchpoints or runtime bindings.
+          - Retained Zydis opcode-pattern tooling and the opcode editor for instruction-oriented signatures.
+
+          ## Memory scanner / watch list
+
+          - Added Cheat-Engine-style New Scan / Next Scan value searching across process mappings.
+          - Added decimal and `0x` hexadecimal input for integer-like values.
+          - Optimized sparse candidate enumeration to avoid the old post-scan UI stall.
+          - Added configurable live refresh for only the currently visible result rows.
+          - Added `Previous value` based on the actual last scan snapshot, with green/red increase/decrease feedback.
+          - Added whole-row context menus for scan results and watched values.
+          - Added inspect, disassemble, hardware-watch, binding, copy and direct-write actions.
+          - Added an editable watch list with address/type/value changes, previous values and freeze-at-rate behavior.
+          - Added a manual `Add to watch list` path so a scan result is no longer required first.
+
+          ## Hardware watchpoints / register capture
+
+          - Added x86 hardware data breakpoints for discovering instructions that read/write an address.
+          - Grouped repeated accesses by the accessing instruction instead of endlessly appending identical rows.
+          - Added per-access-site hit counters and last-TID tracking while keeping the global hit limit based on real traps.
+          - Hardened ptrace teardown: pending stops are consumed, debug registers are restored and detach no longer abandons cleanup merely because the worker was cancelled.
+          - Added full latest-register snapshots to grouped memory-watch hits with right-click actions on register values.
+          - Added one-shot hardware execution probes: right-click an instruction and capture registers the next time it executes without patching an `INT3` into the target.
+          - Armed execution-probe lines are highlighted red with `armed for next execution`, then automatically disarm after the first hit.
+
+          ## Memory / disassembly workspace
+
+          - Added architecture-aware x86/x64 process disassembly instead of hardcoding long-64 decoding.
+          - Added Intel assembly syntax highlighting to the disassembly editor.
+          - Added persistent per-address disassembly markers with editable tags and custom colors; cyan is the default marker color.
+          - Added synchronized raw-byte/disassembly address selection.
+          - Added scrollable grouped raw bytes plus ASCII display and larger browseable memory windows.
+          - Split the lower inspector into `Raw bytes | Registers | Patch bytes` tabs to recover vertical space.
+          - Added direct byte patching from the inspector.
+          - Added right-click actions across disassembly lines, raw memory, register values and watchpoint results.
+
+          ## Object model debugging
+
+          - Added a dedicated `Object model debugger` tab under Reverse Engineering.
+          - Bind any reusable object descriptor to an arbitrary PID/base address without first creating a persistent runtime pointer.
+          - Live-refresh fields with resolved offsets, addresses, decoded values and raw bytes.
+          - Respect the target process pointer width when laying out 32-bit object models from a 64-bit Quartz host.
+          - Right-click fields to inspect/disassemble, add to the value watch list, watch accesses, create direct bindings or follow pointer-looking values.
+          - A temporary debug object can be promoted into a persistent pointer instance when it becomes useful.
+
+          ## Stability / UI fixes during the refactor
+
+          - Fixed ImGui disabled-stack corruption when Start/Stop callbacks changed watcher running state between `BeginDisabled` and `EndDisabled`.
+          - Centered and enlarged binding state indicators.
+          - Fixed multiple native/debugger cleanup and state-lifetime edge cases found while abusing Terraria/Astroflux for testing.
+          - Kept runtime config enum ordering/serialization compatibility while adding newer UI behavior through compatibility-safe representations where needed.
+
+          ## Status
+
+          This is still a personal development build for Quartz-powered hardware and my own native-process experiments, not a supported general-purpose debugger or keyboard suite. Linux remains the primary platform, and the reverse-engineering features rely heavily on `/proc`, process memory APIs, ptrace/debug registers and evdev.
+          EOF
+
+          gh release create 1.1.0 build/quartz \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Quartz Client 1.1.0 — subsystem refactor + RE tooling" \
+            --notes-file /tmp/release-notes.md \
+            --prerelease
