@@ -6,7 +6,7 @@ namespace quartz::client::ui
 {
     void NativePage::render(PageContext& context, PageManager& manager)
     {
-        static RuntimeMemoryInspectorState inspector;
+        auto& inspector = runtimeMemoryInspectorState();
         auto& engine = context.runtimeBindings;
         (void)manager;
         ImGui::TextWrapped("Native-process workspace: active process bindings, signature scanner telemetry, and the memory/disassembly inspector live here. Detailed source configuration stays with each binding.");
