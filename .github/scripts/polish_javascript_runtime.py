@@ -57,15 +57,4 @@ text = replace_once(text,
 'if (edited != editorState.Synced) { script.Source = edited; editorState.Synced = script.Source; runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); localChanged = true; }', "inline edit output release")
 write(path, text)
 
-# q.runtime.shader and shaderPreset own the same logical output slot; newest one wins cleanly.
-path = "src/runtime/QuickJSGraphApi.cpp"
-text = read(path)
-text = replace_once(text,
-'JSValue runtimeShader(JSContext*ctx,JSValueConst,int argc,JSValueConst*argv){auto*s=state(ctx);if(!s||!s->Output||argc<1)return JS_FALSE;std::string id;if(!toString(ctx,argv[0],id))return JS_EXCEPTION;if(!findShaderPresetById(id))return JS_ThrowReferenceError(ctx,"unknown shader id: %s",id.c_str());s->Output->ShaderId=id;if(argc>1){double v=0;if(JS_ToFloat64(ctx,&v,argv[1])<0)return JS_EXCEPTION;s->Output->ShaderTransitionSeconds=std::clamp(static_cast<float>(v),0.0f,10.0f);}return JS_TRUE;}',
-'JSValue runtimeShader(JSContext*ctx,JSValueConst,int argc,JSValueConst*argv){auto*s=state(ctx);if(!s||!s->Output||argc<1)return JS_FALSE;std::string id;if(!toString(ctx,argv[0],id))return JS_EXCEPTION;if(!findShaderPresetById(id))return JS_ThrowReferenceError(ctx,"unknown shader id: %s",id.c_str());s->Output->ShaderId=id;s->Output->ShaderPresetIndex.reset();if(argc>1){double v=0;if(JS_ToFloat64(ctx,&v,argv[1])<0)return JS_EXCEPTION;s->Output->ShaderTransitionSeconds=std::clamp(static_cast<float>(v),0.0f,10.0f);}return JS_TRUE;}', "runtime shader exclusivity")
-text = replace_once(text,
-'JSValue runtimePreset(JSContext*ctx,JSValueConst,int argc,JSValueConst*argv){auto*s=state(ctx);std::int32_t p=0;if(!s||!s->Output||argc<1||JS_ToInt32(ctx,&p,argv[0])<0)return JS_FALSE;if(p<1||p>static_cast<int>(ShaderPresets.size()))return JS_ThrowRangeError(ctx,"shader preset out of range");s->Output->ShaderPresetIndex=p;if(argc>1){double v=0;if(JS_ToFloat64(ctx,&v,argv[1])<0)return JS_EXCEPTION;s->Output->ShaderTransitionSeconds=std::clamp(static_cast<float>(v),0.0f,10.0f);}return JS_TRUE;}',
-'JSValue runtimePreset(JSContext*ctx,JSValueConst,int argc,JSValueConst*argv){auto*s=state(ctx);std::int32_t p=0;if(!s||!s->Output||argc<1||JS_ToInt32(ctx,&p,argv[0])<0)return JS_FALSE;if(p<1||p>static_cast<int>(ShaderPresets.size()))return JS_ThrowRangeError(ctx,"shader preset out of range");s->Output->ShaderPresetIndex=p;s->Output->ShaderId.reset();if(argc>1){double v=0;if(JS_ToFloat64(ctx,&v,argv[1])<0)return JS_EXCEPTION;s->Output->ShaderTransitionSeconds=std::clamp(static_cast<float>(v),0.0f,10.0f);}return JS_TRUE;}', "runtime preset exclusivity")
-write(path, text)
-
 print("JavaScript runtime polish patches applied")
