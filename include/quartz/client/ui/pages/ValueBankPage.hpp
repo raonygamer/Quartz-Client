@@ -7,7 +7,7 @@ namespace quartz::client::ui
     {
     public:
         [[nodiscard]] std::string_view id() const noexcept override { return "value-bank"; }
-        [[nodiscard]] std::string_view title() const noexcept override { return "Value Bank"; }
+        [[nodiscard]] std::string_view title() const noexcept override { return "Value Bank (deprecated)"; }
         [[nodiscard]] PageSection section() const noexcept override { return PageSection::Runtime; }
         void render(PageContext& context, PageManager& manager) override;
     };
