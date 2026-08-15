@@ -37,10 +37,14 @@ namespace quartz::client::ui
         ImGui::SameLine(); ImGui::SetNextItemWidth(110.0f); static constexpr const char* Sizes[] = {"1 byte", "2 bytes", "4 bytes", "8 bytes"}; ImGui::Combo("Size", &_size, Sizes, 4);
         ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); ImGui::Combo("Access", &_access, "Write\0Read / write\0");
         ImGui::SetNextItemWidth(120.0f); ImGui::InputInt("Hit limit", &_maxHits); ImGui::SameLine(); ImGui::TextDisabled("0 = unlimited");
-        if (_watch.running()) ImGui::BeginDisabled();
+        const bool watchRunning = _watch.running();
+        ImGui::BeginDisabled(watchRunning);
         if (ImGui::Button("Start watch")) { std::uintptr_t address = 0; static constexpr std::size_t Widths[] = {1, 2, 4, 8}; if (!parseWatchAddress(_address.data(), address)) _status = "invalid address"; else _watch.start(_pid, address, Widths[std::clamp(_size, 0, 3)], static_cast<MemoryWatchAccess>(_access), static_cast<std::size_t>(std::max(_maxHits, 0)), _status); }
-        if (_watch.running()) ImGui::EndDisabled();
-        ImGui::SameLine(); if (!_watch.running()) ImGui::BeginDisabled(); if (ImGui::Button("Stop")) _watch.stop(); if (!_watch.running()) ImGui::EndDisabled();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!watchRunning);
+        if (ImGui::Button("Stop")) _watch.stop();
+        ImGui::EndDisabled();
         ImGui::SameLine(); if (ImGui::Button("Clear hits")) _watch.clearHits();
         ImGui::SameLine();
         if (ImGui::Button("Bind watched value"))
