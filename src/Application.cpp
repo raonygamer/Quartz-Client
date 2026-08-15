@@ -1,6 +1,8 @@
 #include "quartz/client/Application.hpp"
 #include "quartz/client/Model.hpp"
 #include "quartz/client/ui/PageManager.hpp"
+#include "quartz/client/platform/Window.hpp"
+#include "quartz/client/ui/ImGuiRuntime.hpp"
 
 namespace quartz::client
 {
@@ -14,63 +16,10 @@ int Application::run(int argc, char* argv[])
     VisualizerSettings settings;
     loadSettings(settings);
 
-    glfwSetErrorCallback([](const int error, const char* description) { std::fprintf(stderr, "GLFW error %d: %s\n", error, description); });
-    if (!glfwInit())
-        return EXIT_FAILURE;
-
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* window = glfwCreateWindow(1280, 800, "Quartz", nullptr, nullptr);
-    if (!window)
-    {
-        glfwTerminate();
-        return EXIT_FAILURE;
-    }
-    glfwSetWindowCloseCallback(window, [](GLFWwindow* target)
-    {
-        glfwSetWindowShouldClose(target, GLFW_FALSE);
-        glfwHideWindow(target);
-    });
-
-    glfwMakeContextCurrent(window);
-#ifdef GLFW_LOCK_KEY_MODS
-    glfwSetInputMode(window, GLFW_LOCK_KEY_MODS, GLFW_TRUE);
-#endif
-    glfwSwapInterval(0);
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(glfwGetProcAddress)))
-    {
-        std::fprintf(stderr, "Failed to initialize OpenGL loader\n");
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return EXIT_FAILURE;
-    }
-
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    applyDarkTheme();
-    initializeShaderEditorFonts();
-
-    constexpr const char* GLSLVersion = "#version 330";
-    if (!ImGui_ImplGlfw_InitForOpenGL(window, true))
-    {
-        std::fprintf(stderr, "Failed to initialize ImGui GLFW backend\n");
-        ImGui::DestroyContext();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return EXIT_FAILURE;
-    }
-    if (!ImGui_ImplOpenGL3_Init(GLSLVersion))
-    {
-        std::fprintf(stderr, "Failed to initialize ImGui OpenGL backend\n");
-        ImGui_ImplGlfw_Shutdown();
-        ImGui::DestroyContext();
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return EXIT_FAILURE;
-    }
+    platform::Window window;
+    if (!window.initialize(1280, 800, "Quartz")) return EXIT_FAILURE;
+    ui::ImGuiRuntime imgui;
+    if (!imgui.initialize(window.handle())) return EXIT_FAILURE;
 
     RawUSB usb;
     AudioSpectrum audio;
@@ -192,19 +141,17 @@ int Application::run(int argc, char* argv[])
     bool lastScrollLock = reactiveKeys.ScrollLockActive;
     if (hidden)
     {
-        glfwHideWindow(window);
+        window.hide();
     }
-    while (!glfwWindowShouldClose(window))
+    while (!window.shouldClose())
     {
-        if (keyboardInput.consumeRestoreRequest()) restoreWindow(window);
+        if (keyboardInput.consumeRestoreRequest()) window.restore();
         const double currentFrame = glfwGetTime();
         appCpuUsage = appCpuMeter.update(currentFrame);
         runtimeBindings.updateRates(usb.stats(), currentFrame);
-        glfwPollEvents();
-        runtimeBindings.pollProfileHotkeys(window);
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
+        window.pollEvents();
+        runtimeBindings.pollProfileHotkeys(window.handle());
+        imgui.beginFrame();
 
         reactiveKeys = keyboardInput.snapshot();
         for (std::size_t i = 0; i < MatrixSize; ++i)
@@ -390,16 +337,7 @@ int Application::run(int argc, char* argv[])
             runtimeBindings.saveIfChanged();
             nextSettingsSave = currentFrame + 0.50;
         }
-        ImGui::Render();
-
-        int width;
-        int height;
-        glfwGetFramebufferSize(window, &width, &height);
-        glViewport(0, 0, width, height);
-        glClearColor(0.05f, 0.05f, 0.05f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        glfwSwapBuffers(window);
+        imgui.render(window);
 
         if (settings.LimitMainLoop)
             std::this_thread::sleep_for(std::chrono::microseconds(250));
@@ -416,11 +354,8 @@ int Application::run(int argc, char* argv[])
     mediaColor.stop();
     audio.stop();
 
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    imgui.shutdown();
+    window.shutdown();
     return EXIT_SUCCESS;
 
 }

@@ -290,18 +290,7 @@ namespace quartz::client
         }
     }
 
-    void hideWindow(GLFWwindow* window)
-    {
-        if (window) glfwHideWindow(window);
-    }
 
-    void restoreWindow(GLFWwindow* window)
-    {
-        if (!window) return;
-        glfwShowWindow(window);
-        glfwRestoreWindow(window);
-        glfwFocusWindow(window);
-    }
 
     void drawPermanentHeader(RawUSB& usb)
     {
