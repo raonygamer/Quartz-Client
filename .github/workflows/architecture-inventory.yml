@@ -1,0 +1,36 @@
+name: Architecture inventory
+
+on:
+  push:
+    branches: [refactor/split-main]
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/split-main
+          fetch-depth: 0
+      - name: Inventory top-level declarations
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+          for path in sorted(Path('src/main').glob('*.inc')):
+              print(f'===== {path} =====')
+              lines = path.read_text().splitlines()
+              depth = 0
+              in_raw = False
+              raw_end = None
+              for i, line in enumerate(lines, 1):
+                  stripped = line.strip()
+                  if not stripped:
+                      continue
+                  # Source fragments are already namespace-body text. Top-level declarations use four spaces.
+                  if line.startswith('    ') and not line.startswith('        '):
+                      if re.match(r'(class|struct|enum class|enum|using|constexpr|static|template|inline|bool |void |int |float |double |std::|Color32|GLFWwindow\*)', stripped):
+                          print(f'{i:5}: {stripped[:220]}')
+      - name: Inventory main entry dependencies
+        run: |
+          grep -nE '^[[:space:]]{4}[A-Za-z_][A-Za-z0-9_:<> ,&*]+[[:space:]][A-Za-z_][A-Za-z0-9_]*[;(=]' src/main/MainEntry.inc | head -200 || true
