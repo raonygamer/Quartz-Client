@@ -24,6 +24,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev libudev-dev
 
+      - name: Fix staging typo
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/apply_javascript_workspace.py')
+          lines = path.read_text().splitlines(keepends=True)
+          for index, line in enumerate(lines):
+              if 'runtimeInstallTerrariaAstrofluxMigration' not in line or 'replace_once' not in line:
+                  continue
+              assert line.rstrip().endswith(')')
+              newline = '\n' if line.endswith('\n') else ''
+              lines[index] = line.rstrip('\n')[:-1] + ', "quickjs workspace public api")' + newline
+              break
+          else:
+              raise RuntimeError('staging typo target not found')
+          path.write_text(''.join(lines))
+          PY
+
       - name: Apply JavaScript workspace migration
         run: python3 tools/apply_javascript_workspace.py
 
