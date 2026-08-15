@@ -70,8 +70,10 @@ namespace quartz::client
         if (index >= _scripts.size()) return;
         const std::uint64_t id = _scripts[index].Id;
         runtimeResetWorkspaceScript(id);
+        _scriptOutputs.erase(id);
         _scripts.erase(_scripts.begin() + static_cast<std::ptrdiff_t>(index));
         for (auto& profile : legacy.profiles()) std::erase(profile.ScriptIds, id);
+        rebuildOutput();
         legacy.markChanged();
         ++_revision;
     }
@@ -98,6 +100,38 @@ namespace quartz::client
     {
         const auto it = std::ranges::find_if(_scripts, [&](const RuntimeScript& script) { return std::string_view(script.Name) == name; });
         return it == _scripts.end() ? nullptr : &*it;
+    }
+
+    void JavaScriptRuntime::clearOutput(const std::uint64_t scriptId) noexcept
+    {
+        if (_scriptOutputs.erase(scriptId) != 0) rebuildOutput();
+    }
+
+    void JavaScriptRuntime::clearOutputs() noexcept
+    {
+        _scriptOutputs.clear();
+        _output = {};
+    }
+
+    void JavaScriptRuntime::rebuildOutput() noexcept
+    {
+        RuntimeControlOutput combined{};
+        std::vector<const RuntimeScript*> order;
+        order.reserve(_scripts.size());
+        for (const auto& script : _scripts) if (script.Enabled) order.push_back(&script);
+        std::ranges::stable_sort(order, [](const RuntimeScript* a, const RuntimeScript* b) { if (a->Order != b->Order) return a->Order < b->Order; return a->Id < b->Id; });
+        for (const RuntimeScript* script : order)
+        {
+            const auto it = _scriptOutputs.find(script->Id);
+            if (it == _scriptOutputs.end()) continue;
+            const auto& source = it->second;
+            if (source.ShaderId) { combined.ShaderId = source.ShaderId; combined.ShaderPresetIndex.reset(); combined.ShaderTransitionSeconds = source.ShaderTransitionSeconds; }
+            if (source.ShaderPresetIndex) { combined.ShaderPresetIndex = source.ShaderPresetIndex; combined.ShaderId.reset(); combined.ShaderTransitionSeconds = source.ShaderTransitionSeconds; }
+            if (source.GlobalBrightness) combined.GlobalBrightness = source.GlobalBrightness;
+            if (source.SendFramebuffer) combined.SendFramebuffer = source.SendFramebuffer;
+            if (source.BaseColorMode) combined.BaseColorMode = source.BaseColorMode;
+        }
+        _output = std::move(combined);
     }
 
     bool JavaScriptRuntime::save()
@@ -198,9 +232,12 @@ namespace quartz::client
         for (auto& script : _scripts)
         {
             const bool enabled = std::find(profile->ScriptIds.begin(), profile->ScriptIds.end(), script.Id) != profile->ScriptIds.end();
-            if (script.Enabled != enabled) { script.Enabled = enabled; changed = true; }
+            if (script.Enabled == enabled) continue;
+            script.Enabled = enabled;
+            if (!enabled) { runtimeResetWorkspaceScript(script.Id); _scriptOutputs.erase(script.Id); }
+            changed = true;
         }
-        if (changed) ++_revision;
+        if (changed) { rebuildOutput(); ++_revision; }
     }
 
     void JavaScriptRuntime::pollReloadHotkey(GLFWwindow* window, const EvdevKeyboard& keyboard)
@@ -219,7 +256,7 @@ namespace quartz::client
             const bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
             down = (!_settings.ReloadHotkeyCtrl || ctrl) && (!_settings.ReloadHotkeyAlt || alt) && (!_settings.ReloadHotkeyShift || shift) && glfwGetKey(window, _settings.ReloadHotkeyKey) == GLFW_PRESS;
         }
-        if (down && !_settings.ReloadHotkeyDown) runtimeReloadAllWorkspaceScripts();
+        if (down && !_settings.ReloadHotkeyDown) { runtimeReloadAllWorkspaceScripts(); clearOutputs(); }
         _settings.ReloadHotkeyDown = down;
     }
 }
