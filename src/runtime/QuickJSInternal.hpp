@@ -5,6 +5,8 @@
 namespace quartz::client
 {
     class RuntimeBindingEngine;
+    class JavaScriptRuntime;
+    class EvdevKeyboard;
     struct RuntimeBinding;
     struct RuntimeScript;
     struct RuntimeSignalContext;
@@ -21,13 +23,16 @@ namespace quartz::client
     struct RuntimeQuickJSContext
     {
         RuntimeBindingEngine* Engine = nullptr;
+        JavaScriptRuntime* JavaScript = nullptr;
         RuntimeBinding* Binding = nullptr;
         RuntimeScript* Script = nullptr;
         const RuntimeSignalContext* SignalContext = nullptr;
+        const EvdevKeyboard* Keyboard = nullptr;
         RuntimeQuickJSDeadline* Execution = nullptr;
         ShaderFramebuffer* Shader = nullptr;
         RuntimeControlOutput* Output = nullptr;
         bool AllowGraphMutation = false;
+        bool LegacyBridge = false;
     };
 
     inline bool runtimeQuickJSDeadlineExpired(RuntimeQuickJSContext& context) noexcept
