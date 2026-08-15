@@ -437,6 +437,7 @@ namespace quartz::client
             instance->AllowGraphMutation = script.LegacyBridge;
             instance->LegacyBridge = script.LegacyBridge;
             instance->Reloaded = script.ReloadCount > 0;
+            if (const auto oldHit = executionProbe().hit()) instance->LastBreakpointHitTime = oldHit->Time;
             instance->Context = JS_NewContext(runtime.Runtime);
             if (!instance->Context) { runtime.Instances.erase(it); return nullptr; }
             JS_SetContextOpaque(instance->Context, static_cast<RuntimeQuickJSContext*>(instance.get()));
@@ -655,7 +656,7 @@ namespace quartz::client
             auto& runtime = workspace();
             const bool watchExternal = javascript.settings().ExternalHotReload && script.HotReload;
             auto existing = runtime.Instances.find(script.Id);
-            if (existing != runtime.Instances.end() && watchExternal && dependenciesChanged(*existing->second)) { runtime.Instances.erase(existing); ++script.ReloadCount; existing = runtime.Instances.end(); }
+            if (existing != runtime.Instances.end() && watchExternal && dependenciesChanged(*existing->second)) { javascript.clearOutput(script.Id); runtime.Instances.erase(existing); ++script.ReloadCount; existing = runtime.Instances.end(); }
             bool reuseExternal = false;
             std::string source;
             std::filesystem::path filename;
@@ -664,7 +665,7 @@ namespace quartz::client
                 filename = script.Path;
                 if (filename.is_relative()) filename = runtimeQuickJSScriptDirectory() / filename;
                 existing = runtime.Instances.find(script.Id);
-                if (existing != runtime.Instances.end() && watchExternal && (existing->second->MainPath != filename || existing->second->MainTime != fileTime(filename))) { runtime.Instances.erase(existing); ++script.ReloadCount; existing = runtime.Instances.end(); }
+                if (existing != runtime.Instances.end() && watchExternal && (existing->second->MainPath != filename || existing->second->MainTime != fileTime(filename))) { javascript.clearOutput(script.Id); runtime.Instances.erase(existing); ++script.ReloadCount; existing = runtime.Instances.end(); }
                 reuseExternal = existing != runtime.Instances.end() && JS_IsFunction(existing->second->Context, existing->second->Function);
                 if (!reuseExternal && !loadFile(filename, source)) { script.Status = "could not read external script: " + filename.string(); return false; }
             }
@@ -745,11 +746,18 @@ namespace quartz::client
         std::ranges::stable_sort(order, [](const RuntimeScript* a, const RuntimeScript* b) { if (a->Order != b->Order) return a->Order < b->Order; return a->Id < b->Id; });
         for (RuntimeScript* script : order)
         {
-            if (!script->Enabled || context.Time < script->NextUpdate) continue;
+            if (!script->Enabled)
+            {
+                if (script->Status != "disabled") { runtimeResetWorkspaceScript(script->Id); script->Status = "disabled"; }
+                javascript.clearOutput(script->Id);
+                continue;
+            }
+            if (context.Time < script->NextUpdate) continue;
             const float updateHz = std::clamp(script->UpdateHz, 0.5f, 500.0f);
             script->NextUpdate = context.Time + 1.0 / updateHz;
-            evaluate(javascript, legacy, *script, context, shader, javascript.output(), keyboard);
+            evaluate(javascript, legacy, *script, context, shader, javascript.outputFor(script->Id), keyboard);
         }
+        javascript.rebuildOutput();
         return javascript.output();
     }
 

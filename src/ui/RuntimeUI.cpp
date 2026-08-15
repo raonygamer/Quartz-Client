@@ -1,5 +1,6 @@
 #include "quartz/client/Model.hpp"
 #include "quartz/client/runtime/QuickJS.hpp"
+#include "quartz/client/runtime/JavaScriptRuntime.hpp"
 #include <memory>
 #include <unordered_map>
 
@@ -1955,10 +1956,10 @@ namespace quartz::client
         if (engine.bank().empty()) ImGui::TextDisabled("No bank values yet. Add one to remember state such as the shader that was active before a game took over.");
     }
 
-    void drawRuntimeProfiles(RuntimeBindingEngine& engine)
+    void drawRuntimeProfiles(RuntimeBindingEngine& engine, JavaScriptRuntime& javascript)
     {
-        ImGui::TextUnformatted("Binding profiles"); ImGui::SameLine(); if (ImGui::Button("+ Add profile")) engine.addProfile();
-        ImGui::SameLine(); ImGui::TextDisabled("Profiles mass-enable/disable bindings, controls and JavaScript workspace scripts. Hotkeys use evdev globally when available.");
+        ImGui::TextUnformatted("Profiles"); ImGui::SameLine(); if (ImGui::Button("+ Add profile")) engine.addProfile();
+        ImGui::SameLine(); ImGui::TextDisabled("Profiles can still group deprecated graph nodes and explicitly select first-class JavaScript scripts. Hotkeys use evdev globally when available.");
         if (!engine.profiles().empty())
         {
             const RuntimeBindingProfile* active = engine.findProfile(engine.activeProfileId());
@@ -2000,7 +2001,7 @@ namespace quartz::client
                 if (ImGui::BeginTable("ProfileScripts", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
                 {
                     ImGui::TableSetupColumn("Member", ImGuiTableColumnFlags_WidthFixed, 65.0f); ImGui::TableSetupColumn("Script"); ImGui::TableSetupColumn("Current", ImGuiTableColumnFlags_WidthFixed, 80.0f); ImGui::TableHeadersRow();
-                    for (const auto& script : engine.scripts()) { ImGui::TableNextRow(); ImGui::TableNextColumn(); bool member = std::find(profile.ScriptIds.begin(), profile.ScriptIds.end(), script.Id) != profile.ScriptIds.end(); if (ImGui::Checkbox(("##ps" + std::to_string(script.Id)).c_str(), &member)) { if (member) profile.ScriptIds.push_back(script.Id); else std::erase(profile.ScriptIds, script.Id); changed = true; } ImGui::TableNextColumn(); ImGui::TextUnformatted(script.Name); ImGui::TableNextColumn(); ImGui::TextColored(script.Enabled ? ImVec4(0.2f,0.8f,0.3f,1) : ImVec4(0.8f,0.25f,0.25f,1), "%s", script.Enabled ? "enabled" : "disabled"); }
+                    for (const auto& script : javascript.scripts()) { ImGui::TableNextRow(); ImGui::TableNextColumn(); bool member = std::find(profile.ScriptIds.begin(), profile.ScriptIds.end(), script.Id) != profile.ScriptIds.end(); if (ImGui::Checkbox(("##ps" + std::to_string(script.Id)).c_str(), &member)) { if (member) profile.ScriptIds.push_back(script.Id); else std::erase(profile.ScriptIds, script.Id); changed = true; } ImGui::TableNextColumn(); ImGui::TextUnformatted(script.Name); ImGui::TableNextColumn(); ImGui::TextColored(script.Enabled ? ImVec4(0.2f,0.8f,0.3f,1) : ImVec4(0.8f,0.25f,0.25f,1), "%s", script.Enabled ? "enabled" : "disabled"); }
                     ImGui::EndTable();
                 }
                 if (changed) engine.markChanged();

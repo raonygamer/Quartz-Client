@@ -1,5 +1,7 @@
 #include "quartz/client/Application.hpp"
 #include "quartz/client/Model.hpp"
+#include "quartz/client/runtime/JavaScriptRuntime.hpp"
+#include "quartz/client/runtime/QuickJS.hpp"
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/platform/Window.hpp"
 #include "quartz/client/ui/ImGuiRuntime.hpp"
@@ -65,6 +67,7 @@ int Application::run(int argc, char* argv[])
     RuntimeInputAnalytics inputAnalytics;
     RuntimeRGBAnalytics rgbAnalytics;
     RuntimeBindingEngine runtimeBindings;
+    JavaScriptRuntime javascript(runtimeBindings);
     RuntimeTelemetry runtimeTelemetry;
     AutoGainState autoGain;
     autoGain.reset(settings);
@@ -127,6 +130,9 @@ int Application::run(int argc, char* argv[])
     }
 
     const double startTime = glfwGetTime();
+    double lastJavaScriptFrame = startTime;
+    std::string javascriptObservedShaderId = settings.ShaderId;
+    std::string javascriptPreviousShaderId = settings.ShaderId;
     keyboardInput.start(startTime);
     runtimeTelemetry.event(startTime, "Application", "Quartz runtime studio started");
     double nextVisualizerFrame = startTime;
@@ -153,7 +159,7 @@ int Application::run(int argc, char* argv[])
         runtimeBindings.updateRates(usb.stats(), currentFrame);
         window.pollEvents();
         runtimeBindings.pollProfileHotkeys(window.handle(), keyboardInput);
-        runtimeBindings.pollScriptReloadHotkey(window.handle(), keyboardInput);
+        javascript.pollReloadHotkey(window.handle(), keyboardInput);
         imgui.beginFrame();
 
         reactiveKeys = keyboardInput.snapshot();
@@ -223,6 +229,60 @@ int Application::run(int argc, char* argv[])
             nextReconnectAttempt = currentFrame + 1.0;
         }
 
+        if (!settings.ShaderId.empty() && settings.ShaderId != javascriptObservedShaderId)
+        {
+            javascriptPreviousShaderId = javascriptObservedShaderId;
+            javascriptObservedShaderId = settings.ShaderId;
+        }
+        PerformanceSnapshot javascriptPerformance{};
+        bool javascriptHasPerformance = false;
+        {
+            std::lock_guard lock(deviceState.Mutex);
+            javascriptPerformance = deviceState.Performance;
+            javascriptHasPerformance = deviceState.HasPerformance;
+        }
+        RuntimeSignalContext javascriptContext;
+        javascriptContext.Time = currentFrame;
+        javascriptContext.DeltaTime = static_cast<float>(std::clamp(currentFrame - lastJavaScriptFrame, 0.0, 1.0));
+        lastJavaScriptFrame = currentFrame;
+        javascriptContext.Audio = audio.levelSnapshot();
+        javascriptContext.MappedBands = &mappedBands;
+        javascriptContext.SmoothedBands = &smoothedBands;
+        javascriptContext.MediaColor = visualizerColor;
+        javascriptContext.MediaAmount = mediaColorAmount;
+        javascriptContext.MediaPlaying = mediaColor.playing();
+        javascriptContext.MediaTitle = mediaColor.mediaTitle();
+        javascriptContext.Keys = reactiveKeys;
+        javascriptContext.Performance = javascriptPerformance;
+        javascriptContext.HasPerformance = javascriptHasPerformance;
+        javascriptContext.AppCpu = appCpuUsage;
+        javascriptContext.USBConnected = usb.isConnected();
+        javascriptContext.USB = usb.stats();
+        javascriptContext.USBRates = runtimeBindings.usbRates();
+        javascriptContext.Framebuffer = &framebuffer;
+        javascriptContext.EffectiveGain = autoGain.EffectiveGain;
+        javascriptContext.GainCorrection = autoGain.Correction;
+        javascriptContext.CurrentShaderPreset = settings.ShaderPresetIndex;
+        javascriptContext.CurrentShaderId = settings.ShaderId;
+        javascriptContext.PreviousShaderId = javascriptPreviousShaderId;
+        javascriptContext.ShaderTransitionActive = shaderTransition.Active;
+        javascriptContext.ShaderTransitionProgress = shaderTransition.Active ? std::clamp(static_cast<float>((currentFrame - shaderTransition.StartedAt) / std::max(shaderTransition.Duration, 0.0001f)), 0.0f, 1.0f) : 1.0f;
+        javascriptContext.BaseColorMode = settings.BaseColorMode;
+        javascriptContext.GlobalBrightness = settings.GlobalBrightness;
+        javascriptContext.SendFramebuffer = settings.SendFramebuffer;
+        javascriptContext.ShaderFramebufferWidth = settings.ShaderFramebufferWidth;
+        javascriptContext.ShaderFramebufferHeight = settings.ShaderFramebufferHeight;
+        javascript.syncProfile(runtimeBindings);
+        const RuntimeControlOutput& mainScriptOutput = runtimeEvaluateWorkspaceScripts(javascript, runtimeBindings, javascriptContext, shaderFramebuffer, keyboardInput);
+        if (mainScriptOutput.ShaderId && *mainScriptOutput.ShaderId != settings.ShaderId)
+        {
+            switchShaderId(shaderFramebuffer, shaderTransition, shaderEditor, vertexShaderSource, fragmentShaderSource, settings, *mainScriptOutput.ShaderId, currentFrame, mainScriptOutput.ShaderTransitionSeconds, false);
+        }
+        else if (mainScriptOutput.ShaderPresetIndex && *mainScriptOutput.ShaderPresetIndex != settings.ShaderPresetIndex)
+        {
+            switchShaderPreset(shaderFramebuffer, shaderTransition, shaderEditor, vertexShaderSource, fragmentShaderSource, settings, *mainScriptOutput.ShaderPresetIndex, currentFrame, mainScriptOutput.ShaderTransitionSeconds, false);
+        }
+
         const double visualizerFrameTime = 1.0 / std::max(1, settings.FrameRate);
         if (settings.Enabled && currentFrame >= nextVisualizerFrame)
         {
@@ -280,7 +340,7 @@ int Application::run(int argc, char* argv[])
             runtimeContext.ShaderFramebufferHeight = settings.ShaderFramebufferHeight;
             runtimeBindings.update(runtimeContext, shaderFramebuffer);
             RuntimeControlOutput controlOutput = runtimeBindings.evaluateControls(shaderFramebuffer);
-            const RuntimeControlOutput scriptOutput = runtimeEvaluateWorkspaceScripts(runtimeBindings, runtimeContext, shaderFramebuffer);
+            const RuntimeControlOutput& scriptOutput = javascript.output();
             if (scriptOutput.ShaderPresetIndex) controlOutput.ShaderPresetIndex = scriptOutput.ShaderPresetIndex;
             if (scriptOutput.ShaderId) controlOutput.ShaderId = scriptOutput.ShaderId;
             if (scriptOutput.GlobalBrightness) controlOutput.GlobalBrightness = scriptOutput.GlobalBrightness;
@@ -336,7 +396,7 @@ int Application::run(int argc, char* argv[])
             nextStatisticsRequest = currentFrame + std::max(0.05f, settings.StatisticsInterval);
         }
 
-        drawUi(usb, audio, mediaColor, keyboardInput, shaderFramebuffer, shaderTransition, shaderEditor, pageManager, vertexShaderSource, fragmentShaderSource, vertexLoadPath, fragmentLoadPath, settings, analysisBands, mappedBands, smoothedBands, framebuffer, deviceState, runtimeBindings, runtimeTelemetry, autoGain, audioLevel, reactiveKeys, inputAnalytics, rgbAnalytics, sentFrames, droppedFrames, appCpuUsage, scrollLockActive, capsLockActive);
+        drawUi(usb, audio, mediaColor, keyboardInput, shaderFramebuffer, shaderTransition, shaderEditor, pageManager, vertexShaderSource, fragmentShaderSource, vertexLoadPath, fragmentLoadPath, settings, analysisBands, mappedBands, smoothedBands, framebuffer, deviceState, runtimeBindings, javascript, runtimeTelemetry, autoGain, audioLevel, reactiveKeys, inputAnalytics, rgbAnalytics, sentFrames, droppedFrames, appCpuUsage, scrollLockActive, capsLockActive);
         if (currentFrame >= nextSettingsSave)
         {
             const std::string currentSettings = serializeSettings(settings);
@@ -345,6 +405,7 @@ int Application::run(int argc, char* argv[])
             if (shaderFramebuffer.materialRevision() != savedMaterialRevision && shaderFramebuffer.saveMaterialValues())
                 savedMaterialRevision = shaderFramebuffer.materialRevision();
             runtimeBindings.saveIfChanged();
+            javascript.saveIfChanged();
             nextSettingsSave = currentFrame + 0.50;
         }
         imgui.render(window);
@@ -357,6 +418,7 @@ int Application::run(int argc, char* argv[])
     saveShaderSources(vertexShaderSource, fragmentShaderSource);
     shaderFramebuffer.saveMaterialValues();
     runtimeBindings.save();
+    javascript.save();
     keyboardInput.stop();
     shaderTransition.cancel();
     shaderFramebuffer.shutdown();

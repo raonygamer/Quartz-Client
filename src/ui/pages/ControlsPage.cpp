@@ -235,7 +235,8 @@ namespace quartz::client::ui
     {
         auto& engine = context.runtimeBindings;
         (void)manager;
-        ImGui::TextWrapped("Controls turn binding values into conditions and actions. Configure the input/condition first, then the target and any extra actions.");
+        ImGui::TextColored(ImVec4(0.95f, 0.67f, 0.28f, 1.0f), "Deprecated runtime graph feature");
+        ImGui::TextWrapped("Controls remain for existing graphs. New state machines should use q.state/q.storage, q.events and q.runtime directly from JavaScript.");
         int passes = engine.controlPassLimit(); ImGui::SetNextItemWidth(110.0f); if (ImGui::InputInt("Control passes", &passes)) engine.setControlPassLimit(passes); ImGui::SameLine(); ImGui::TextDisabled("bounded iterative passes/frame");
         if (ImGui::Button("+ Control")) engine.addControl();
         ImGui::SameLine();

@@ -121,7 +121,7 @@ namespace quartz::client
         case RuntimeSourceKind::ValueBank: return "Value bank";
         case RuntimeSourceKind::StringConstant: return "String constant";
         case RuntimeSourceKind::ProfileState: return "Binding profile state";
-        case RuntimeSourceKind::Script: return "QuickJS script";
+        case RuntimeSourceKind::Script: return "QuickJS script (deprecated binding source)";
         }
         return "Unknown";
     }

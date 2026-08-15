@@ -73,6 +73,7 @@ namespace quartz::client
     struct RuntimeInputAnalytics;
     struct RuntimeRGBAnalytics;
     class RuntimeBindingEngine;
+    class JavaScriptRuntime;
     class RuntimeTelemetry;
     struct PreviewRect;
     struct RuntimeMemoryInspectorState;

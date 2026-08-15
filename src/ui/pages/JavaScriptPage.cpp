@@ -95,7 +95,7 @@ namespace quartz::client::ui
 
         if (ImGui::Button("+ Inline script")) { auto& script = javascript.add(); script.Source = "// Quartz runtime script\n// q.process / q.memory / q.signature / q.disassembly / q.breakpoint / q.input / q.events / q.runtime\n"; }
         ImGui::SameLine(); if (ImGui::Button("+ External script")) { auto& script = javascript.add(); script.External = true; script.Path = (runtimeQuickJSScriptDirectory() / "script.js").string(); }
-        ImGui::SameLine(); if (ImGui::Button("Reload all")) { runtimeReloadAllWorkspaceScripts(); for (auto& script : javascript.scripts()) ++script.ReloadCount; status = "all JavaScript contexts reloaded"; }
+        ImGui::SameLine(); if (ImGui::Button("Reload all")) { runtimeReloadAllWorkspaceScripts(); javascript.clearOutputs(); for (auto& script : javascript.scripts()) ++script.ReloadCount; status = "all JavaScript contexts reloaded"; }
         ImGui::SameLine(); if (ImGui::Button("Save .d.ts")) { std::string error; status = runtimeSaveQuickJSTypeDeclarations(error) ? "saved " + runtimeQuickJSTypeDeclarationsPath().string() : error; }
         ImGui::SameLine(); if (ImGui::Button("Save runtime")) status = javascript.save() ? "saved " + javascript.path().string() : "could not save JavaScript runtime";
         if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
@@ -129,14 +129,14 @@ namespace quartz::client::ui
             if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
             {
                 bool localChanged = false; localChanged |= ImGui::Checkbox("Enabled", &script.Enabled); ImGui::SameLine(); ImGui::SetNextItemWidth(240.0f); localChanged |= ImGui::InputText("Name", script.Name, sizeof(script.Name)); ImGui::SameLine(); localChanged |= ImGui::Checkbox("External", &script.External); ImGui::SameLine();
-                if (ImGui::SmallButton("Reload")) { runtimeResetWorkspaceScript(script.Id); ++script.ReloadCount; }
-                ImGui::SameLine(); if (ImGui::SmallButton("Reset persistent storage")) { script.PersistentStateJson = "{}"; runtimeResetWorkspaceScript(script.Id); ++script.ReloadCount; localChanged = true; }
+                if (ImGui::SmallButton("Reload")) { runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; }
+                ImGui::SameLine(); if (ImGui::SmallButton("Reset persistent storage")) { script.PersistentStateJson = "{}"; runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; localChanged = true; }
                 ImGui::SameLine(); if (ImGui::SmallButton("Remove")) erase = i;
                 ImGui::SetNextItemWidth(160.0f); localChanged |= ImGui::DragFloat("Update Hz", &script.UpdateHz, 0.5f, 0.5f, 500.0f, "%.1f"); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); localChanged |= ImGui::DragFloat("Timeout", &script.TimeoutMs, 0.1f, 0.1f, 100.0f, "%.1f ms"); ImGui::SameLine(); localChanged |= ImGui::Checkbox("Hot reload##script", &script.HotReload);
                 ImGui::SetNextItemWidth(180.0f); localChanged |= ImGui::InputText("Group", script.Group, sizeof(script.Group)); ImGui::SameLine(); ImGui::SetNextItemWidth(80.0f); localChanged |= ImGui::InputInt("Order", &script.Order);
                 const bool oldLegacyBridge = script.LegacyBridge; ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.67f, 0.28f, 1.0f)); localChanged |= ImGui::Checkbox("Legacy bindings/controls/value-bank bridge (deprecated)", &script.LegacyBridge); ImGui::PopStyleColor();
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off by default. When enabled, q.legacy.* plus deprecated q.binding/q.bank/q.control/q.graph compatibility aliases are installed for this script.");
-                if (oldLegacyBridge != script.LegacyBridge) { runtimeResetWorkspaceScript(script.Id); ++script.ReloadCount; }
+                if (oldLegacyBridge != script.LegacyBridge) { runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; }
                 if (script.External)
                 {
                     char path[1024]{}; std::snprintf(path, sizeof(path), "%s", script.Path.c_str()); ImGui::SetNextItemWidth(-1.0f); if (ImGui::InputText("Path", path, sizeof(path))) { script.Path = path; localChanged = true; }
@@ -145,7 +145,7 @@ namespace quartz::client::ui
                 else
                 {
                     auto& editorState = editor(script); editorState.Editor.Render("##JavaScriptEditor", ImVec2(-1.0f, 360.0f)); const std::string edited = editorState.Editor.GetText();
-                    if (edited != editorState.Synced) { script.Source = edited; editorState.Synced = script.Source; runtimeResetWorkspaceScript(script.Id); localChanged = true; }
+                    if (edited != editorState.Synced) { script.Source = edited; editorState.Synced = script.Source; runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); localChanged = true; }
                 }
                 ImGui::Text("Runs %llu  compiles %llu  reloads %llu  timeouts %llu  last %.3f ms", static_cast<unsigned long long>(script.RunCount), static_cast<unsigned long long>(script.CompileCount), static_cast<unsigned long long>(script.ReloadCount), static_cast<unsigned long long>(script.TimeoutCount), script.LastMilliseconds);
                 if (!script.Status.empty()) ImGui::TextWrapped("Status: %s", script.Status.c_str()); if (!script.LastLog.empty()) ImGui::TextWrapped("Log: %s", script.LastLog.c_str());

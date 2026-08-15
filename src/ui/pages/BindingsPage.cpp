@@ -94,7 +94,8 @@ namespace quartz::client::ui
         auto& shaderFramebuffer = context.shaderFramebuffer;
         (void)manager;
 
-        ImGui::TextWrapped("Bindings are the data nodes of the runtime graph. Pick a source, optionally compare/aggregate/transform it, then route the result to materials, actions, controls or the value bank.");
+        ImGui::TextColored(ImVec4(0.95f, 0.67f, 0.28f, 1.0f), "Deprecated runtime graph feature");
+        ImGui::TextWrapped("Bindings are retained for old visual graphs. New automation should use first-class JavaScript APIs such as q.process, q.memory, q.signature, q.events and q.runtime instead.");
         if (ImGui::Button("+ Binding")) engine.add();
         ImGui::SameLine(); if (ImGui::Button("Save graph")) engine.save();
         ImGui::SameLine(); ImGui::TextDisabled("%s", engine.path().string().c_str());
