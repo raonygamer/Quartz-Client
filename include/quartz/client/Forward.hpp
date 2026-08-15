@@ -1,0 +1,78 @@
+#pragma once
+#include "Common.hpp"
+
+namespace quartz::client
+{
+    struct ShaderPreset;
+    struct PerformanceSnapshot;
+    struct SharedDeviceState;
+    struct ReactiveKeyBinding;
+    struct ReactiveKeyEvent;
+    struct ReactiveKeyState;
+    class EvdevKeyboard;
+    class AppCpuMeter;
+    struct VisualizerSettings;
+    enum class ViewPage : std::uint8_t;
+    struct ShaderEditorState;
+    struct HSV;
+    struct ShaderUniformMetadata;
+    struct ShaderMaterialParameter;
+    class ShaderFramebuffer;
+    struct ShaderTransitionState;
+    struct PacketBuffer;
+    struct USBStatsSnapshot;
+    class RawUSB;
+    struct AudioLevelSnapshot;
+    class AudioSpectrum;
+    struct AutoGainState;
+    struct AudioSourceInfo;
+    class MediaColorProvider;
+    enum class RuntimeSourceKind : int;
+    enum class ProcessValueType : int;
+    enum class ProcessAddressMode : int;
+    enum class RuntimeSignaturePatternKind : int;
+    enum class SignatureResultMode : int;
+    enum class RuntimeX64Register : int;
+    enum class RuntimeDisplacementType : int;
+    enum class RuntimeParameterSlot : int;
+    enum class RuntimeControlCondition : int;
+    enum class RuntimeControlTarget : int;
+    enum class RuntimeReferenceKind : int;
+    enum class RuntimeAggregateOperation : int;
+    enum class RuntimeCompareCondition : int;
+    enum class RuntimeMassCompareResult : int;
+    enum class RuntimeObjectFieldType : int;
+    enum class RuntimeObjectPacking : int;
+    enum class RuntimeObjectAlignment : int;
+    enum class RuntimeBankValueType : int;
+    enum class RuntimeActionTarget : int;
+    enum class RuntimeBindingOperation : int;
+    enum class RuntimeActionValueMode : int;
+    enum class RuntimeActionWhen : int;
+    struct RuntimeAction;
+    struct RuntimeValueBankEntry;
+    struct RuntimeBindingProfile;
+    struct RuntimeParameterLink;
+    struct RuntimeSourceReference;
+    struct RuntimeObjectField;
+    struct RuntimeObjectDescriptor;
+    struct RuntimeObjectPointer;
+    enum class ProcessRebindMode : int;
+    struct RuntimeProcessInfo;
+    struct RuntimeProcessModule;
+    struct RuntimeProcessRegion;
+    struct RuntimeRegisterCaptureState;
+    struct RuntimeBinding;
+    struct RuntimeControlRule;
+    struct RuntimeControlOutput;
+    struct RuntimeTimelineEvent;
+    struct RuntimePacketRecord;
+    struct RuntimeUSBRates;
+    struct RuntimeSignalContext;
+    struct RuntimeInputAnalytics;
+    struct RuntimeRGBAnalytics;
+    class RuntimeBindingEngine;
+    class RuntimeTelemetry;
+    struct PreviewRect;
+    struct RuntimeMemoryInspectorState;
+}
