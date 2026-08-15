@@ -45,6 +45,19 @@ jobs:
       - name: Apply JavaScript workspace migration
         run: python3 tools/apply_javascript_workspace.py
 
+      - name: Adapt editor change detection
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/ui/pages/JavaScriptPage.cpp')
+          text = path.read_text()
+          old = 'if(e.Editor.IsTextChanged()){script.Source=e.Editor.GetText();'
+          new = 'const std::string edited=e.Editor.GetText();if(edited!=e.Synced){script.Source=edited;'
+          if text.count(old) != 1:
+              raise RuntimeError(f'expected one editor change-detection site, got {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 
