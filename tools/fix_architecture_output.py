@@ -36,4 +36,12 @@ if count != 1:
     raise SystemExit("failed to reconstruct shader editor font conditional")
 runtime_ui.write_text(text)
 
-print("fixed generated template declarations and conditional globals")
+# The monolith had a file-order-only static forward declaration immediately before readNativeBinding(). Functions.hpp
+# now provides the real cross-TU declaration and Runtime.cpp owns the definition, so keeping this static declaration
+# would give the same function conflicting linkage inside RuntimeNative.cpp.
+native = root / "src/runtime/RuntimeNative.cpp"
+text = native.read_text()
+text = text.replace("    static std::string runtimeHexAddress(std::uintptr_t value);\n", "")
+native.write_text(text)
+
+print("fixed generated template declarations, conditional globals, and native forward declarations")
