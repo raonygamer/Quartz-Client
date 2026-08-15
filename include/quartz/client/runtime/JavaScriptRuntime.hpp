@@ -18,6 +18,7 @@ namespace quartz::client
         const RuntimeScriptSettings& settings() const noexcept { return _settings; }
         RuntimeControlOutput& output() noexcept { return _output; }
         const RuntimeControlOutput& output() const noexcept { return _output; }
+        RuntimeControlOutput& outputFor(std::uint64_t scriptId) { return _scriptOutputs[scriptId]; }
         const std::filesystem::path& path() const noexcept { return _path; }
         std::uint64_t revision() const noexcept { return _revision; }
 
@@ -28,6 +29,9 @@ namespace quartz::client
         RuntimeScript* findByName(std::string_view name) noexcept;
         const RuntimeScript* findByName(std::string_view name) const noexcept;
 
+        void clearOutput(std::uint64_t scriptId) noexcept;
+        void clearOutputs() noexcept;
+        void rebuildOutput() noexcept;
         void markChanged() noexcept { ++_revision; }
         bool save();
         void saveIfChanged() { if (_savedRevision != _revision) save(); }
@@ -41,6 +45,7 @@ namespace quartz::client
         std::filesystem::path _path;
         std::vector<RuntimeScript> _scripts;
         RuntimeScriptSettings _settings{};
+        std::unordered_map<std::uint64_t, RuntimeControlOutput> _scriptOutputs;
         RuntimeControlOutput _output{};
         std::uint64_t _nextScriptId = 1;
         std::uint64_t _revision = 0;
