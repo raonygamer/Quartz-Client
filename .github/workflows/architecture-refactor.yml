@@ -28,6 +28,7 @@ jobs:
           python tools/fix_architecture_output.py
           python tools/page_refactor.py
           python tools/fix_page_output.py
+          python tools/usb_refactor.py
 
       - name: Structural checks
         run: |
@@ -36,7 +37,12 @@ jobs:
           grep -q 'class Application' include/quartz/client/Application.hpp
           grep -q 'class PageManager' include/quartz/client/ui/PageManager.hpp
           grep -q 'virtual void render' include/quartz/client/ui/Page.hpp
-          test -f src/usb/USB.cpp
+          grep -q 'class USBTransport' include/quartz/client/usb/USBTransport.hpp
+          grep -q 'class QRPCSession' include/quartz/client/usb/QRPCSession.hpp
+          grep -q 'class RawUSB' include/quartz/client/usb/RawUSB.hpp
+          test -f src/usb/USBTransport.cpp
+          test -f src/usb/QRPCSession.cpp
+          test -f src/usb/RawUSB.cpp
           test -f src/runtime/RuntimeNative.cpp
           test -f src/ui/PageManager.cpp
           test -f src/ui/pages/VisualizerPage.cpp
@@ -53,5 +59,5 @@ jobs:
           git config user.email 'actions@users.noreply.github.com'
           git add -A
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'refactor: add PageManager and concrete UI pages'
+          git commit -m 'refactor: split USB transport and QRPC session'
           git push origin HEAD:refactor/split-main
