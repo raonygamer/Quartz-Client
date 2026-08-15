@@ -52,14 +52,19 @@ namespace quartz::client::ui
         if (_type == static_cast<int>(MemoryScanValueType::Utf8String) || _type == static_cast<int>(MemoryScanValueType::Utf16String)) { ImGui::SameLine(); ImGui::Checkbox("Case sensitive", &_caseSensitive); }
 
         MemoryScanRequest request{_pid, static_cast<MemoryScanValueType>(_type), comparison, _valueA.data(), _valueB.data(), _writableOnly, _executableOnly, _aligned, _caseSensitive};
-        if (_scanner.running()) ImGui::BeginDisabled();
+        const bool scanRunning = _scanner.running();
+        const bool hasSnapshot = _scanner.hasSnapshot();
+        ImGui::BeginDisabled(scanRunning);
         if (ImGui::Button("New Scan")) _scanner.newScan(request, _status);
         ImGui::SameLine();
-        if (!_scanner.hasSnapshot()) ImGui::BeginDisabled();
+        ImGui::BeginDisabled(!hasSnapshot);
         if (ImGui::Button("Next Scan")) _scanner.nextScan(request, _status);
-        if (!_scanner.hasSnapshot()) ImGui::EndDisabled();
-        if (_scanner.running()) ImGui::EndDisabled();
-        ImGui::SameLine(); if (!_scanner.running()) ImGui::BeginDisabled(); if (ImGui::Button("Cancel")) _scanner.cancel(); if (!_scanner.running()) ImGui::EndDisabled();
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!scanRunning);
+        if (ImGui::Button("Cancel")) _scanner.cancel();
+        ImGui::EndDisabled();
 
         const auto stats = _scanner.stats();
         if (stats.Running) drawIndeterminateProgressBar(ImVec2(360.0f, 0.0f));
