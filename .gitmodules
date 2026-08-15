@@ -16,3 +16,6 @@
 [submodule "vendor/zydis"]
 	path = vendor/zydis
 	url = https://github.com/zyantific/zydis
+[submodule "vendor/libhat"]
+	path = vendor/libhat
+	url = https://github.com/BasedInc/libhat.git
