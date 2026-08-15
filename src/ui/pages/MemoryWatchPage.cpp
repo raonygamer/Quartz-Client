@@ -73,12 +73,22 @@ namespace quartz::client::ui
         }
         const std::string watchStatus = _watch.status(); if (!watchStatus.empty()) ImGui::TextWrapped("%s", watchStatus.c_str()); if (!_status.empty()) ImGui::TextDisabled("%s", _status.c_str());
         const auto hits = _watch.hits();
-        if (ImGui::BeginTable("MemoryWatchHits", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable, ImVec2(0.0f, 360.0f)))
+        if (ImGui::BeginTable("MemoryWatchHits", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable, ImVec2(0.0f, 360.0f)))
         {
-            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 42.0f); ImGui::TableSetupColumn("TID", ImGuiTableColumnFlags_WidthFixed, 75.0f); ImGui::TableSetupColumn("RIP after access", ImGuiTableColumnFlags_WidthFixed, 145.0f); ImGui::TableSetupColumn("Best-effort previous instruction"); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 62.0f); ImGui::TableHeadersRow();
-            for (std::size_t i = 0; i < hits.size(); ++i) { const auto& hit = hits[i]; ImGui::PushID(static_cast<int>(i)); ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::Text("%zu", i + 1); ImGui::TableNextColumn(); ImGui::Text("%d", hit.Tid); ImGui::TableNextColumn(); ImGui::Text("0x%llX", static_cast<unsigned long long>(hit.Rip)); ImGui::TableNextColumn(); if (hit.InstructionAddress) ImGui::Text("0x%llX  %s", static_cast<unsigned long long>(hit.InstructionAddress), hit.Instruction.c_str()); else ImGui::TextUnformatted(hit.Instruction.c_str()); ImGui::TableNextColumn(); if (ImGui::SmallButton("Inspect")) { auto& inspector = runtimeMemoryInspectorState(); inspector.Pid = _pid; inspector.Address = hit.InstructionAddress ? hit.InstructionAddress : hit.Rip; runtimeRefreshMemoryInspector(inspector); manager.open("native"); } ImGui::PopID(); }
+            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 42.0f); ImGui::TableSetupColumn("Hits", ImGuiTableColumnFlags_WidthFixed, 68.0f); ImGui::TableSetupColumn("Last TID", ImGuiTableColumnFlags_WidthFixed, 85.0f); ImGui::TableSetupColumn("RIP after access", ImGuiTableColumnFlags_WidthFixed, 145.0f); ImGui::TableSetupColumn("Access instruction"); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 62.0f); ImGui::TableHeadersRow();
+            for (std::size_t i = 0; i < hits.size(); ++i)
+            {
+                const auto& hit = hits[i]; ImGui::PushID(static_cast<int>(i)); ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("%zu", i + 1);
+                ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(hit.Count));
+                ImGui::TableNextColumn(); ImGui::Text("%d", hit.Tid);
+                ImGui::TableNextColumn(); ImGui::Text("0x%llX", static_cast<unsigned long long>(hit.Rip));
+                ImGui::TableNextColumn(); if (hit.InstructionAddress) ImGui::Text("0x%llX  %s", static_cast<unsigned long long>(hit.InstructionAddress), hit.Instruction.c_str()); else ImGui::TextUnformatted(hit.Instruction.c_str());
+                ImGui::TableNextColumn(); if (ImGui::SmallButton("Inspect")) { auto& inspector = runtimeMemoryInspectorState(); inspector.Pid = _pid; inspector.Address = hit.InstructionAddress ? hit.InstructionAddress : hit.Rip; runtimeRefreshMemoryInspector(inspector); manager.open("native"); }
+                ImGui::PopID();
+            }
             ImGui::EndTable();
         }
-        ImGui::TextDisabled("Data breakpoints trap after the memory access. Quartz backtracks up to 15 bytes and shows a best-effort preceding instruction; RIP itself is the post-access instruction pointer.");
+        ImGui::TextDisabled("Hits are grouped by the instruction that accessed the watched address; the counter is the number of traps observed at that access site. Data breakpoints trap after the memory access, so RIP is the post-access instruction pointer.");
     }
 }
