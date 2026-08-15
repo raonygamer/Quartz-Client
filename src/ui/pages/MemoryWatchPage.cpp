@@ -1,6 +1,7 @@
 #include "quartz/client/ui/pages/MemoryWatchPage.hpp"
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
+#include "quartz/client/native/ExecutionProbe.hpp"
 #include "quartz/client/native/NativeDisassembly.hpp"
 
 namespace quartz::client::ui
@@ -84,6 +85,22 @@ namespace quartz::client::ui
                     _selectedSite = site;
                     if (ImGui::MenuItem("Inspect access instruction")) openWatchInspector(manager, _pid, site);
                     if (ImGui::MenuItem("Inspect RIP after access")) openWatchInspector(manager, _pid, hit.Rip);
+                    ImGui::Separator();
+                    auto& probe = executionProbe(); const bool thisProbe = probe.running() && probe.pid() == _pid && probe.address() == site;
+                    if (thisProbe)
+                    {
+                        if (ImGui::MenuItem("Cancel execution probe")) { probe.stop(); _status = "execution probe cancelled"; }
+                    }
+                    else
+                    {
+                        ImGui::BeginDisabled(probe.running());
+                        if (ImGui::MenuItem("Capture registers on next execution"))
+                        {
+                            if (_watch.running()) _watch.stop(); std::string error;
+                            if (!probe.start(_pid, site, error)) _status = error; else _status = "armed one-shot execution probe at " + runtimeHexAddress(site);
+                        }
+                        ImGui::EndDisabled();
+                    }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Copy instruction address")) { const std::string text = runtimeHexAddress(site); ImGui::SetClipboardText(text.c_str()); }
                     if (ImGui::MenuItem("Copy RIP after access")) { const std::string text = runtimeHexAddress(hit.Rip); ImGui::SetClipboardText(text.c_str()); }
