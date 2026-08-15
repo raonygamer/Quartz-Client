@@ -1,0 +1,42 @@
+name: Apply JavaScript workspace migration
+
+on:
+  push:
+    branches: [feature/quickjs-bindings]
+    paths:
+      - tools/apply_javascript_workspace.py
+      - .github/workflows/javascript-workspace-migration.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev libudev-dev
+
+      - name: Apply JavaScript workspace migration
+        run: python3 tools/apply_javascript_workspace.py
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j2
+
+      - name: Commit generated changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md include/quartz/client/runtime/Profile.hpp include/quartz/client/runtime/RuntimeTypes.hpp include/quartz/client/runtime/QuickJS.hpp include/quartz/client/runtime/RuntimeBindingEngine.hpp include/quartz/client/ui/pages/JavaScriptPage.hpp src/runtime/QuickJSInternal.hpp src/runtime/QuickJSApi.cpp src/runtime/QuickJSGraphApi.cpp src/runtime/QuickJSWorkspace.cpp src/runtime/QuickJSPresets.cpp src/ui/pages/JavaScriptPage.cpp src/ui/PageManager.cpp src/ui/RuntimeUI.cpp src/Application.cpp
+          git commit -m "feat: add first-class JavaScript runtime workspace"
+          git push
