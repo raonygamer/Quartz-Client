@@ -23,7 +23,9 @@ jobs:
           sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev libudev-dev
 
       - name: Apply migration
-        run: python3 tools/apply_studio_tools.py
+        run: |
+          python3 tools/apply_studio_tools.py
+          python3 tools/fix_studio_tools.py
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
