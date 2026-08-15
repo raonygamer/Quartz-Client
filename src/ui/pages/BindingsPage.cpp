@@ -38,7 +38,7 @@ namespace quartz::client::ui
             constexpr float LegacySize = 11.0f;
             const float size = ImGui::GetFrameHeight();
             const float growth = std::max(size - LegacySize, 0.0f);
-            const ImVec2 min{legacyOrigin.x - growth, legacyOrigin.y - growth * 0.5f};
+            const ImVec2 min{legacyOrigin.x - growth * 0.5f, legacyOrigin.y - growth * 0.5f};
             const ImVec2 max{min.x + size, min.y + size};
             ImGui::GetWindowDrawList()->AddRectFilled(min, max, ImGui::GetColorU32(color), ImGui::GetStyle().FrameRounding);
         }
