@@ -16,6 +16,33 @@ namespace quartz::client::ui
             return {trim(group.substr(0, slash)), trim(group.substr(slash + 1))};
         }
 
+        ImVec4 bindingStateColor(const RuntimeBinding& binding)
+        {
+            const bool runtimeEnabled = binding.Enabled && binding.RuntimeEnabled;
+            const bool addressSearching = runtimeEnabled && (binding.SignatureScanRunning || (binding.SignatureRegisterCapture && binding.SignatureInstructionAddress != 0 && binding.SignatureResolvedAddress == 0));
+            if (addressSearching)
+            {
+                const float pulse = 0.5f + std::sin(static_cast<float>(ImGui::GetTime()) * 3.0f) * 0.5f;
+                constexpr ImVec4 Gray{0.38f, 0.38f, 0.38f, 1.0f};
+                constexpr ImVec4 Cyan{0.10f, 0.78f, 0.86f, 1.0f};
+                return {Gray.x + (Cyan.x - Gray.x) * pulse, Gray.y + (Cyan.y - Gray.y) * pulse, Gray.z + (Cyan.z - Gray.z) * pulse, 1.0f};
+            }
+            const bool booleanState = runtimeBindingLooksBoolean(binding);
+            const bool waiting = runtimeEnabled && !binding.HasValue && binding.Error.empty();
+            const bool good = binding.HasValue && (!booleanState || binding.Value >= 0.5f);
+            return runtimeStateColor(runtimeEnabled, good, !binding.Error.empty(), waiting);
+        }
+
+        void drawBindingStateOverlay(const ImVec2 legacyOrigin, const ImVec4 color)
+        {
+            constexpr float LegacySize = 11.0f;
+            const float size = ImGui::GetFrameHeight();
+            const float growth = std::max(size - LegacySize, 0.0f);
+            const ImVec2 min{legacyOrigin.x - growth, legacyOrigin.y - growth * 0.5f};
+            const ImVec2 max{min.x + size, min.y + size};
+            ImGui::GetWindowDrawList()->AddRectFilled(min, max, ImGui::GetColorU32(color), ImGui::GetStyle().FrameRounding);
+        }
+
         void drawBindingCards(RuntimeBindingEngine& engine, ShaderFramebuffer& shaderFramebuffer)
         {
             std::vector<RuntimeBinding*> order; order.reserve(engine.bindings().size()); for (auto& binding : engine.bindings()) order.push_back(&binding);
@@ -27,7 +54,12 @@ namespace quartz::client::ui
                 ImGui::PushID(static_cast<int>(binding.Id & 0x7fffffffULL));
                 ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 5.0f);
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
-                if (ImGui::BeginChild("##BindingCard", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY)) drawRuntimeBinding(engine, shaderFramebuffer, binding, shouldErase);
+                if (ImGui::BeginChild("##BindingCard", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY))
+                {
+                    const ImVec2 stateOrigin = ImGui::GetCursorScreenPos();
+                    drawRuntimeBinding(engine, shaderFramebuffer, binding, shouldErase);
+                    drawBindingStateOverlay(stateOrigin, bindingStateColor(binding));
+                }
                 ImGui::EndChild(); ImGui::PopStyleVar(2); ImGui::PopID(); ImGui::Dummy(ImVec2(0.0f, 8.0f));
                 if (shouldErase) erase = static_cast<std::size_t>(&binding - engine.bindings().data());
             };
