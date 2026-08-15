@@ -1,0 +1,50 @@
+name: Architecture refactor
+
+on:
+  push:
+    branches: [refactor/split-main]
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: github.actor != 'quartz-refactor-bot'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/split-main
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev libudev-dev
+
+      - name: Generate architecture split
+        run: python tools/architecture_refactor.py
+
+      - name: Structural checks
+        run: |
+          git diff --check
+          test $(wc -l < src/Main.cpp) -lt 20
+          grep -q 'class Application' include/quartz/client/Application.hpp
+          test -f src/usb/USB.cpp
+          test -f src/runtime/RuntimeNative.cpp
+          test -f src/ui/UI.cpp
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j2
+
+      - name: Commit validated architecture split
+        run: |
+          git config user.name 'quartz-refactor-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'refactor: establish client module architecture'
+          git push origin HEAD:refactor/split-main
