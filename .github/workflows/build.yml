@@ -2,7 +2,9 @@ name: Build
 
 on:
   push:
+    branches: [master, refactor/split-main]
   pull_request:
+    branches: [master]
 
 jobs:
   build:
