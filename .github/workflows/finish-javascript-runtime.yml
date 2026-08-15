@@ -23,7 +23,9 @@ jobs:
           sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev libudev-dev
 
       - name: Apply runtime integration
-        run: python3 .github/scripts/finish_javascript_runtime.py
+        run: |
+          python3 .github/scripts/finish_javascript_runtime.py
+          python3 .github/scripts/polish_javascript_runtime.py
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -44,11 +46,8 @@ jobs:
           path: /tmp/quartz-build.log
           if-no-files-found: ignore
 
-      - name: Require successful build
-        if: steps.build.outcome != 'success'
-        run: exit 1
-
       - name: Commit product changes
+        if: steps.build.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -59,3 +58,7 @@ jobs:
           fi
           git commit -m "refactor: make JavaScript the first-class runtime"
           git push
+
+      - name: Require successful build
+        if: steps.build.outcome == 'failure'
+        run: exit 1
