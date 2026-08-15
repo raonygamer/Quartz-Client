@@ -27,6 +27,7 @@ jobs:
           python tools/architecture_refactor.py
           python tools/fix_architecture_output.py
           python tools/page_refactor.py
+          python tools/fix_page_output.py
 
       - name: Structural checks
         run: |
