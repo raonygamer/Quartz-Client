@@ -1,5 +1,5 @@
 #pragma once
-#include "quartz/client/Functions.hpp"
+#include "quartz/client/Common.hpp"
 
 namespace quartz::client
 {
@@ -11,5 +11,4 @@ namespace quartz::client
         std::filesystem::path SourcePath;
         bool BuiltIn = true;
     };
-
 }
