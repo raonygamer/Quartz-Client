@@ -1,6 +1,5 @@
 #include "quartz/client/Model.hpp"
-#include <libhat/scanner.hpp>
-#include <libhat/signature.hpp>
+#include "quartz/client/native/SignatureScanner.hpp"
 
 namespace quartz::client
 {
@@ -936,6 +935,10 @@ namespace quartz::client
 
     void resetRuntimeSignatureScan(RuntimeBinding& binding, const bool clearResolved)
     {
+        cancelSignatureScan(binding.SignatureScan);
+        binding.SignatureScan.reset();
+        ++binding.SignatureScanGeneration;
+        binding.SignatureScanRunning = false;
         binding.SignatureBytes.clear();
         binding.SignatureMasks.clear();
         binding.SignatureRegions.clear();
@@ -1092,6 +1095,49 @@ namespace quartz::client
         return address;
     }
 
+    std::optional<std::uintptr_t> resolveRuntimeSignatureMatch(RuntimeBinding& binding, const pid_t pid, const std::uintptr_t match, std::string& error)
+    {
+        std::uintptr_t resolved = 0;
+        if (binding.SignatureResolve == SignatureResultMode::MatchAddress)
+            resolved = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
+        else if (binding.SignatureResolve == SignatureResultMode::PointerAtOffset)
+        {
+            const std::uintptr_t pointerAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
+            if (!readProcessMemoryValue(pid, pointerAddress, resolved, error)) { binding.SignatureStatus = "signature matched, pointer resolve failed: " + error; return std::nullopt; }
+        }
+        else if (binding.SignatureResolve == SignatureResultMode::RipRelative32)
+        {
+            std::int32_t displacement = 0;
+            const std::uintptr_t displacementAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
+            if (!readProcessMemoryValue(pid, displacementAddress, displacement, error)) { binding.SignatureStatus = "signature matched, RIP displacement read failed: " + error; return std::nullopt; }
+            resolved = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + std::max(binding.SignatureInstructionSize, 1) + displacement);
+        }
+        else if (binding.SignatureResolve == SignatureResultMode::Address32AtOffset)
+        {
+            std::uint32_t address32 = 0;
+            const std::uintptr_t immediateAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
+            if (!readProcessMemoryValue(pid, immediateAddress, address32, error)) { binding.SignatureStatus = "signature matched, 32-bit address read failed: " + error; return std::nullopt; }
+            resolved = static_cast<std::uintptr_t>(address32);
+        }
+        else if (binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture)
+        {
+            binding.SignatureMatchAddress = match;
+            binding.SignatureInstructionAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
+            std::intptr_t displacement = 0;
+            if (!readRuntimeRegisterDisplacement(binding, pid, binding.SignatureInstructionAddress, displacement, error)) { binding.SignatureStatus = "signature matched, displacement read failed: " + error; return std::nullopt; }
+            binding.SignatureCapturedDisplacement = displacement;
+            binding.SignatureProgress = 1.0f;
+            std::ostringstream status; status << "Writer located 0x" << std::hex << binding.SignatureInstructionAddress << "; waiting for " << runtimeX64RegisterName(binding.SignatureRegister); binding.SignatureStatus = status.str();
+            return advanceRuntimeRegisterCapture(binding, pid, error);
+        }
+        binding.SignatureResolvedAddress = resolved;
+        binding.SignatureMatchAddress = match;
+        binding.SignatureProgress = 1.0f;
+        std::ostringstream status; status << "Pattern resolved 0x" << std::hex << resolved << " from match 0x" << match; binding.SignatureStatus = status.str();
+        error.clear();
+        return resolved;
+    }
+
     std::optional<std::uintptr_t> advanceRuntimeSignatureScan(RuntimeBinding& binding, const pid_t pid, std::string& error)
     {
         const double now = runtimeSteadySeconds();
@@ -1102,176 +1148,80 @@ namespace quartz::client
             binding.SignatureScanPid = pid;
             binding.SignatureConfigHash = configurationHash;
         }
-        if (binding.SignatureResolvedAddress != 0)
-        {
-            error.clear();
-            return binding.SignatureResolvedAddress;
-        }
-        if (binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture && binding.SignatureInstructionAddress != 0)
-            return advanceRuntimeRegisterCapture(binding, pid, error);
+        if (binding.SignatureResolvedAddress != 0) { error.clear(); return binding.SignatureResolvedAddress; }
+        if (binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture && binding.SignatureInstructionAddress != 0) return advanceRuntimeRegisterCapture(binding, pid, error);
         if (now < binding.NextSignatureScan)
         {
             const double remaining = std::max(binding.NextSignatureScan - now, 0.0);
-            std::ostringstream status;
-            status << "pattern not found; retry in " << std::fixed << std::setprecision(1) << remaining << " s";
-            binding.SignatureStatus = status.str();
-            error = binding.SignatureStatus;
-            return std::nullopt;
+            std::ostringstream status; status << "pattern not found; retry in " << std::fixed << std::setprecision(1) << remaining << " s"; binding.SignatureStatus = status.str(); error = binding.SignatureStatus; return std::nullopt;
         }
         if (binding.SignatureRegions.empty() && !prepareRuntimeSignatureScan(binding, pid, error))
         {
-            binding.SignatureStatus = error;
-            binding.NextSignatureScan = now + std::max(static_cast<double>(binding.SignatureRetrySeconds), 0.1);
-            return std::nullopt;
+            binding.SignatureStatus = error; binding.NextSignatureScan = now + std::max(static_cast<double>(binding.SignatureRetrySeconds), 0.1); return std::nullopt;
         }
 
-        const auto opcodePatterns = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? parseRuntimeOpcodePattern(binding.Signature) : std::vector<std::string>{};
-        hat::signature libhatSignature;
         if (binding.SignaturePatternKind == RuntimeSignaturePatternKind::HexadecimalPattern)
         {
-            libhatSignature.reserve(binding.SignatureBytes.size());
-            for (std::size_t i = 0; i < binding.SignatureBytes.size(); ++i)
-                libhatSignature.emplace_back(static_cast<std::byte>(binding.SignatureBytes[i]), static_cast<std::byte>(binding.SignatureMasks[i]));
+            if (!binding.SignatureScan)
+            {
+                binding.SignatureScan = startSignatureScan(pid, binding.SignatureRegions, binding.SignatureBytes, binding.SignatureMasks, binding.SignatureExecutableOnly, binding.SignatureScanGeneration);
+                binding.SignatureScanRunning = true;
+                binding.SignatureStatus = "Scanning pattern";
+            }
+            const auto scan = binding.SignatureScan;
+            binding.SignatureScannedBytes = scan->ScannedBytes.load(std::memory_order_relaxed);
+            const double liveAverage = signatureScanAverageMiBs(scan);
+            if (liveAverage > 0.0) binding.SignatureScanAverageMiBs = liveAverage;
+            SignatureScanResult result;
+            if (!tryGetSignatureScanResult(scan, result)) { binding.SignatureStatus = "Scanning pattern"; error = binding.SignatureStatus; return std::nullopt; }
+
+            const double finalAverage = signatureScanAverageMiBs(scan);
+            if (finalAverage > 0.0) binding.SignatureScanAverageMiBs = finalAverage;
+            binding.SignatureScanLastBytes = result.ScannedBytes;
+            binding.SignatureScanLastSeconds = result.DurationSeconds;
+            binding.SignatureScannedBytes = result.ScannedBytes;
+            binding.SignatureScanRunning = false;
+            binding.SignatureScan.reset();
+            if (scan->Generation != binding.SignatureScanGeneration || result.Cancelled) { binding.SignatureStatus = "signature scan cancelled"; error = binding.SignatureStatus; return std::nullopt; }
+            if (!result.Error.empty())
+            {
+                binding.SignatureRegions.clear(); binding.NextSignatureScan = now + std::max(static_cast<double>(binding.SignatureRetrySeconds), 0.1); binding.SignatureProgress = 0.0f; binding.SignatureStatus = "Pattern scan failed: " + result.Error; error = binding.SignatureStatus; return std::nullopt;
+            }
+            if (result.Found) return resolveRuntimeSignatureMatch(binding, pid, result.MatchAddress, error);
+            binding.SignatureRegions.clear(); binding.SignatureRegionIndex = 0; binding.SignatureCursor = 0; binding.NextSignatureScan = now + std::max(static_cast<double>(binding.SignatureRetrySeconds), 0.1); binding.SignatureProgress = 0.0f; binding.SignatureStatus = "Pattern not found; waiting for retry interval"; error = binding.SignatureStatus; return std::nullopt;
         }
-        const hat::scan_hint libhatHint = binding.SignatureExecutableOnly ? hat::scan_hint::x86_64 : hat::scan_hint::none;
-        const std::size_t ScanBudget = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? 32 * 1024 : 8 * 1024 * 1024;
-        const std::size_t ReadChunk = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? 32 * 1024 : 4 * 1024 * 1024;
-        const std::size_t scanOverlap = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? std::min<std::size_t>(std::max<std::size_t>(opcodePatterns.size() * 15, 15) - 1, 4095) : binding.SignatureBytes.size() > 1 ? binding.SignatureBytes.size() - 1 : 0;
+
+        const auto opcodePatterns = parseRuntimeOpcodePattern(binding.Signature);
+        constexpr std::size_t ScanBudget = 32 * 1024;
+        constexpr std::size_t ReadChunk = 32 * 1024;
+        const std::size_t scanOverlap = std::min<std::size_t>(std::max<std::size_t>(opcodePatterns.size() * 15, 15) - 1, 4095);
         std::size_t budget = ScanBudget;
         std::vector<std::uint8_t> buffer;
         while (budget > 0 && binding.SignatureRegionIndex < binding.SignatureRegions.size())
         {
             const auto& region = binding.SignatureRegions[binding.SignatureRegionIndex];
             if (binding.SignatureCursor < region.Base) binding.SignatureCursor = region.Base;
-            if (binding.SignatureCursor >= region.End)
-            {
-                ++binding.SignatureRegionIndex;
-                if (binding.SignatureRegionIndex < binding.SignatureRegions.size()) binding.SignatureCursor = binding.SignatureRegions[binding.SignatureRegionIndex].Base;
-                continue;
-            }
+            if (binding.SignatureCursor >= region.End) { ++binding.SignatureRegionIndex; if (binding.SignatureRegionIndex < binding.SignatureRegions.size()) binding.SignatureCursor = binding.SignatureRegions[binding.SignatureRegionIndex].Base; continue; }
             const std::size_t remaining = static_cast<std::size_t>(region.End - binding.SignatureCursor);
             const std::size_t readSize = std::min({remaining, ReadChunk + scanOverlap, budget + scanOverlap});
-            if (readSize < binding.SignatureBytes.size())
-            {
-                binding.SignatureScannedBytes += remaining;
-                binding.SignatureCursor = region.End;
-                continue;
-            }
+            if (readSize < binding.SignatureBytes.size()) { binding.SignatureScannedBytes += remaining; binding.SignatureCursor = region.End; continue; }
             buffer.resize(readSize);
             std::string readError;
-            if (!readProcessMemoryBlock(pid, binding.SignatureCursor, buffer, readError))
+            if (!readProcessMemoryBlock(pid, binding.SignatureCursor, buffer, readError)) { binding.SignatureScannedBytes += remaining; binding.SignatureCursor = region.End; continue; }
+            const std::size_t last = buffer.size() - binding.SignatureBytes.size();
+            for (std::size_t offset = 0; offset <= last; ++offset)
             {
-                binding.SignatureScannedBytes += remaining;
-                binding.SignatureCursor = region.End;
-                continue;
+                std::size_t opcodeLength = 0;
+                if (runtimeOpcodePatternMatches(std::span<const std::uint8_t>(buffer).subspan(offset), binding.SignatureCursor + offset, opcodePatterns, opcodeLength)) return resolveRuntimeSignatureMatch(binding, pid, binding.SignatureCursor + offset, error);
             }
-            std::optional<std::size_t> matchOffset;
-            if (binding.SignaturePatternKind == RuntimeSignaturePatternKind::HexadecimalPattern)
-            {
-                const std::span<const std::byte> bytes{reinterpret_cast<const std::byte*>(buffer.data()), buffer.size()};
-                const auto result = hat::find_pattern(bytes, libhatSignature, hat::scan_alignment::X1, libhatHint);
-                if (result.has_result()) matchOffset = static_cast<std::size_t>(result.get() - bytes.data());
-            }
-            else
-            {
-                const std::size_t last = buffer.size() - binding.SignatureBytes.size();
-                for (std::size_t offset = 0; offset <= last; ++offset)
-                {
-                    std::size_t opcodeLength = 0;
-                    if (!runtimeOpcodePatternMatches(std::span<const std::uint8_t>(buffer).subspan(offset), binding.SignatureCursor + offset, opcodePatterns, opcodeLength)) continue;
-                    matchOffset = offset;
-                    break;
-                }
-            }
-            if (matchOffset)
-            {
-                const std::size_t offset = *matchOffset;
-                const std::uintptr_t match = binding.SignatureCursor + offset;
-                std::uintptr_t resolved = 0;
-                if (binding.SignatureResolve == SignatureResultMode::MatchAddress)
-                    resolved = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
-                else if (binding.SignatureResolve == SignatureResultMode::PointerAtOffset)
-                {
-                    const std::uintptr_t pointerAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
-                    if (!readProcessMemoryValue(pid, pointerAddress, resolved, error))
-                    {
-                        binding.SignatureStatus = "signature matched, pointer resolve failed: " + error;
-                        return std::nullopt;
-                    }
-                }
-                else if (binding.SignatureResolve == SignatureResultMode::RipRelative32)
-                {
-                    std::int32_t displacement = 0;
-                    const std::uintptr_t displacementAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
-                    if (!readProcessMemoryValue(pid, displacementAddress, displacement, error))
-                    {
-                        binding.SignatureStatus = "signature matched, RIP displacement read failed: " + error;
-                        return std::nullopt;
-                    }
-                    const int instructionSize = std::max(binding.SignatureInstructionSize, 1);
-                    resolved = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + instructionSize + displacement);
-                }
-                else if (binding.SignatureResolve == SignatureResultMode::Address32AtOffset)
-                {
-                    std::uint32_t address32 = 0;
-                    const std::uintptr_t immediateAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
-                    if (!readProcessMemoryValue(pid, immediateAddress, address32, error))
-                    {
-                        binding.SignatureStatus = "signature matched, 32-bit address read failed: " + error;
-                        return std::nullopt;
-                    }
-                    resolved = static_cast<std::uintptr_t>(address32);
-                }
-                else if (binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture)
-                {
-                    binding.SignatureMatchAddress = match;
-                    binding.SignatureInstructionAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
-                    std::intptr_t displacement = 0;
-                    if (!readRuntimeRegisterDisplacement(binding, pid, binding.SignatureInstructionAddress, displacement, error))
-                    {
-                        binding.SignatureStatus = "signature matched, displacement read failed: " + error;
-                        return std::nullopt;
-                    }
-                    binding.SignatureCapturedDisplacement = displacement;
-                    binding.SignatureProgress = 1.0f;
-                    std::ostringstream status;
-                    status << "Writer located 0x" << std::hex << binding.SignatureInstructionAddress << "; waiting for " << runtimeX64RegisterName(binding.SignatureRegister);
-                    binding.SignatureStatus = status.str();
-                    return advanceRuntimeRegisterCapture(binding, pid, error);
-                }
-                binding.SignatureResolvedAddress = resolved;
-                binding.SignatureMatchAddress = match;
-                binding.SignatureProgress = 1.0f;
-                std::ostringstream status;
-                status << "Pattern resolved 0x" << std::hex << resolved << " from match 0x" << match;
-                binding.SignatureStatus = status.str();
-                error.clear();
-                return resolved;
-            }
-            const std::size_t overlap = scanOverlap;
-            const std::size_t step = readSize > overlap ? readSize - overlap : readSize;
-            binding.SignatureCursor += step;
-            binding.SignatureScannedBytes += step;
-            budget = step >= budget ? 0 : budget - step;
-            binding.SignatureProgress = binding.SignatureTotalBytes ? std::clamp(static_cast<float>(static_cast<double>(binding.SignatureScannedBytes) / binding.SignatureTotalBytes), 0.0f, 1.0f) : 0.0f;
+            const std::size_t step = readSize > scanOverlap ? readSize - scanOverlap : readSize;
+            binding.SignatureCursor += step; binding.SignatureScannedBytes += step; budget = step >= budget ? 0 : budget - step; binding.SignatureProgress = binding.SignatureTotalBytes ? std::clamp(static_cast<float>(static_cast<double>(binding.SignatureScannedBytes) / binding.SignatureTotalBytes), 0.0f, 1.0f) : 0.0f;
         }
-
         if (binding.SignatureRegionIndex >= binding.SignatureRegions.size())
         {
-            binding.SignatureRegions.clear();
-            binding.SignatureRegionIndex = 0;
-            binding.SignatureCursor = 0;
-            binding.NextSignatureScan = now + std::max(static_cast<double>(binding.SignatureRetrySeconds), 0.1);
-            binding.SignatureProgress = 0.0f;
-            binding.SignatureStatus = "Pattern not found; waiting for retry interval";
-            error = binding.SignatureStatus;
-            return std::nullopt;
+            binding.SignatureRegions.clear(); binding.SignatureRegionIndex = 0; binding.SignatureCursor = 0; binding.NextSignatureScan = now + std::max(static_cast<double>(binding.SignatureRetrySeconds), 0.1); binding.SignatureProgress = 0.0f; binding.SignatureStatus = "Pattern not found; waiting for retry interval"; error = binding.SignatureStatus; return std::nullopt;
         }
-        std::ostringstream status;
-        status << "Scanning pattern " << std::fixed << std::setprecision(0) << binding.SignatureProgress * 100.0f << "%";
-        binding.SignatureStatus = status.str();
-        error = binding.SignatureStatus;
-        return std::nullopt;
+        std::ostringstream status; status << "Scanning opcode pattern " << std::fixed << std::setprecision(0) << binding.SignatureProgress * 100.0f << "%"; binding.SignatureStatus = status.str(); error = binding.SignatureStatus; return std::nullopt;
     }
 
 

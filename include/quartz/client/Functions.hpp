@@ -177,6 +177,7 @@ namespace quartz::client
     bool runtimeParseHexBytes(const std::string_view text, std::vector<std::uint8_t>& bytes, std::string& error);
     std::string runtimeFormatHexBytes(const std::span<const std::uint8_t> bytes);
     void runtimeRefreshMemoryInspector(RuntimeMemoryInspectorState& state);
+    RuntimeMemoryInspectorState& runtimeMemoryInspectorState();
     void drawRuntimeMemoryInspector(RuntimeMemoryInspectorState& state);
     void drawRuntimePointers(RuntimeBindingEngine& engine);
     void drawRuntimeObjectDescriptors(RuntimeBindingEngine& engine);

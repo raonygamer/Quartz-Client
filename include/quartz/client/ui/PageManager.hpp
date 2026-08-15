@@ -39,7 +39,7 @@ namespace quartz::client::ui
     private:
         std::vector<std::unique_ptr<Page>> _pages;
         std::string _standaloneId;
-        std::string _requestedTabId;
+        std::string _activePageId;
     };
 
     [[nodiscard]] PageManager createDefaultPageManager();

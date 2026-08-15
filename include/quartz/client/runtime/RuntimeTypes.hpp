@@ -9,6 +9,8 @@
 
 namespace quartz::client
 {
+    struct SignatureScanState;
+
     enum class RuntimeSourceKind : int
     {
         Constant,
@@ -344,6 +346,12 @@ namespace quartz::client
         std::uint64_t SignatureCapturedRegister = 0;
         std::intptr_t SignatureCapturedDisplacement = 0;
         std::shared_ptr<RuntimeRegisterCaptureState> SignatureRegisterCapture;
+        std::shared_ptr<SignatureScanState> SignatureScan;
+        std::uint64_t SignatureScanGeneration = 0;
+        bool SignatureScanRunning = false;
+        double SignatureScanAverageMiBs = 0.0;
+        double SignatureScanLastSeconds = 0.0;
+        std::uint64_t SignatureScanLastBytes = 0;
         std::uint64_t SignatureConfigHash = 0;
         pid_t SignatureScanPid = 0;
         double NextSignatureScan = 0.0;

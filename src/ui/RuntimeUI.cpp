@@ -931,6 +931,7 @@ namespace quartz::client
         ImGui::SameLine(); ImGui::SetNextItemWidth(160.0f); changed |= ImGui::InputText("Group", binding.Group, sizeof(binding.Group));
         ImGui::SameLine(); ImGui::SetNextItemWidth(80.0f); changed |= ImGui::InputInt("Order", &binding.Order); ImGui::SameLine(); if (ImGui::SmallButton("Up##bindingOrder")) { --binding.Order; changed = true; } ImGui::SameLine(); if (ImGui::SmallButton("Down##bindingOrder")) { ++binding.Order; changed = true; }
 
+        ImGui::SeparatorText("Source");
         int source = static_cast<int>(binding.Source);
         ImGui::SetNextItemWidth(250.0f);
         if (ImGui::BeginCombo("Source", runtimeSourceName(binding.Source)))
@@ -1023,7 +1024,8 @@ namespace quartz::client
         }
         else if (binding.Source == RuntimeSourceKind::MassCompare)
         {
-            ImGui::SeparatorText("Mass compare");
+            ImGui::SeparatorText("Comparator / mass compare");
+            ImGui::TextDisabled("Compare a set of bindings/controls and reduce the matches to any/all/none/count/fraction/first-index.");
             int condition = static_cast<int>(binding.CompareCondition);
             ImGui::SetNextItemWidth(150.0f);
             if (ImGui::Combo("Compare", &condition, "==\0!=\0<\0<=\0>\0>=\0between\0outside\0")) { binding.CompareCondition = static_cast<RuntimeCompareCondition>(condition); changed = true; }
@@ -1210,7 +1212,13 @@ namespace quartz::client
                 ImGui::SameLine();
                 if (binding.SignatureResolvedAddress != 0) ImGui::TextDisabled("resolved: 0x%llX", static_cast<unsigned long long>(binding.SignatureResolvedAddress));
                 else if (!binding.SignatureStatus.empty()) ImGui::TextDisabled("%s", binding.SignatureStatus.c_str());
-                if (binding.SignatureResolvedAddress == 0 && binding.SignatureInstructionAddress == 0 && binding.SignatureStatus.starts_with("Scanning pattern")) drawIndeterminateProgressBar(ImVec2(320.0f, 0.0f));
+                if (binding.SignatureScanRunning) drawIndeterminateProgressBar(ImVec2(320.0f, 0.0f));
+                if (binding.SignatureScanAverageMiBs > 0.0)
+                {
+                    if (binding.SignatureScanAverageMiBs >= 1024.0) ImGui::TextDisabled("scan avg %.2f GiB/s%s", binding.SignatureScanAverageMiBs / 1024.0, binding.SignatureScanRunning ? "  (running)" : "");
+                    else ImGui::TextDisabled("scan avg %.1f MiB/s%s", binding.SignatureScanAverageMiBs, binding.SignatureScanRunning ? "  (running)" : "");
+                    if (!binding.SignatureScanRunning && binding.SignatureScanLastSeconds > 0.0) ImGui::SameLine(), ImGui::TextDisabled("%.1f MiB in %.3f s", binding.SignatureScanLastBytes / (1024.0 * 1024.0), binding.SignatureScanLastSeconds);
+                }
                 if (binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture)
                 {
                     if (binding.SignatureMatchAddress != 0) ImGui::TextDisabled("Match 0x%llX   instruction 0x%llX", static_cast<unsigned long long>(binding.SignatureMatchAddress), static_cast<unsigned long long>(binding.SignatureInstructionAddress));
@@ -1321,7 +1329,7 @@ namespace quartz::client
 
         if (ImGui::BeginTabBar("BindingOptions", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_FittingPolicyResizeDown))
         {
-            if (ImGui::BeginTabItem("Output / actions"))
+            if (ImGui::BeginTabItem("Output & actions"))
             {
                 changed |= ImGui::Checkbox("Store successful value in bank", &binding.StoreToBank);
                 if (binding.StoreToBank) changed |= drawRuntimeBankReferenceCombo(engine, "Bank destination", binding.StoreBankValueId);
@@ -1330,7 +1338,7 @@ namespace quartz::client
                 changed |= drawRuntimeActionList(engine, shaderFramebuffer, binding.Actions, binding.Id, false);
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Advanced transform"))
+            if (ImGui::BeginTabItem("Transform"))
             {
                 ImGui::TextDisabled("Transform controls can use local values or another binding. This tab stays out of the way for normal graph editing.");
                 changed |= drawRuntimeLinkedBool(engine, binding, RuntimeParameterSlot::Normalize, "Normalize input", binding.Normalize);
@@ -1435,8 +1443,9 @@ namespace quartz::client
         ImGui::SameLine(); ImGui::SetNextItemWidth(110.0f); changed |= ImGui::InputInt("Priority", &control.Priority);
         ImGui::SetNextItemWidth(160.0f); changed |= ImGui::InputText("Group", control.Group, sizeof(control.Group)); ImGui::SameLine(); ImGui::SetNextItemWidth(80.0f); changed |= ImGui::InputInt("Order", &control.Order); ImGui::SameLine(); if (ImGui::SmallButton("Up##controlOrder")) { --control.Order; changed = true; } ImGui::SameLine(); if (ImGui::SmallButton("Down##controlOrder")) { ++control.Order; changed = true; }
 
+        ImGui::SeparatorText("Input & condition");
         ImGui::SetNextItemWidth(300.0f);
-        if (ImGui::BeginCombo("Source binding", source ? source->Name : "<select binding>"))
+        if (ImGui::BeginCombo("Input binding", source ? source->Name : "<select binding>"))
         {
             for (const auto& candidate : engine.bindings()) { const bool selected = candidate.Id == control.SourceBindingId; if (ImGui::Selectable(candidate.Name, selected)) { control.SourceBindingId = candidate.Id; changed = true; } if (selected) ImGui::SetItemDefaultFocus(); }
             ImGui::EndCombo();
@@ -1460,9 +1469,10 @@ namespace quartz::client
         if (eventCondition) { changed |= ImGui::Checkbox("Fire on first matching sample", &control.FireOnFirstSample); ImGui::SameLine(); ImGui::TextDisabled("events are one-shot; iterative passes are capped"); }
         else if (!stringCondition) { ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("Hysteresis", &control.Hysteresis, 0.001f, 0.0f, 1000.0f, "%.4f"); }
 
+        ImGui::SeparatorText("Target & actions");
         if (ImGui::BeginTabBar("ControlOptions", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_FittingPolicyResizeDown))
         {
-            if (ImGui::BeginTabItem("Primary action"))
+            if (ImGui::BeginTabItem("Target"))
             {
                 ImGui::TextDisabled("Compatibility action for existing configs. Extra actions below can run alongside it.");
                 int target = static_cast<int>(control.Target); ImGui::SetNextItemWidth(220.0f);
@@ -1491,7 +1501,7 @@ namespace quartz::client
                 else if (runtimeControlTargetIsBindingOperation(control.Target)) { changed |= drawRuntimeBindingReferenceCombo(engine, "Target binding", control.TargetBindingId, control.SourceBindingId); ImGui::TextDisabled("Primary binding operations fire when the condition enters true (or an event fires). Use an additional action with While active for repeated operations."); }
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Additional actions"))
+            if (ImGui::BeginTabItem("Extra actions"))
             {
                 ImGui::TextDisabled("Actions execute in priority order. On-trigger actions are ideal for saving/restoring shader state through the value bank.");
                 changed |= drawRuntimeActionList(engine, shaderFramebuffer, control.Actions, control.SourceBindingId, true);
@@ -1500,6 +1510,7 @@ namespace quartz::client
             ImGui::EndTabBar();
         }
 
+        ImGui::SeparatorText("Runtime state");
         ImGui::TextDisabled("Triggers: %llu   %s", static_cast<unsigned long long>(control.TriggerCount), control.LastTriggerTime > 0.0 ? "has fired" : "never fired");
         if (changed) engine.markChanged();
         ImGui::Unindent(10.0f);
@@ -1561,6 +1572,12 @@ namespace quartz::client
 #endif
     }
 
+    RuntimeMemoryInspectorState& runtimeMemoryInspectorState()
+    {
+        static RuntimeMemoryInspectorState state;
+        return state;
+    }
+
     void drawRuntimeMemoryInspector(RuntimeMemoryInspectorState& state)
     {
         ImGui::SeparatorText("Memory / disassembly");
@@ -1607,7 +1624,7 @@ namespace quartz::client
 
     void drawRuntimePointers(RuntimeBindingEngine& engine)
     {
-        static RuntimeMemoryInspectorState inspector;
+        auto& inspector = runtimeMemoryInspectorState();
         ImGui::TextUnformatted("Pointer assignments"); ImGui::SameLine(); if (ImGui::Button("+ Add pointer")) engine.addPointer();
         ImGui::SameLine(); ImGui::TextDisabled("Descriptors are models; pointers assign a model to a real process address and retain provenance.");
         std::optional<std::size_t> erase;
@@ -1663,7 +1680,6 @@ namespace quartz::client
             ImGui::Unindent(8.0f);
         }
         if (erase) engine.erasePointer(*erase); if (engine.pointers().empty()) ImGui::TextDisabled("No pointer assignments yet. Add one and point it at a binding with an exact address.");
-        drawRuntimeMemoryInspector(inspector);
     }
 
     void drawRuntimeObjectDescriptors(RuntimeBindingEngine& engine)
@@ -1931,49 +1947,10 @@ namespace quartz::client
 
     void drawRuntimeBindingsPage(RuntimeBindingEngine& engine, ShaderFramebuffer& shaderFramebuffer)
     {
-        ImGui::TextWrapped("Runtime bindings are a priority-ordered dataflow graph. Native/object sources, aggregate/comparison nodes, the value bank and controls can all feed each other; control iteration is bounded to prevent runaway loops.");
-        int passes = engine.controlPassLimit(); ImGui::SetNextItemWidth(110.0f); if (ImGui::InputInt("Control passes", &passes)) engine.setControlPassLimit(passes); ImGui::SameLine(); ImGui::TextDisabled("max iterative passes/frame");
-
-        constexpr ImGuiTabBarFlags RuntimeTabs = ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_FittingPolicyResizeDown | ImGuiTabBarFlags_TabListPopupButton;
-        if (ImGui::BeginTabBar("RuntimeGraphTabs", RuntimeTabs))
-        {
-            if (ImGui::BeginTabItem("Bindings"))
-            {
-                ImGui::TextUnformatted("Bindings"); ImGui::SameLine(); if (ImGui::Button("+ Add binding")) engine.add(); ImGui::SameLine(); if (ImGui::Button("Save")) engine.save(); ImGui::SameLine(); ImGui::TextDisabled("%s", engine.path().string().c_str());
-                if (ImGui::CollapsingHeader("Quick bindings"))
-                {
-                    auto addPreset = [&](const char* name, const RuntimeSourceKind source, const int signal, const char* target)
-                    {
-                        auto& binding = engine.add(); std::snprintf(binding.Name, sizeof(binding.Name), "%s", name); binding.Source = source; binding.Signal = signal; std::snprintf(binding.TargetId, sizeof(binding.TargetId), "%s", target); binding.Clamp = true; binding.OutputMin = 0.0f; binding.OutputMax = 1.0f; binding.SmoothingHz = 8.0f; binding.UpdateHz = source == RuntimeSourceKind::NativeProcess ? 20.0f : 60.0f; return &binding;
-                    };
-                    if (ImGui::SmallButton("Native value")) addPreset("Native process value", RuntimeSourceKind::NativeProcess, 0, "runtime.native"); ImGui::SameLine();
-                    if (ImGui::SmallButton("Native address")) { auto* b = addPreset("Native object address", RuntimeSourceKind::NativeAddress, 1, "runtime.address"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; } ImGui::SameLine();
-                    if (ImGui::SmallButton("Writable")) { auto* b = addPreset("Writable state", RuntimeSourceKind::Unbound, 0, "runtime.state"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; } ImGui::SameLine();
-                    if (ImGui::SmallButton("Current shader")) { auto* b = addPreset("Current shader", RuntimeSourceKind::ShaderState, 0, "runtime.shader"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; } ImGui::SameLine();
-                    if (ImGui::SmallButton("Previous shader")) { auto* b = addPreset("Previous shader", RuntimeSourceKind::ShaderState, 9, "runtime.previous_shader"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; } ImGui::SameLine();
-                    if (ImGui::SmallButton("Active profile")) { auto* b = addPreset("Active profile", RuntimeSourceKind::ProfileState, 0, "runtime.profile"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; } ImGui::SameLine();
-                    if (ImGui::SmallButton("Audio RMS")) { auto* b = addPreset("Audio RMS", RuntimeSourceKind::Audio, 0, "runtime.audio"); b->WriteMaterial = false; } ImGui::SameLine();
-                    if (ImGui::SmallButton("Media title")) { auto* b = addPreset("Media title", RuntimeSourceKind::Media, 5, "runtime.media_title"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; }
-                }
-                if (shaderFramebuffer.materialParameters().empty()) ImGui::TextDisabled("Current shader has no reflected material parameters.");
-                drawGroupedBindings(engine, shaderFramebuffer);
-                if (engine.bindings().empty()) ImGui::TextDisabled("No bindings yet.");
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Controls"))
-            {
-                ImGui::TextUnformatted("Controls"); ImGui::SameLine(); if (ImGui::Button("+ Add control")) engine.addControl(); ImGui::SameLine(); ImGui::TextDisabled("green/red squares show the current boolean state; higher priority wins output conflicts");
-                drawGroupedControls(engine, shaderFramebuffer);
-                if (engine.controls().empty()) ImGui::TextDisabled("No control rules yet.");
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Objects")) { drawRuntimeObjectDescriptors(engine); ImGui::EndTabItem(); }
-            if (ImGui::BeginTabItem("Pointers")) { drawRuntimePointers(engine); ImGui::EndTabItem(); }
-            if (ImGui::BeginTabItem("Value Bank")) { drawRuntimeValueBank(engine); ImGui::EndTabItem(); }
-            if (ImGui::BeginTabItem("Profiles")) { drawRuntimeProfiles(engine); ImGui::EndTabItem(); }
-            ImGui::EndTabBar();
-        }
+        ImGui::TextWrapped("Runtime bindings are priority-ordered dataflow nodes. Related runtime tools now live in their own pages instead of a nested mega-tab.");
+        drawGroupedBindings(engine, shaderFramebuffer);
     }
+
 
     void drawQRPCInspectorPage(RuntimeTelemetry& telemetry)
     {

@@ -3,11 +3,11 @@
 
 namespace quartz::client::ui
 {
-    class BindingsPage final : public Page
+    class ValueBankPage final : public Page
     {
     public:
-        [[nodiscard]] std::string_view id() const noexcept override { return "bindings"; }
-        [[nodiscard]] std::string_view title() const noexcept override { return "RE / Bindings"; }
+        [[nodiscard]] std::string_view id() const noexcept override { return "value-bank"; }
+        [[nodiscard]] std::string_view title() const noexcept override { return "Value Bank"; }
         [[nodiscard]] PageSection section() const noexcept override { return PageSection::Runtime; }
         void render(PageContext& context, PageManager& manager) override;
     };
