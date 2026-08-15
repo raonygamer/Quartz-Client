@@ -5,7 +5,19 @@
 namespace quartz::client
 {
     enum class MemoryWatchAccess : int { Write, ReadWrite };
-    struct MemoryWatchHit { double Time = 0.0; pid_t Tid = 0; std::uintptr_t Rip = 0; std::uintptr_t InstructionAddress = 0; std::uint64_t Count = 0; std::string Instruction; };
+
+    struct MemoryWatchHit
+    {
+        double Time = 0.0;
+        pid_t Tid = 0;
+        std::uintptr_t Rip = 0;
+        std::uintptr_t InstructionAddress = 0;
+        std::uint64_t Count = 0;
+        std::string Instruction;
+        user_regs_struct Registers{};
+        bool HasRegisters = false;
+    };
+
     struct MemoryWatchState;
 
     class MemoryWatch

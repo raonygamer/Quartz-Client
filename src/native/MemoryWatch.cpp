@@ -1,4 +1,5 @@
 #include "quartz/client/native/MemoryWatch.hpp"
+#include "quartz/client/native/NativeDisassembly.hpp"
 #include "quartz/client/Model.hpp"
 
 namespace quartz::client
@@ -9,7 +10,7 @@ namespace quartz::client
         bool Finished = false;
         std::string Status;
         std::vector<MemoryWatchHit> Hits;
-        std::jthread Worker; // last: joins before state above is destroyed
+        std::jthread Worker;
     };
 
     namespace
@@ -24,7 +25,7 @@ namespace quartz::client
             for (std::size_t length = 15; length > 0; --length)
             {
                 const std::size_t offset = bytes.size() - length; std::string text; std::size_t decoded = 0;
-                if (runtimeDecodeInstructionText(std::span<const std::uint8_t>(bytes).subspan(offset), rip - length, text, decoded) && decoded == length) { best = std::move(text); instructionAddress = rip - length; break; }
+                if (runtimeDecodeProcessInstructionText(pid, std::span<const std::uint8_t>(bytes).subspan(offset), rip - length, text, decoded) && decoded == length) { best = std::move(text); instructionAddress = rip - length; break; }
             }
             return best;
         }
@@ -173,13 +174,13 @@ namespace quartz::client
                             ++totalHits;
                             if (haveRegs)
                             {
-                                MemoryWatchHit hit; hit.Time = runtimeSteadySeconds(); hit.Tid = thread.Tid; hit.Rip = regs.rip; hit.Instruction = previousInstruction(pid, regs.rip, hit.InstructionAddress); hit.Count = 1;
+                                MemoryWatchHit hit; hit.Time = runtimeSteadySeconds(); hit.Tid = thread.Tid; hit.Rip = regs.rip; hit.Instruction = previousInstruction(pid, regs.rip, hit.InstructionAddress); hit.Count = 1; hit.Registers = regs; hit.HasRegisters = true;
                                 if (hit.Instruction.empty()) hit.Instruction = "<could not recover preceding instruction>";
                                 std::lock_guard lock(watch->Mutex);
                                 const std::uintptr_t site = hitSite(hit);
                                 const auto existing = std::ranges::find_if(watch->Hits, [site](const MemoryWatchHit& candidate) { return hitSite(candidate) == site; });
                                 if (existing == watch->Hits.end()) { watch->Hits.push_back(std::move(hit)); if (watch->Hits.size() > 256) watch->Hits.erase(watch->Hits.begin()); }
-                                else { existing->Time = hit.Time; existing->Tid = hit.Tid; existing->Rip = hit.Rip; existing->InstructionAddress = hit.InstructionAddress; existing->Instruction = std::move(hit.Instruction); ++existing->Count; }
+                                else { existing->Time = hit.Time; existing->Tid = hit.Tid; existing->Rip = hit.Rip; existing->InstructionAddress = hit.InstructionAddress; existing->Instruction = std::move(hit.Instruction); existing->Registers = hit.Registers; existing->HasRegisters = hit.HasRegisters; ++existing->Count; }
                             }
                         }
                         runtimePtracePokeUser(thread.Tid, Dr6Offset, 0);

@@ -47,16 +47,40 @@ namespace quartz::client
     template<typename T>
     bool parseNumber(const std::string_view value, T& result)
     {
-        T parsed{};
-        const char* begin = value.data();
-        const char* end = value.data() + value.size();
-        std::from_chars_result parsedResult{};
-        if constexpr (std::is_integral_v<T>) parsedResult = std::from_chars(begin, end, parsed);
-        else parsedResult = std::from_chars(begin, end, parsed, std::chars_format::general);
-        if (parsedResult.ec != std::errc{} || parsedResult.ptr != end) return false;
-        if constexpr (std::is_floating_point_v<T>) if (!std::isfinite(parsed)) return false;
-        result = parsed;
-        return true;
+        if (value.empty()) return false;
+        if constexpr (std::is_same_v<T, bool>)
+        {
+            if (value == "1" || value == "true" || value == "True" || value == "TRUE") { result = true; return true; }
+            if (value == "0" || value == "false" || value == "False" || value == "FALSE") { result = false; return true; }
+            return false;
+        }
+        else if constexpr (std::is_integral_v<T>)
+        {
+            std::string_view text = value; bool negative = false;
+            if (text.front() == '+' || text.front() == '-') { negative = text.front() == '-'; text.remove_prefix(1); }
+            if (text.empty() || (negative && !std::is_signed_v<T>)) return false;
+            int base = 10; if (text.starts_with("0x") || text.starts_with("0X")) { base = 16; text.remove_prefix(2); }
+            if (text.empty()) return false;
+            using U = std::make_unsigned_t<T>; U magnitude{}; const auto parsedResult = std::from_chars(text.data(), text.data() + text.size(), magnitude, base);
+            if (parsedResult.ec != std::errc{} || parsedResult.ptr != text.data() + text.size()) return false;
+            if constexpr (std::is_signed_v<T>)
+            {
+                const U maximum = static_cast<U>(std::numeric_limits<T>::max());
+                if (negative)
+                {
+                    const U minimumMagnitude = maximum + U{1}; if (magnitude > minimumMagnitude) return false;
+                    result = magnitude == minimumMagnitude ? std::numeric_limits<T>::min() : static_cast<T>(-static_cast<T>(magnitude));
+                }
+                else { if (magnitude > maximum) return false; result = static_cast<T>(magnitude); }
+            }
+            else result = static_cast<T>(magnitude);
+            return true;
+        }
+        else
+        {
+            T parsed{}; const char* begin = value.data(); const char* end = value.data() + value.size(); const auto parsedResult = std::from_chars(begin, end, parsed, std::chars_format::general);
+            if (parsedResult.ec != std::errc{} || parsedResult.ptr != end || !std::isfinite(parsed)) return false; result = parsed; return true;
+        }
     }
 
     template<std::size_t N>

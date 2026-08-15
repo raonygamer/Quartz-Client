@@ -13,7 +13,7 @@ namespace quartz::client::ui
         void render(PageContext& context, PageManager& manager) override;
         void setTarget(const pid_t pid, const std::uintptr_t address, const std::size_t width) noexcept
         {
-            _pid = pid;
+            _pid = pid; _selectedSite = 0;
             std::snprintf(_address.data(), _address.size(), "0x%llX", static_cast<unsigned long long>(address));
             _size = width <= 1 ? 0 : width <= 2 ? 1 : width <= 4 ? 2 : 3;
         }
@@ -25,6 +25,7 @@ namespace quartz::client::ui
         int _size = 2;
         int _access = static_cast<int>(MemoryWatchAccess::Write);
         int _maxHits = 64;
+        std::uintptr_t _selectedSite = 0;
         std::string _status;
     };
 }

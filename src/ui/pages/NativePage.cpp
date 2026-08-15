@@ -1,6 +1,7 @@
 #include "quartz/client/ui/pages/NativePage.hpp"
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
+#include "quartz/client/ui/MemoryInspector.hpp"
 #include "quartz/client/native/OpcodePatternEditor.hpp"
 
 namespace quartz::client::ui
@@ -26,6 +27,6 @@ namespace quartz::client::ui
             ImGui::Separator(); ImGui::PopID();
         }
         if (!any) ImGui::TextDisabled("No NativeProcess/NativeAddress bindings configured.");
-        drawRuntimeMemoryInspector(inspector);
+        drawEnhancedRuntimeMemoryInspector(inspector);
     }
 }
