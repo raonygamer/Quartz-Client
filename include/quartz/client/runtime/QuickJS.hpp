@@ -22,6 +22,4 @@ namespace quartz::client
     void runtimeResetWorkspaceScript(std::uint64_t scriptId) noexcept;
     void runtimeReloadAllWorkspaceScripts() noexcept;
     std::filesystem::path runtimeQuickJSScriptDirectory();
-    std::string_view runtimeTerrariaAstrofluxMigrationScript() noexcept;
-    bool runtimeInstallTerrariaAstrofluxMigration(RuntimeBindingEngine& engine, std::string& error);
 }
