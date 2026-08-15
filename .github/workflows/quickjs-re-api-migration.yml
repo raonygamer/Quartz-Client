@@ -1,0 +1,42 @@
+name: Apply QuickJS RE API migration
+
+on:
+  push:
+    branches: [feature/quickjs-bindings]
+    paths:
+      - tools/apply_quickjs_re_api.py
+      - .github/workflows/quickjs-re-api-migration.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev libudev-dev
+
+      - name: Apply QuickJS RE API migration
+        run: python3 tools/apply_quickjs_re_api.py
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j2
+
+      - name: Commit generated changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md src/runtime/QuickJS.cpp src/runtime/QuickJSApi.cpp src/runtime/QuickJSInternal.hpp src/ui/RuntimeUI.cpp src/ui/pages/BindingsPage.cpp include/quartz/client/runtime/QuickJS.hpp include/quartz/client/runtime/RuntimeBindingEngine.hpp include/quartz/client/input/Input.hpp src/Application.cpp
+          git commit -m "feat: expand QuickJS runtime scripting"
+          git push
