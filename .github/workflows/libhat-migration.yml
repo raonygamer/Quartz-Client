@@ -1,0 +1,29 @@
+name: Apply libhat migration
+
+on:
+  push:
+    branches: [refactor/split-main]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Apply libhat integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git submodule add https://github.com/BasedInc/libhat.git vendor/libhat
+          git -C vendor/libhat checkout bf17bf18e9ea52d12f26ad5fd25376176e0272ed
+          python3 tools/apply_libhat_migration.py
+          git add .gitmodules CMakeLists.txt src/runtime/RuntimeNative.cpp src/ui/RuntimeUI.cpp vendor/libhat
+          git commit -m "perf: integrate libhat signature scanning"
+          git push origin HEAD:refactor/split-main
