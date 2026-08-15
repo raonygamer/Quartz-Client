@@ -1027,14 +1027,15 @@ namespace quartz::client
             ImGui::SeparatorText("Comparator / mass compare");
             ImGui::TextDisabled("Compare a set of bindings/controls and reduce the matches to any/all/none/count/fraction/first-index.");
             int condition = static_cast<int>(binding.CompareCondition);
-            ImGui::SetNextItemWidth(150.0f);
-            if (ImGui::Combo("Compare", &condition, "==\0!=\0<\0<=\0>\0>=\0between\0outside\0")) { binding.CompareCondition = static_cast<RuntimeCompareCondition>(condition); changed = true; }
-            ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("A", &binding.CompareA, 0.01f);
-            if (binding.CompareCondition == RuntimeCompareCondition::Between || binding.CompareCondition == RuntimeCompareCondition::Outside) { ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("B", &binding.CompareB, 0.01f); }
-            if (binding.CompareCondition == RuntimeCompareCondition::Equal || binding.CompareCondition == RuntimeCompareCondition::NotEqual) { ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("Tolerance", &binding.CompareTolerance, 0.0001f, 0.000001f, 1000.0f, "%.6f"); }
-            int result = static_cast<int>(binding.CompareResult);
             ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::Combo("Result", &result, "Any\0All\0None\0Count\0Fraction\0First match index\0")) { binding.CompareResult = static_cast<RuntimeMassCompareResult>(result); changed = true; }
+            if (ImGui::Combo("Condition", &condition, "==\0!=\0<\0<=\0>\0>=\0between\0outside\0")) { binding.CompareCondition = static_cast<RuntimeCompareCondition>(condition); changed = true; }
+            ImGui::SetNextItemWidth(220.0f); changed |= ImGui::DragFloat("Compare value A", &binding.CompareA, 0.01f);
+            if (binding.CompareCondition == RuntimeCompareCondition::Between || binding.CompareCondition == RuntimeCompareCondition::Outside) { ImGui::SetNextItemWidth(220.0f); changed |= ImGui::DragFloat("Compare value B", &binding.CompareB, 0.01f); }
+            if (binding.CompareCondition == RuntimeCompareCondition::Equal || binding.CompareCondition == RuntimeCompareCondition::NotEqual) { ImGui::SetNextItemWidth(220.0f); changed |= ImGui::DragFloat("Tolerance", &binding.CompareTolerance, 0.0001f, 0.000001f, 1000.0f, "%.6f"); }
+            int result = static_cast<int>(binding.CompareResult);
+            ImGui::SetNextItemWidth(260.0f);
+            if (ImGui::Combo("Reduction result", &result, "Any\0All\0None\0Count\0Fraction\0First match index\0")) { binding.CompareResult = static_cast<RuntimeMassCompareResult>(result); changed = true; }
+            ImGui::Spacing();
             changed |= drawRuntimeReferenceList(engine, binding, false, true);
         }
         else if (binding.Source == RuntimeSourceKind::ObjectField || binding.Source == RuntimeSourceKind::ObjectStatus)
@@ -1173,18 +1174,11 @@ namespace quartz::client
                     int displacementType = static_cast<int>(binding.SignatureDisplacementType);
                     ImGui::SetNextItemWidth(180.0f);
                     if (ImGui::Combo("Displacement", &displacementType, Displacements, static_cast<int>(std::size(Displacements)))) { binding.SignatureDisplacementType = static_cast<RuntimeDisplacementType>(displacementType); changed = true; }
-                    if (binding.SignatureDisplacementType == RuntimeDisplacementType::Manual)
-                    {
-                        ImGui::SameLine();
-                        ImGui::SetNextItemWidth(160.0f);
-                        changed |= ImGui::InputInt("Manual displacement", &binding.SignatureManualDisplacement);
-                    }
-                    else
-                    {
-                        ImGui::SameLine();
-                        ImGui::SetNextItemWidth(160.0f);
-                        changed |= ImGui::InputInt("Displacement offset", &binding.SignatureRegisterDisplacementOffset);
-                    }
+                    ImGui::Indent(18.0f);
+                    ImGui::SetNextItemWidth(220.0f);
+                    if (binding.SignatureDisplacementType == RuntimeDisplacementType::Manual) changed |= ImGui::InputInt("Manual displacement", &binding.SignatureManualDisplacement);
+                    else changed |= ImGui::InputInt("Displacement byte offset", &binding.SignatureRegisterDisplacementOffset);
+                    ImGui::Unindent(18.0f);
                     ImGui::SetNextItemWidth(180.0f);
                     changed |= ImGui::DragFloat("Capture timeout", &binding.SignatureCaptureTimeoutSeconds, 0.1f, 0.1f, 120.0f, "%.1f s");
                     ImGui::TextDisabled("A temporary hardware execution breakpoint captures the selected register when the matched instruction executes. The breakpoint is removed immediately after capture; normal reads then use process_vm_readv().");
@@ -1929,7 +1923,16 @@ namespace quartz::client
     {
         std::vector<RuntimeBinding*> order; for (auto& binding : engine.bindings()) order.push_back(&binding); runtimeSortUiNodes(order); std::set<std::string> groups; for (auto* binding : order) if (binding->Group[0]) groups.insert(binding->Group);
         std::optional<std::size_t> erase;
-        auto drawOne = [&](RuntimeBinding& binding) { bool shouldErase = false; drawRuntimeBinding(engine, shaderFramebuffer, binding, shouldErase); if (shouldErase) erase = static_cast<std::size_t>(&binding - engine.bindings().data()); };
+        auto drawOne = [&](RuntimeBinding& binding)
+        {
+            bool shouldErase = false;
+            ImGui::PushID(static_cast<int>(binding.Id & 0x7fffffffULL));
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 5.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
+            if (ImGui::BeginChild("##BindingCard", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY)) drawRuntimeBinding(engine, shaderFramebuffer, binding, shouldErase);
+            ImGui::EndChild(); ImGui::PopStyleVar(2); ImGui::PopID(); ImGui::Dummy(ImVec2(0.0f, 8.0f));
+            if (shouldErase) erase = static_cast<std::size_t>(&binding - engine.bindings().data());
+        };
         for (auto* binding : order) if (!binding->Group[0]) drawOne(*binding);
         for (const auto& group : groups) if (ImGui::CollapsingHeader((group + "###BindingGroup" + group).c_str(), ImGuiTreeNodeFlags_DefaultOpen)) { ImGui::Indent(8.0f); for (auto* binding : order) if (group == binding->Group) drawOne(*binding); ImGui::Unindent(8.0f); }
         if (erase) engine.erase(*erase);
@@ -1939,7 +1942,16 @@ namespace quartz::client
     {
         std::vector<RuntimeControlRule*> order; for (auto& control : engine.controls()) order.push_back(&control); runtimeSortUiNodes(order); std::set<std::string> groups; for (auto* control : order) if (control->Group[0]) groups.insert(control->Group);
         std::optional<std::size_t> erase;
-        auto drawOne = [&](RuntimeControlRule& control) { bool shouldErase = false; drawRuntimeControlRule(engine, shaderFramebuffer, control, shouldErase); if (shouldErase) erase = static_cast<std::size_t>(&control - engine.controls().data()); };
+        auto drawOne = [&](RuntimeControlRule& control)
+        {
+            bool shouldErase = false;
+            ImGui::PushID(static_cast<int>(control.Id & 0x7fffffffULL));
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 5.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
+            if (ImGui::BeginChild("##ControlCard", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY)) drawRuntimeControlRule(engine, shaderFramebuffer, control, shouldErase);
+            ImGui::EndChild(); ImGui::PopStyleVar(2); ImGui::PopID(); ImGui::Dummy(ImVec2(0.0f, 8.0f));
+            if (shouldErase) erase = static_cast<std::size_t>(&control - engine.controls().data());
+        };
         for (auto* control : order) if (!control->Group[0]) drawOne(*control);
         for (const auto& group : groups) if (ImGui::CollapsingHeader((group + "###ControlGroup" + group).c_str(), ImGuiTreeNodeFlags_DefaultOpen)) { ImGui::Indent(8.0f); for (auto* control : order) if (group == control->Group) drawOne(*control); ImGui::Unindent(8.0f); }
         if (erase) engine.eraseControl(*erase);

@@ -142,6 +142,7 @@ namespace quartz::client
     std::size_t runtimeAlignUp(const std::size_t value, const std::size_t alignment) noexcept;
     std::size_t runtimeObjectFieldOffset(const RuntimeObjectDescriptor& object, const std::uint64_t fieldId, std::size_t* objectSize = nullptr) noexcept;
     std::string runtimeHexAddress(const std::uintptr_t value);
+    void drawIndeterminateProgressBar(ImVec2 size);
     void mapSpectrumToColumns(const std::span<const float> analysisBands, std::array<float, Columns>& bands, const VisualizerSettings& settings, const float overallGain);
     void smoothBands(const std::array<float, Columns>& bands, std::array<float, Columns>& smoothedBands, const VisualizerSettings& settings, const float dt);
     void renderAudioRGB(std::array<Color32, MatrixSize>& framebuffer, const std::array<float, Columns>& bands, const VisualizerSettings& settings, const std::optional<Color32> visualizerColor, const float mediaColorAmount, const float wavePhase);

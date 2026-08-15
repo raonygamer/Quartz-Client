@@ -3,6 +3,7 @@
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/platform/Window.hpp"
 #include "quartz/client/ui/ImGuiRuntime.hpp"
+#include "quartz/client/shader/ShaderWorkspace.hpp"
 
 namespace quartz::client
 {
@@ -147,6 +148,7 @@ int Application::run(int argc, char* argv[])
     {
         if (keyboardInput.consumeRestoreRequest()) window.restore();
         const double currentFrame = glfwGetTime();
+        pollExternalShaderHotReload(shaderEditor, shaderFramebuffer, vertexShaderSource, fragmentShaderSource, settings, currentFrame);
         appCpuUsage = appCpuMeter.update(currentFrame);
         runtimeBindings.updateRates(usb.stats(), currentFrame);
         window.pollEvents();

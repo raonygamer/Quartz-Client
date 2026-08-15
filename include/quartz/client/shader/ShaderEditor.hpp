@@ -18,6 +18,13 @@ namespace quartz::client
         bool ZoomInWasDown = false;
         bool ZoomOutWasDown = false;
         bool ZoomResetWasDown = false;
+        std::filesystem::path ExternalVertexPath;
+        std::filesystem::path ExternalFragmentPath;
+        std::filesystem::file_time_type ExternalVertexWriteTime{};
+        std::filesystem::file_time_type ExternalFragmentWriteTime{};
+        bool HotReloadExternal = false;
+        double NextExternalPoll = 0.0;
+        std::string ExternalStatus;
     };
 
 }

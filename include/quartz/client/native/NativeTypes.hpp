@@ -75,6 +75,7 @@ namespace quartz::client
         std::uintptr_t Base = 0;
         std::uintptr_t End = 0;
         bool Readable = false;
+        bool Writable = false;
         bool Executable = false;
         std::string Path;
     };

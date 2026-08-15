@@ -4,10 +4,13 @@
 #include "quartz/client/ui/pages/SpectrumPage.hpp"
 #include "quartz/client/ui/pages/AudioPage.hpp"
 #include "quartz/client/ui/pages/RGBPage.hpp"
+#include "quartz/client/ui/pages/ShadersPage.hpp"
 #include "quartz/client/ui/pages/BindingsPage.hpp"
 #include "quartz/client/ui/pages/ControlsPage.hpp"
 #include "quartz/client/ui/pages/ObjectsPage.hpp"
 #include "quartz/client/ui/pages/NativePage.hpp"
+#include "quartz/client/ui/pages/MemoryScannerPage.hpp"
+#include "quartz/client/ui/pages/MemoryWatchPage.hpp"
 #include "quartz/client/ui/pages/ValueBankPage.hpp"
 #include "quartz/client/ui/pages/ProfilesPage.hpp"
 #include "quartz/client/ui/pages/DevicePage.hpp"
@@ -19,6 +22,7 @@
 #include "quartz/client/ui/pages/PerformancePage.hpp"
 #include "quartz/client/ui/pages/MatrixTimingPage.hpp"
 #include "quartz/client/ui/pages/ShaderEditorPage.hpp"
+#include "quartz/client/ui/pages/OpcodeEditorPage.hpp"
 #include <array>
 #include <imgui.h>
 
@@ -106,10 +110,13 @@ namespace quartz::client::ui
         manager.add<SpectrumPage>();
         manager.add<AudioPage>();
         manager.add<RGBPage>();
+        manager.add<ShadersPage>();
         manager.add<BindingsPage>();
         manager.add<ControlsPage>();
         manager.add<ObjectsPage>();
         manager.add<NativePage>();
+        manager.add<MemoryScannerPage>();
+        manager.add<MemoryWatchPage>();
         manager.add<ValueBankPage>();
         manager.add<ProfilesPage>();
         manager.add<DevicePage>();
@@ -121,6 +128,7 @@ namespace quartz::client::ui
         manager.add<PerformancePage>();
         manager.add<MatrixTimingPage>();
         manager.add<ShaderEditorPage>();
+        manager.add<OpcodeEditorPage>();
         return manager;
     }
 }

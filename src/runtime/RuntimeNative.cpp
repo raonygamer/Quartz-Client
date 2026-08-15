@@ -269,6 +269,7 @@ namespace quartz::client
             region.Base = base;
             region.End = end;
             region.Readable = !permissions.empty() && permissions[0] == 'r';
+            region.Writable = permissions.size() > 1 && permissions[1] == 'w';
             region.Executable = permissions.size() > 2 && permissions[2] == 'x';
             region.Path = trim(std::move(path));
             regions.emplace_back(std::move(region));
