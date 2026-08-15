@@ -1,2 +1,5 @@
 #pragma once
-#include "quartz/client/Model.hpp"
+#include "USBTypes.hpp"
+#include "USBTransport.hpp"
+#include "QRPCSession.hpp"
+#include "RawUSB.hpp"

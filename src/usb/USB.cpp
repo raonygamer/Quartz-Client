@@ -9,6 +9,4 @@ namespace quartz::client
         std::construct_at(reinterpret_cast<PacketHeader*>(packet.Data.data()), 1, type, PacketDirection::HostToDevice, 0, 0);
         return packet;
     }
-
-
 }
