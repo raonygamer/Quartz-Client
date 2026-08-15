@@ -1,0 +1,210 @@
+name: Split Main.cpp safely v2
+
+on:
+  push:
+    branches: [refactor/split-main]
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/split-main
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev
+
+      - name: Split Main.cpp at safe top-level boundaries
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          path = Path('src/Main.cpp')
+          source = path.read_text()
+          marker = 'namespace\n{\n'
+          namespace_at = source.find(marker)
+          if namespace_at < 0: raise SystemExit('anonymous namespace marker not found')
+          open_brace = namespace_at + len('namespace\n')
+          body_start = open_brace + 2
+
+          def raw_prefix(text, i):
+              for p in ('u8R"', 'uR"', 'UR"', 'LR"', 'R"'):
+                  if text.startswith(p, i): return p
+              return None
+
+          def scan(text, opening=None, collect=False):
+              depth = paren = bracket = 0
+              state = 'normal'
+              raw_end = None
+              line_start = 0
+              continued = False
+              candidates = []
+              i = opening if opening is not None else 0
+              while i < len(text):
+                  c = text[i]
+                  n = text[i + 1] if i + 1 < len(text) else ''
+                  if state == 'line':
+                      if c == '\n': state = 'normal'
+                      i += 1; continue
+                  if state == 'block':
+                      if c == '*' and n == '/': state = 'normal'; i += 2
+                      else: i += 1
+                      continue
+                  if state == 'string':
+                      if c == '\\': i += 2
+                      elif c == '"': state = 'normal'; i += 1
+                      else: i += 1
+                      continue
+                  if state == 'char':
+                      if c == '\\': i += 2
+                      elif c == "'": state = 'normal'; i += 1
+                      else: i += 1
+                      continue
+                  if state == 'raw':
+                      end = text.find(raw_end, i)
+                      if end < 0: raise SystemExit('unterminated raw string')
+                      i = end + len(raw_end); state = 'normal'; continue
+                  if c == '/' and n == '/': state = 'line'; i += 2; continue
+                  if c == '/' and n == '*': state = 'block'; i += 2; continue
+                  rp = raw_prefix(text, i)
+                  if rp:
+                      ds = i + len(rp)
+                      op = text.find('(', ds)
+                      if op < 0: raise SystemExit('bad raw string')
+                      raw_end = ')' + text[ds:op] + '"'
+                      state = 'raw'; i = op + 1; continue
+                  if c == '"': state = 'string'; i += 1; continue
+                  if c == "'": state = 'char'; i += 1; continue
+                  if c == '{': depth += 1
+                  elif c == '}':
+                      depth -= 1
+                      if opening is not None and depth == 0: return i
+                  elif collect and c == '(': paren += 1
+                  elif collect and c == ')': paren -= 1
+                  elif collect and c == '[': bracket += 1
+                  elif collect and c == ']': bracket -= 1
+                  if collect and c == '\n':
+                      line = text[line_start:i].rstrip()
+                      if depth == 0 and paren == 0 and bracket == 0 and not continued and (line.endswith(';') or line.endswith('}') or line.startswith('#endif')):
+                          candidates.append(i + 1)
+                      continued = line.endswith('\\')
+                      line_start = i + 1
+                  i += 1
+              if opening is not None: raise SystemExit('namespace close not found')
+              return candidates
+
+          namespace_close = scan(source, open_brace)
+          body = source[body_start:namespace_close]
+          suffix = source[namespace_close + 1:]
+          candidates = scan(body, collect=True)
+          if not candidates: raise SystemExit('no split candidates found')
+
+          target = 42000
+          boundaries = [0]
+          last = 0
+          while last + target < len(body):
+              desired = last + target
+              after = next((p for p in candidates if p >= desired), None)
+              if after is None:
+                  break
+              boundaries.append(after)
+              last = after
+          boundaries.append(len(body))
+          boundaries = list(dict.fromkeys(boundaries))
+          chunks = [body[a:b] for a, b in zip(boundaries, boundaries[1:]) if b > a]
+          assert ''.join(chunks) == body
+
+          keywords = [
+              ('ShaderSources', ('FragmentShaderSource', 'DefaultVertexShaderSource')),
+              ('USB', ('class RawUSB', 'USBStats')),
+              ('Audio', ('class AudioSpectrum', 'AudioLevelSnapshot')),
+              ('Media', ('class MediaColorProvider', 'MPRIS')),
+              ('Input', ('class EvdevKeyboard', 'ReactiveKeyState')),
+              ('ShaderRuntime', ('class ShaderFramebuffer', 'ShaderTransitionState')),
+              ('RuntimeNative', ('RuntimeRegisterCaptureState', 'process_vm_readv', 'ptrace')),
+              ('RuntimeModel', ('RuntimeObject', 'RuntimePointer', 'ObjectField')),
+              ('RuntimeBindings', ('class RuntimeBindingEngine', 'RuntimeSourceKind')),
+              ('RuntimeControls', ('RuntimeControl', 'RuntimeAction')),
+              ('RuntimeUI', ('drawRuntimeBindingsPage', 'RE / Bindings')),
+              ('UI', ('drawUi(', 'ImGui::BeginTabItem')),
+          ]
+          out = Path('src/main')
+          out.mkdir(parents=True, exist_ok=True)
+          for p in out.glob('Main*.inc'): p.unlink()
+          used, names = {}, []
+          for chunk in chunks:
+              label, best = 'Core', 0
+              for candidate, needles in keywords:
+                  score = sum(chunk.count(n) for n in needles)
+                  if score > best: label, best = candidate, score
+              used[label] = used.get(label, 0) + 1
+              serial = '' if used[label] == 1 else f'{used[label]:02d}'
+              name = f'Main{label}{serial}.inc'
+              while name in names:
+                  used[label] += 1
+                  name = f'Main{label}{used[label]:02d}.inc'
+              names.append(name)
+              (out / name).write_text(chunk)
+
+          # Preserve all declarations byte-for-byte and in the original order. The .inc
+          # boundaries are purely navigational: this remains exactly one C++ translation unit.
+          prefix = source[:body_start]
+          includes = ''.join(f'#include "main/{name}"\n' for name in names)
+          entry = suffix.lstrip('\n')
+          (out / 'MainEntry.inc').write_text(entry)
+          path.write_text(prefix + includes + '}\n\n#include "main/MainEntry.inc"\n')
+
+          capture = re.search(r'(?:struct|class)\s+RuntimeRegisterCaptureState\b', body)
+          if not capture: raise SystemExit('RuntimeRegisterCaptureState missing')
+          capture_window = body[capture.start():capture.start() + 24000]
+          worker = capture_window.find('std::jthread Worker')
+          status = capture_window.find('Status')
+          if worker < 0 or status < 0 or worker < status: raise SystemExit('jthread lifetime invariant not preserved')
+
+          readme = [
+              '# Main.cpp structural split',
+              '',
+              'These `.inc` fragments intentionally remain one translation unit. This containment pass preserves anonymous-namespace linkage, declaration order, static initialization and destruction order while making the former 700+ KiB `Main.cpp` navigable.',
+              '',
+              'The splitter round-trips the original namespace body byte-for-byte and only cuts at lexer-safe top-level boundaries. `MainEntry.inc` contains `main()` outside the anonymous namespace.',
+              '',
+              '## Include order',
+              '',
+          ]
+          readme.extend(f'{i}. `{name}` ({len(chunk)} bytes)' for i, (name, chunk) in enumerate(zip(names, chunks), 1))
+          readme.append(f'{len(names) + 1}. `MainEntry.inc` ({len(entry)} bytes)')
+          (out / 'README.md').write_text('\n'.join(readme) + '\n')
+          print(f'namespace body: {len(body)} bytes -> {len(chunks)} fragments')
+          print('\n'.join(names))
+
+      - name: Structural sanity checks
+        run: |
+          git diff --check
+          test $(wc -l < src/Main.cpp) -lt 180
+          grep -R -q 'RuntimeRegisterCaptureState' src/main
+          grep -R -q 'std::jthread Worker' src/main
+          grep -q 'main/MainEntry.inc' src/Main.cpp
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build -j2
+
+      - name: Commit validated split
+        run: |
+          rm -f .github/workflows/refactor-split-main-v2.yml .github/refactor-trigger
+          git config user.name 'Quartz refactor bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A src .github
+          git commit -m 'refactor: split Main.cpp into structural modules'
+          git push origin HEAD:refactor/split-main
