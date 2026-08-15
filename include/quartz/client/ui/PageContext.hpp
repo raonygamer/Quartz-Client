@@ -1,5 +1,6 @@
 #pragma once
 #include "quartz/client/Model.hpp"
+#include "quartz/client/runtime/JavaScriptRuntime.hpp"
 
 namespace quartz::client::ui
 {
@@ -23,6 +24,7 @@ namespace quartz::client::ui
         const std::array<Color32, MatrixSize>& framebuffer;
         SharedDeviceState& deviceState;
         RuntimeBindingEngine& runtimeBindings;
+        JavaScriptRuntime& javascript;
         RuntimeTelemetry& runtimeTelemetry;
         const AutoGainState& autoGain;
         const AudioLevelSnapshot& audioLevel;
