@@ -13,3 +13,6 @@
 [submodule "vendor/ImGuiColorTextEdit"]
 	path = vendor/ImGuiColorTextEdit
 	url = https://github.com/goossens/ImGuiColorTextEdit
+[submodule "vendor/zydis"]
+	path = vendor/zydis
+	url = https://github.com/zyantific/zydis

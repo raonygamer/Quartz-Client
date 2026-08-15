@@ -66,6 +66,13 @@
 #include <imgui_impl_opengl3.h>
 #include <TextEditor.h>
 
+#if __has_include(<Zydis/Zydis.h>)
+#include <Zydis/Zydis.h>
+#define QUARTZ_HAS_ZYDIS 1
+#else
+#define QUARTZ_HAS_ZYDIS 0
+#endif
+
 #if __has_include(<stb_image.h>)
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -1521,6 +1528,9 @@ void main()
     {
         std::string Name;
         std::string FragmentSource;
+        std::string Id;
+        std::filesystem::path SourcePath;
+        bool BuiltIn = true;
     };
 
     static std::string makeGeneratedShader(const std::string_view body)
@@ -2263,11 +2273,16 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
     float contour = 0.65 + 0.35 * sin(value * 28.0 - uTime * (1.0 + value * 4.0));
     vec3 color = hsv2rgb(vec3(mix(0.66, 0.0, value), 0.95, 0.08 + value * contour));
     FragColor = vec4(applyIndicators(clamp(color, 0.0, 1.0), row, column), 1.0);)GLSL")});
-        for (auto& preset : presets) parameterizeShaderPreset(preset);
+        for (auto& preset : presets)
+        {
+            parameterizeShaderPreset(preset);
+            preset.Id = "builtin." + shaderPresetId(preset.Name);
+            preset.BuiltIn = true;
+        }
         return presets;
     }
 
-    static const std::vector<ShaderPreset> ShaderPresets = buildShaderPresets();
+    static std::vector<ShaderPreset> ShaderPresets = buildShaderPresets();
 
     static_assert(sizeof(Color32) == 3);
     static_assert(sizeof(FramebufferSetPayload<MatrixSize>) == 340);
@@ -2762,6 +2777,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         int BaseColorMode = 0;
         int ShaderDownsampleMode = 0;
         int ShaderPresetIndex = 1;
+        std::string ShaderId = "builtin.rainbow_equalizer";
     };
 
     enum class ViewPage : std::uint8_t
@@ -2913,6 +2929,109 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         return changed;
     }
 
+    static std::filesystem::path shaderLibraryPath()
+    {
+        return settingsPath().parent_path() / "shaders";
+    }
+
+    static bool loadTextFileString(const std::filesystem::path& path, std::string& source)
+    {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file) return false;
+        const auto size = file.tellg();
+        if (size <= 0 || static_cast<std::size_t>(size) >= ShaderSourceCapacity) return false;
+        source.resize(static_cast<std::size_t>(size));
+        file.seekg(0);
+        file.read(source.data(), size);
+        return static_cast<bool>(file);
+    }
+
+    static std::optional<std::pair<std::string, std::string>> parseShaderAnnotation(const std::string_view source)
+    {
+        const std::size_t marker = source.find("@shader");
+        if (marker == std::string_view::npos) return std::nullopt;
+        const std::size_t end = source.find('\n', marker);
+        const std::string line(source.substr(marker, end == std::string_view::npos ? source.size() - marker : end - marker));
+        std::smatch match;
+        static const std::regex IdQuoted(R"(id\s*=\s*[\"']([^\"']+)[\"'])", std::regex::icase);
+        static const std::regex IdBare(R"(id\s*=\s*([A-Za-z0-9_.:/-]+))", std::regex::icase);
+        static const std::regex LabelQuoted(R"(label\s*=\s*[\"']([^\"']+)[\"'])", std::regex::icase);
+        std::string id, label;
+        if (std::regex_search(line, match, IdQuoted)) id = match[1].str();
+        else if (std::regex_search(line, match, IdBare)) id = match[1].str();
+        if (std::regex_search(line, match, LabelQuoted)) label = match[1].str();
+        if (id.empty()) return std::nullopt;
+        if (label.empty()) label = id;
+        return std::pair{id, label};
+    }
+
+    static void refreshShaderLibrary()
+    {
+        std::erase_if(ShaderPresets, [](const ShaderPreset& preset) { return !preset.BuiltIn; });
+        std::error_code ec;
+        const auto root = shaderLibraryPath();
+        std::filesystem::create_directories(root, ec);
+        if (ec) return;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(root, ec))
+        {
+            if (ec || !entry.is_regular_file()) continue;
+            const auto extension = entry.path().extension().string();
+            if (extension != ".glsl" && extension != ".frag" && extension != ".fs") continue;
+            std::string source;
+            if (!loadTextFileString(entry.path(), source)) continue;
+            const auto annotation = parseShaderAnnotation(source);
+            if (!annotation) continue;
+            const auto& [id, label] = *annotation;
+            if (std::ranges::any_of(ShaderPresets, [&](const ShaderPreset& preset) { return preset.Id == id; })) continue;
+            ShaderPreset preset;
+            preset.Name = label;
+            preset.FragmentSource = std::move(source);
+            preset.Id = id;
+            preset.SourcePath = entry.path();
+            preset.BuiltIn = false;
+            ShaderPresets.emplace_back(std::move(preset));
+        }
+    }
+
+    static const ShaderPreset* findShaderPresetById(const std::string_view id) noexcept
+    {
+        const auto it = std::ranges::find_if(ShaderPresets, [&](const ShaderPreset& preset) { return preset.Id == id; });
+        return it == ShaderPresets.end() ? nullptr : &*it;
+    }
+
+    static int shaderPresetIndexById(const std::string_view id) noexcept
+    {
+        for (std::size_t i = 0; i < ShaderPresets.size(); ++i) if (ShaderPresets[i].Id == id) return static_cast<int>(i + 1);
+        return 0;
+    }
+
+    static bool importShaderToLibrary(const std::filesystem::path& sourcePath, std::string& importedId, std::string& error)
+    {
+        std::string source;
+        if (!loadTextFileString(sourcePath, source)) { error = "could not read shader file"; return false; }
+        const auto annotation = parseShaderAnnotation(source);
+        if (!annotation) { error = "shader has no @shader id=... annotation"; return false; }
+        importedId = annotation->first;
+        std::error_code ec;
+        std::filesystem::create_directories(shaderLibraryPath(), ec);
+        if (ec) { error = "could not create shader library: " + ec.message(); return false; }
+        const std::filesystem::path destination = shaderLibraryPath() / sourcePath.filename();
+        if (sourcePath.lexically_normal() != destination.lexically_normal())
+        {
+            std::filesystem::copy_file(sourcePath, destination, std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec) { error = "could not import shader: " + ec.message(); return false; }
+        }
+        refreshShaderLibrary();
+        error.clear();
+        return findShaderPresetById(importedId) != nullptr;
+    }
+
+
+    static std::string shaderPresetIdByIndex(const int index)
+    {
+        return index > 0 && index <= static_cast<int>(ShaderPresets.size()) ? ShaderPresets[static_cast<std::size_t>(index - 1)].Id : std::string{};
+    }
+
     static void loadShaderSources(std::array<char, ShaderSourceCapacity>& vertexSource, std::array<char, ShaderSourceCapacity>& fragmentSource)
     {
         setShaderSource(vertexSource, DefaultVertexShaderSource);
@@ -2988,6 +3107,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         stream << "BaseColorMode=" << settings.BaseColorMode << '\n';
         stream << "ShaderDownsampleMode=" << settings.ShaderDownsampleMode << '\n';
         stream << "ShaderPresetIndex=" << settings.ShaderPresetIndex << '\n';
+        stream << "ShaderId=" << settings.ShaderId << '\n';
         stream << "AudioSource=" << settings.AudioSource << '\n';
         stream << "SolidColor=" << settings.SolidColor[0] << ',' << settings.SolidColor[1] << ',' << settings.SolidColor[2] << '\n';
         stream << "ShaderCapsLockColor=" << settings.ShaderCapsLockColor[0] << ',' << settings.ShaderCapsLockColor[1] << ',' << settings.ShaderCapsLockColor[2] << '\n';
@@ -3138,6 +3258,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             // the preset is detected from its contents after loading, so preset reordering cannot
             // silently replace a user's saved shader.
             if (key == "ShaderPresetIndex") { ++loaded; continue; }
+            if (key == "ShaderId") { settings.ShaderId = value; ++loaded; continue; }
             if (key == "AudioSource")
             {
                 const std::size_t count = std::min(value.size(), sizeof(settings.AudioSource) - 1);
@@ -4149,6 +4270,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         if (std::string_view(fragmentSource.data()) == preset.FragmentSource)
         {
             settings.ShaderPresetIndex = presetIndex;
+            settings.ShaderId = preset.Id;
             return true;
         }
 
@@ -4177,10 +4299,17 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         }
 
         settings.ShaderPresetIndex = presetIndex;
+        settings.ShaderId = preset.Id;
         settings.BaseColorMode = 2;
         if (editors.Initialized) editors.Fragment.SetText(fragmentSource.data());
         if (persist) saveShaderSources(vertexSource, fragmentSource);
         return true;
+    }
+
+    static bool switchShaderId(ShaderFramebuffer& framebuffer, ShaderTransitionState& transition, ShaderEditorState& editors, std::array<char, ShaderSourceCapacity>& vertexSource, std::array<char, ShaderSourceCapacity>& fragmentSource, VisualizerSettings& settings, const std::string_view shaderId, const double now, const float transitionSeconds, const bool persist = true)
+    {
+        const int index = shaderPresetIndexById(shaderId);
+        return index > 0 && switchShaderPreset(framebuffer, transition, editors, vertexSource, fragmentSource, settings, index, now, transitionSeconds, persist);
     }
 
     struct PacketBuffer
@@ -5309,7 +5438,19 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         USB,
         RGB,
         NativeProcess,
-        BindingStatus
+        BindingStatus,
+        Unbound,
+        BindingValue,
+        ShaderState,
+        ControlStatus,
+        Aggregate,
+        MassCompare,
+        NativeAddress,
+        ObjectField,
+        ObjectStatus,
+        ValueBank,
+        StringConstant,
+        ProfileState
     };
 
     enum class ProcessValueType : int
@@ -5323,12 +5464,19 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         Signature
     };
 
+    enum class RuntimeSignaturePatternKind : int
+    {
+        HexadecimalPattern,
+        OpcodePattern
+    };
+
     enum class SignatureResultMode : int
     {
         MatchAddress,
         RipRelative32,
         PointerAtOffset,
-        RegisterRelativeCapture
+        RegisterRelativeCapture,
+        Address32AtOffset
     };
 
     enum class RuntimeX64Register : int
@@ -5368,7 +5516,15 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         Between,
         Outside,
         RisingEdge,
-        FallingEdge
+        FallingEdge,
+        OnChange,
+        ChangedTo,
+        ChangedFrom,
+        BecomesTrue,
+        BecomesFalse,
+        StringEqual,
+        StringNotEqual,
+        StringContains
     };
 
     enum class RuntimeControlTarget : int
@@ -5378,13 +5534,233 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         GlobalBrightness,
         SendFramebuffer,
         BaseColorMode,
-        MaterialParameter
+        MaterialParameter,
+        BindingValue,
+        ValueBank,
+        ControlEnabled,
+        BindingRefresh,
+        BindingForceUpdate,
+        BindingInvalidate,
+        BindingResetState,
+        BindingRetryRegisterCapture,
+        BindingRescanPattern,
+        BindingRebindProcess,
+        BindingClearError
+    };
+
+    enum class RuntimeReferenceKind : int
+    {
+        Binding,
+        Control
+    };
+
+    enum class RuntimeAggregateOperation : int
+    {
+        Sum,
+        Average,
+        Minimum,
+        Maximum,
+        Product,
+        Count,
+        CountTruthy,
+        FractionTruthy,
+        Any,
+        All
+    };
+
+    enum class RuntimeCompareCondition : int
+    {
+        Equal,
+        NotEqual,
+        Less,
+        LessEqual,
+        Greater,
+        GreaterEqual,
+        Between,
+        Outside
+    };
+
+    enum class RuntimeMassCompareResult : int
+    {
+        Any,
+        All,
+        None,
+        Count,
+        Fraction,
+        FirstMatchIndex
+    };
+
+    enum class RuntimeObjectFieldType : int
+    {
+        U8, I8, U16, I16, U32, I32, U64, I64, Float, Double, Bool, Pointer,
+        Filler1, Filler2, Filler4, Filler8, Filler16, Filler32, FillerCustom,
+        CStringPointer, WStringPointer, FixedCString, FixedWString
+    };
+
+    enum class RuntimeObjectPacking : int
+    {
+        Natural,
+        Pack1,
+        Pack2,
+        Pack4,
+        Pack8,
+        Pack16
+    };
+
+    enum class RuntimeObjectAlignment : int
+    {
+        Auto,
+        Align1,
+        Align2,
+        Align4,
+        Align8,
+        Align16
+    };
+
+    enum class RuntimeBankValueType : int
+    {
+        Number, Integer, Boolean, String, Address
+    };
+
+    enum class RuntimeActionTarget : int
+    {
+        ActiveShader, BindingEnabled, GlobalBrightness, SendFramebuffer, BaseColorMode, MaterialParameter, BindingValue, ValueBank, ControlEnabled,
+        BindingRefresh, BindingForceUpdate, BindingInvalidate, BindingResetState, BindingRetryRegisterCapture, BindingRescanPattern, BindingRebindProcess, BindingClearError
+    };
+
+    enum class RuntimeBindingOperation : int
+    {
+        Refresh, ForceUpdate, Invalidate, ResetState, RetryRegisterCapture, RescanPattern, RebindProcess, ClearError
+    };
+
+    enum class RuntimeActionValueMode : int
+    {
+        Constant, SourceValue, BindingValue, BankValue
+    };
+
+    enum class RuntimeActionWhen : int
+    {
+        WhileActive, OnTrigger, OnUpdate, OnChange, OnTruthy, OnFalsy
+    };
+
+    struct RuntimeAction
+    {
+        bool Enabled = true;
+        RuntimeActionTarget Target = RuntimeActionTarget::ActiveShader;
+        RuntimeActionValueMode ValueMode = RuntimeActionValueMode::Constant;
+        RuntimeActionWhen When = RuntimeActionWhen::WhileActive;
+        int ShaderPresetIndex = 1;
+        char ShaderId[128]{};
+        std::uint64_t TargetBindingId = 0;
+        std::uint64_t TargetControlId = 0;
+        std::uint64_t ValueBindingId = 0;
+        std::uint64_t BankValueId = 0;
+        std::uint64_t TargetBankValueId = 0;
+        float Value = 1.0f;
+        bool BoolValue = true;
+        int TargetComponent = 0;
+        char TargetId[128]{};
+        char StringValue[256]{};
+        float TransitionSeconds = 0.35f;
+    };
+
+    struct RuntimeValueBankEntry
+    {
+        std::uint64_t Id = 0;
+        bool Enabled = true;
+        char Name[64] = "Value";
+        char Description[256]{};
+        RuntimeBankValueType Type = RuntimeBankValueType::Number;
+        float Number = 0.0f;
+        std::int64_t Integer = 0;
+        bool Boolean = false;
+        char String[256]{};
+        std::uintptr_t Address = 0;
+        bool HasValue = true;
+        bool ChangedThisFrame = false;
+    };
+
+    struct RuntimeBindingProfile
+    {
+        std::uint64_t Id = 0;
+        bool Enabled = true;
+        char Name[64] = "Profile";
+        bool Exclusive = true;
+        std::vector<std::uint64_t> BindingIds;
+        std::vector<std::uint64_t> ControlIds;
+        bool HotkeyCtrl = false;
+        bool HotkeyAlt = false;
+        bool HotkeyShift = false;
+        int HotkeyKey = 0;
+        bool HotkeyDown = false;
     };
 
     struct RuntimeParameterLink
     {
         bool Enabled = false;
         std::uint64_t BindingId = 0;
+    };
+
+    struct RuntimeSourceReference
+    {
+        RuntimeReferenceKind Kind = RuntimeReferenceKind::Binding;
+        std::uint64_t Id = 0;
+        int Signal = 0;
+        float Weight = 1.0f;
+        bool Enabled = true;
+        bool UseOwnComparison = false;
+        RuntimeCompareCondition CompareCondition = RuntimeCompareCondition::Greater;
+        float CompareA = 0.5f;
+        float CompareB = 1.0f;
+        float CompareTolerance = 0.001f;
+    };
+
+    struct RuntimeObjectField
+    {
+        std::uint64_t Id = 0;
+        bool Enabled = true;
+        char Name[64] = "Field";
+        RuntimeObjectFieldType Type = RuntimeObjectFieldType::Float;
+        RuntimeObjectAlignment Alignment = RuntimeObjectAlignment::Auto;
+        bool ManualOffset = false;
+        int Offset = 0;
+        int CustomFillerBytes = 1;
+        int StringMaxLength = 256;
+        int FixedElementCount = 32;
+    };
+
+    struct RuntimeObjectDescriptor
+    {
+        std::uint64_t Id = 0;
+        bool Enabled = true;
+        char Name[64] = "Object";
+        char Description[256]{};
+        std::uint64_t BaseBindingId = 0; // v9 migration only; runtime assignment lives in RuntimeObjectPointer
+        std::uint64_t ProcessBindingId = 0; // v9 migration only
+        int BaseOffset = 0; // v9 migration only
+        int Order = 0;
+        char Group[64]{};
+        RuntimeObjectPacking Packing = RuntimeObjectPacking::Natural;
+        std::vector<RuntimeObjectField> Fields;
+        std::size_t Size = 0; // derived model size only; runtime addresses live in RuntimeObjectPointer
+    };
+
+    struct RuntimeObjectPointer
+    {
+        std::uint64_t Id = 0;
+        bool Enabled = true;
+        int Order = 0;
+        char Group[64]{};
+        char Name[64] = "Pointer";
+        std::uint64_t DescriptorId = 0;
+        std::uint64_t BaseBindingId = 0;
+        std::uint64_t ProcessBindingId = 0;
+        int BaseOffset = 0;
+        std::uintptr_t Address = 0;
+        pid_t ProcessId = 0;
+        bool Resolved = false;
+        std::string Status;
+        std::vector<std::string> Provenance;
     };
 
     enum class ProcessRebindMode : int
@@ -5445,6 +5821,9 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
     {
         std::uint64_t Id = 0;
         bool Enabled = true;
+        int Priority = 0;
+        int Order = 0;
+        char Group[64]{};
         RuntimeSourceKind Source = RuntimeSourceKind::Constant;
         int Signal = 0;
         float Constant = 0.5f;
@@ -5462,7 +5841,8 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         char Module[192]{};
         ProcessAddressMode AddressMode = ProcessAddressMode::AddressChain;
         char Address[256] = "+0x0";
-        char Signature[512]{};
+        char Signature[2048]{};
+        RuntimeSignaturePatternKind SignaturePatternKind = RuntimeSignaturePatternKind::HexadecimalPattern;
         bool SignatureExecutableOnly = true;
         SignatureResultMode SignatureResolve = SignatureResultMode::MatchAddress;
         int SignatureResultOffset = 0;
@@ -5496,7 +5876,26 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         std::string SignatureStatus;
 
         std::uint64_t StatusBindingId = 0;
+        std::uint64_t ValueBindingId = 0;
+        std::uint64_t ControlStatusId = 0;
+        std::uint64_t BankValueId = 0;
+        std::uint64_t ProfileId = 0;
+        std::uint64_t StoreBankValueId = 0;
+        bool StoreToBank = false;
+        float UnboundValue = 0.0f;
+        char StringConstant[256]{};
+        RuntimeAggregateOperation AggregateOperation = RuntimeAggregateOperation::Average;
+        RuntimeCompareCondition CompareCondition = RuntimeCompareCondition::Greater;
+        RuntimeMassCompareResult CompareResult = RuntimeMassCompareResult::Any;
+        float CompareA = 0.5f;
+        float CompareB = 1.0f;
+        float CompareTolerance = 0.001f;
+        std::vector<RuntimeSourceReference> References;
+        std::uint64_t ObjectId = 0;
+        std::uint64_t ObjectPointerId = 0;
+        std::uint64_t ObjectFieldId = 0;
         bool WriteMaterial = true;
+        std::vector<RuntimeAction> Actions;
 
         bool Normalize = false;
         float InputMin = 0.0f;
@@ -5514,6 +5913,14 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         float RawValue = 0.0f;
         float Value = 0.0f;
         bool HasValue = false;
+        std::string StringValue;
+        bool HasString = false;
+        float PreviousActionValue = 0.0f;
+        std::string PreviousActionString;
+        bool ActionPreviousInitialized = false;
+        std::uintptr_t AddressValue = 0;
+        bool HasAddress = false;
+        std::vector<std::string> AddressProvenance;
         bool LastReadSucceeded = false;
         bool RuntimeEnabled = true;
         double LastSuccessTime = 0.0;
@@ -5526,6 +5933,9 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
     {
         std::uint64_t Id = 0;
         bool Enabled = true;
+        int Priority = 0;
+        int Order = 0;
+        char Group[64]{};
         char Name[64] = "Control";
         std::uint64_t SourceBindingId = 0;
         RuntimeControlCondition Condition = RuntimeControlCondition::Greater;
@@ -5533,24 +5943,38 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         float ValueB = 1.0f;
         float Tolerance = 0.001f;
         float Hysteresis = 0.0f;
+        char StringCompare[256]{};
+        bool FireOnFirstSample = true;
         RuntimeControlTarget Target = RuntimeControlTarget::ActiveShader;
         int ShaderPresetIndex = 1;
+        char ShaderId[128]{};
         std::uint64_t TargetBindingId = 0;
+        std::uint64_t TargetBankValueId = 0;
+        std::uint64_t TargetControlId = 0;
         float TargetValue = 1.0f;
+        bool TargetUseSourceValue = false;
         bool TargetBool = true;
         int TargetComponent = 0;
         char TargetId[128]{};
         float TransitionSeconds = 0.35f;
+        std::vector<RuntimeAction> Actions;
 
         bool ConditionActive = false;
         bool PreviousInitialized = false;
         float PreviousValue = 0.0f;
+        std::string PreviousString;
+        bool PreviousStringInitialized = false;
+        bool RuntimeEnabled = true;
+        bool TriggeredThisFrame = false;
+        double LastTriggerTime = 0.0;
+        std::uint64_t TriggerCount = 0;
     };
 
     struct RuntimeControlOutput
     {
         std::optional<int> ShaderPresetIndex;
-        float ShaderTransitionSeconds = 0.0f;
+        std::optional<std::string> ShaderId;
+        float ShaderTransitionSeconds = 0.35f;
         std::optional<float> GlobalBrightness;
         std::optional<bool> SendFramebuffer;
         std::optional<int> BaseColorMode;
@@ -5596,6 +6020,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         std::optional<Color32> MediaColor;
         float MediaAmount = 0.0f;
         bool MediaPlaying = false;
+        std::string MediaTitle;
         ReactiveKeyState Keys{};
         PerformanceSnapshot Performance{};
         bool HasPerformance = false;
@@ -5606,6 +6031,17 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         const std::array<Color32, MatrixSize>* Framebuffer = nullptr;
         float EffectiveGain = 1.0f;
         float GainCorrection = 1.0f;
+        int CurrentShaderPreset = 0;
+        int PreviousShaderPreset = 0;
+        std::string CurrentShaderId;
+        std::string PreviousShaderId;
+        bool ShaderTransitionActive = false;
+        float ShaderTransitionProgress = 0.0f;
+        int BaseColorMode = 0;
+        float GlobalBrightness = 1.0f;
+        bool SendFramebuffer = true;
+        int ShaderFramebufferWidth = 0;
+        int ShaderFramebufferHeight = 0;
     };
 
     struct RuntimeInputAnalytics
@@ -5971,7 +6407,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         return -1;
     }
 
-    static bool parseRuntimeIdaSignature(const std::string_view signature, std::vector<std::uint8_t>& bytes, std::vector<std::uint8_t>& masks, std::string& error)
+    static bool parseRuntimeHexPattern(const std::string_view signature, std::vector<std::uint8_t>& bytes, std::vector<std::uint8_t>& masks, std::string& error)
     {
         bytes.clear();
         masks.clear();
@@ -5987,7 +6423,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             }
             if (token.size() != 2)
             {
-                error = "signature token must be two hex nibbles or ?: " + token;
+                error = "hexadecimal pattern token must be two hex nibbles or ?: " + token;
                 return false;
             }
             const bool highWildcard = token[0] == '?';
@@ -5996,7 +6432,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             const int low = lowWildcard ? 0 : runtimeHexNibble(token[1]);
             if (high < 0 || low < 0)
             {
-                error = "invalid signature byte: " + token;
+                error = "invalid hexadecimal pattern byte: " + token;
                 return false;
             }
             bytes.push_back(static_cast<std::uint8_t>((high << 4) | low));
@@ -6004,15 +6440,85 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         }
         if (bytes.empty())
         {
-            error = "signature is empty";
+            error = "hexadecimal pattern is empty";
             return false;
         }
         if (std::ranges::all_of(masks, [](const std::uint8_t mask) { return mask == 0; }))
         {
-            error = "signature cannot contain only wildcards";
+            error = "hexadecimal pattern cannot contain only wildcards";
             return false;
         }
         error.clear();
+        return true;
+    }
+
+    static std::string runtimeNormalizeOpcodeText(std::string value)
+    {
+        value = trim(std::move(value));
+        std::string result; result.reserve(value.size());
+        bool space = false;
+        for (const unsigned char c : value)
+        {
+            if (std::isspace(c)) { space = !result.empty(); continue; }
+            if (space) { result.push_back(' '); space = false; }
+            result.push_back(static_cast<char>(std::tolower(c)));
+        }
+        return result;
+    }
+
+    static bool runtimeWildcardTextMatch(const std::string_view pattern, const std::string_view value) noexcept
+    {
+        std::size_t p = 0, v = 0, star = std::string_view::npos, retry = 0;
+        while (v < value.size())
+        {
+            if (p < pattern.size() && (pattern[p] == '?' || pattern[p] == value[v])) { ++p; ++v; continue; }
+            if (p < pattern.size() && pattern[p] == '*') { star = p++; retry = v; continue; }
+            if (star != std::string_view::npos) { p = star + 1; v = ++retry; continue; }
+            return false;
+        }
+        while (p < pattern.size() && pattern[p] == '*') ++p;
+        return p == pattern.size();
+    }
+
+    static std::vector<std::string> parseRuntimeOpcodePattern(const std::string_view specification)
+    {
+        std::vector<std::string> lines; std::istringstream stream{std::string(specification)}; std::string line;
+        while (std::getline(stream, line))
+        {
+            line = runtimeNormalizeOpcodeText(line);
+            if (line.empty() || line.starts_with('#') || line.starts_with("//")) continue;
+            lines.emplace_back(std::move(line));
+        }
+        return lines;
+    }
+
+#if QUARTZ_HAS_ZYDIS
+    static bool runtimeDecodeInstructionText(const std::span<const std::uint8_t> bytes, const std::uintptr_t address, std::string& text, std::size_t& length)
+    {
+        ZydisDisassembledInstruction instruction{};
+        if (!ZYAN_SUCCESS(ZydisDisassembleIntel(ZYDIS_MACHINE_MODE_LONG_64, address, bytes.data(), bytes.size(), &instruction))) return false;
+        text = runtimeNormalizeOpcodeText(instruction.text);
+        length = instruction.info.length;
+        return length != 0;
+    }
+#else
+    static bool runtimeDecodeInstructionText(const std::span<const std::uint8_t>, const std::uintptr_t, std::string&, std::size_t&) { return false; }
+#endif
+
+    static bool runtimeOpcodePatternMatches(const std::span<const std::uint8_t> bytes, const std::uintptr_t address, const std::vector<std::string>& patterns, std::size_t& matchedLength)
+    {
+        matchedLength = 0;
+        if (patterns.empty()) return false;
+        std::size_t offset = 0;
+        for (const auto& pattern : patterns)
+        {
+            if (offset >= bytes.size()) return false;
+            std::string text; std::size_t instructionLength = 0;
+            if (!runtimeDecodeInstructionText(bytes.subspan(offset), address + offset, text, instructionLength)) return false;
+            if (!runtimeWildcardTextMatch(pattern, text)) return false;
+            offset += instructionLength;
+        }
+        matchedLength = offset;
         return true;
     }
 
@@ -6542,6 +7048,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         std::size_t hash = std::hash<std::string_view>{}(binding.Signature);
         auto mix = [&](const std::size_t value) { hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2); };
         mix(std::hash<std::string_view>{}(binding.Module));
+        mix(static_cast<std::size_t>(binding.SignaturePatternKind));
         mix(static_cast<std::size_t>(binding.SignatureExecutableOnly));
         mix(static_cast<std::size_t>(binding.SignatureResolve));
         mix(static_cast<std::size_t>(static_cast<std::uint32_t>(binding.SignatureResultOffset)));
@@ -6579,7 +7086,19 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
 
     static bool prepareRuntimeSignatureScan(RuntimeBinding& binding, const pid_t pid, std::string& error)
     {
-        if (!parseRuntimeIdaSignature(binding.Signature, binding.SignatureBytes, binding.SignatureMasks, error)) return false;
+        if (binding.SignaturePatternKind == RuntimeSignaturePatternKind::HexadecimalPattern)
+        {
+            if (!parseRuntimeHexPattern(binding.Signature, binding.SignatureBytes, binding.SignatureMasks, error)) return false;
+        }
+        else
+        {
+#if QUARTZ_HAS_ZYDIS
+            if (parseRuntimeOpcodePattern(binding.Signature).empty()) { error = "opcode pattern is empty"; return false; }
+            binding.SignatureBytes.assign(1, 0); binding.SignatureMasks.assign(1, 0);
+#else
+            error = "opcode patterns require Zydis (<Zydis/Zydis.h>)"; return false;
+#endif
+        }
         binding.SignatureRegions.clear();
         binding.SignatureTotalBytes = 0;
         binding.SignatureScannedBytes = 0;
@@ -6598,7 +7117,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         }
         if (binding.SignatureRegions.empty())
         {
-            error = binding.Module[0] ? "no readable matching mappings for signature scan" : "no readable mappings for signature scan";
+            error = binding.Module[0] ? "no readable matching mappings for pattern scan" : "no readable mappings for pattern scan";
             return false;
         }
         binding.SignatureRegionIndex = 0;
@@ -6607,7 +7126,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         binding.SignatureProgress = 0.0f;
         binding.SignatureScanPid = pid;
         binding.SignatureConfigHash = runtimeSignatureConfigurationHash(binding);
-        binding.SignatureStatus = "Scanning signature";
+        binding.SignatureStatus = "Scanning pattern";
         error.clear();
         return true;
     }
@@ -6732,7 +7251,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         {
             const double remaining = std::max(binding.NextSignatureScan - now, 0.0);
             std::ostringstream status;
-            status << "signature not found; retry in " << std::fixed << std::setprecision(1) << remaining << " s";
+            status << "pattern not found; retry in " << std::fixed << std::setprecision(1) << remaining << " s";
             binding.SignatureStatus = status.str();
             error = binding.SignatureStatus;
             return std::nullopt;
@@ -6744,8 +7263,10 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             return std::nullopt;
         }
 
-        constexpr std::size_t ScanBudget = 256 * 1024;
-        constexpr std::size_t ReadChunk = 128 * 1024;
+        const auto opcodePatterns = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? parseRuntimeOpcodePattern(binding.Signature) : std::vector<std::string>{};
+        const std::size_t ScanBudget = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? 32 * 1024 : 256 * 1024;
+        const std::size_t ReadChunk = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? 32 * 1024 : 128 * 1024;
+        const std::size_t scanOverlap = binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern ? std::min<std::size_t>(std::max<std::size_t>(opcodePatterns.size() * 15, 15) - 1, 4095) : binding.SignatureBytes.size() > 1 ? binding.SignatureBytes.size() - 1 : 0;
         std::size_t budget = ScanBudget;
         std::vector<std::uint8_t> buffer;
         while (budget > 0 && binding.SignatureRegionIndex < binding.SignatureRegions.size())
@@ -6759,7 +7280,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 continue;
             }
             const std::size_t remaining = static_cast<std::size_t>(region.End - binding.SignatureCursor);
-            const std::size_t readSize = std::min({remaining, ReadChunk, budget + binding.SignatureBytes.size() - 1});
+            const std::size_t readSize = std::min({remaining, ReadChunk + scanOverlap, budget + scanOverlap});
             if (readSize < binding.SignatureBytes.size())
             {
                 binding.SignatureScannedBytes += remaining;
@@ -6777,7 +7298,9 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             const std::size_t last = buffer.size() - binding.SignatureBytes.size();
             for (std::size_t offset = 0; offset <= last; ++offset)
             {
-                if (!runtimeSignatureMatches(buffer, offset, binding)) continue;
+                std::size_t opcodeLength = 0;
+                const bool matched = binding.SignaturePatternKind == RuntimeSignaturePatternKind::HexadecimalPattern ? runtimeSignatureMatches(buffer, offset, binding) : runtimeOpcodePatternMatches(std::span<const std::uint8_t>(buffer).subspan(offset), binding.SignatureCursor + offset, opcodePatterns, opcodeLength);
+                if (!matched) continue;
                 const std::uintptr_t match = binding.SignatureCursor + offset;
                 std::uintptr_t resolved = 0;
                 if (binding.SignatureResolve == SignatureResultMode::MatchAddress)
@@ -6803,7 +7326,18 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                     const int instructionSize = std::max(binding.SignatureInstructionSize, 1);
                     resolved = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + instructionSize + displacement);
                 }
-                else
+                else if (binding.SignatureResolve == SignatureResultMode::Address32AtOffset)
+                {
+                    std::uint32_t address32 = 0;
+                    const std::uintptr_t immediateAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
+                    if (!readProcessMemoryValue(pid, immediateAddress, address32, error))
+                    {
+                        binding.SignatureStatus = "signature matched, 32-bit address read failed: " + error;
+                        return std::nullopt;
+                    }
+                    resolved = static_cast<std::uintptr_t>(address32);
+                }
+                else if (binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture)
                 {
                     binding.SignatureMatchAddress = match;
                     binding.SignatureInstructionAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
@@ -6824,12 +7358,12 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 binding.SignatureMatchAddress = match;
                 binding.SignatureProgress = 1.0f;
                 std::ostringstream status;
-                status << "Signature resolved 0x" << std::hex << resolved << " from match 0x" << match;
+                status << "Pattern resolved 0x" << std::hex << resolved << " from match 0x" << match;
                 binding.SignatureStatus = status.str();
                 error.clear();
                 return resolved;
             }
-            const std::size_t overlap = binding.SignatureBytes.size() > 1 ? binding.SignatureBytes.size() - 1 : 0;
+            const std::size_t overlap = scanOverlap;
             const std::size_t step = readSize > overlap ? readSize - overlap : readSize;
             binding.SignatureCursor += step;
             binding.SignatureScannedBytes += step;
@@ -6844,19 +7378,22 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             binding.SignatureCursor = 0;
             binding.NextSignatureScan = now + std::max(static_cast<double>(binding.SignatureRetrySeconds), 0.1);
             binding.SignatureProgress = 0.0f;
-            binding.SignatureStatus = "Signature not found; waiting for retry interval";
+            binding.SignatureStatus = "Pattern not found; waiting for retry interval";
             error = binding.SignatureStatus;
             return std::nullopt;
         }
         std::ostringstream status;
-        status << "Scanning signature " << std::fixed << std::setprecision(0) << binding.SignatureProgress * 100.0f << "%";
+        status << "Scanning pattern " << std::fixed << std::setprecision(0) << binding.SignatureProgress * 100.0f << "%";
         binding.SignatureStatus = status.str();
         error = binding.SignatureStatus;
         return std::nullopt;
     }
 
+    static std::string runtimeHexAddress(std::uintptr_t value);
+
     static bool readNativeBinding(RuntimeBinding& binding, float& output)
     {
+        binding.HasAddress = false;
         pid_t pid = static_cast<pid_t>(binding.ProcessId);
         if (!runtimeProcessIsAlive(pid) && !tryRuntimeProcessRebind(binding, pid, binding.Error)) return false;
 
@@ -6880,9 +7417,21 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 binding.NextRegisterCapture = 0.0;
                 binding.SignatureRegisterCapture.reset();
             }
+            binding.HasAddress = false;
             binding.Error = std::move(error);
             return false;
         }
+        binding.AddressValue = *address;
+        binding.HasAddress = true;
+        binding.AddressProvenance.clear();
+        binding.AddressProvenance.push_back(std::string("process ") + binding.ProcessName + " pid " + std::to_string(pid));
+        if (binding.AddressMode == ProcessAddressMode::Signature)
+        {
+            if (binding.SignatureMatchAddress) binding.AddressProvenance.push_back("pattern match " + runtimeHexAddress(binding.SignatureMatchAddress));
+            if (binding.SignatureInstructionAddress) binding.AddressProvenance.push_back("instruction " + runtimeHexAddress(binding.SignatureInstructionAddress));
+            if (binding.SignatureCapturedRegister) binding.AddressProvenance.push_back(std::string(runtimeX64RegisterName(binding.SignatureRegister)) + " = " + runtimeHexAddress(static_cast<std::uintptr_t>(binding.SignatureCapturedRegister)));
+        }
+        binding.AddressProvenance.push_back("resolved " + runtimeHexAddress(binding.AddressValue));
 
 #define QUARTZ_READ_NATIVE(type) do { type value{}; if (!readProcessMemoryValue(pid, *address, value, error)) { if (binding.AddressMode == ProcessAddressMode::Signature && binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture) { binding.SignatureResolvedAddress = 0; binding.NextRegisterCapture = 0.0; binding.SignatureRegisterCapture.reset(); } binding.Error = std::move(error); return false; } output = static_cast<float>(value); } while (false)
         switch (binding.ValueType)
@@ -6900,6 +7449,59 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         case ProcessValueType::Bool: { std::uint8_t value{}; if (!readProcessMemoryValue(pid, *address, value, error)) { if (binding.AddressMode == ProcessAddressMode::Signature && binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture) { binding.SignatureResolvedAddress = 0; binding.NextRegisterCapture = 0.0; binding.SignatureRegisterCapture.reset(); } binding.Error = std::move(error); return false; } output = value != 0 ? 1.0f : 0.0f; break; }
         }
 #undef QUARTZ_READ_NATIVE
+        binding.Error.clear();
+        return true;
+    }
+
+    static bool readNativeAddressBinding(RuntimeBinding& binding, float& output)
+    {
+        binding.HasAddress = false;
+        pid_t pid = static_cast<pid_t>(binding.ProcessId);
+        if (!runtimeProcessIsAlive(pid) && !tryRuntimeProcessRebind(binding, pid, binding.Error)) return false;
+
+        std::string error;
+        std::optional<std::uintptr_t> signatureBase;
+        if (binding.AddressMode == ProcessAddressMode::Signature)
+        {
+            signatureBase = advanceRuntimeSignatureScan(binding, pid, error);
+            if (!signatureBase) { binding.Error = std::move(error); return false; }
+        }
+
+        std::optional<std::uintptr_t> selectedBase;
+        if (binding.AddressMode == ProcessAddressMode::Signature)
+        {
+            if (binding.Signal == 1)
+            {
+                if (binding.SignatureCapturedRegister == 0) { binding.Error = "captured register is not available"; return false; }
+                selectedBase = static_cast<std::uintptr_t>(binding.SignatureCapturedRegister);
+            }
+            else if (binding.Signal == 2)
+            {
+                if (binding.SignatureMatchAddress == 0) { binding.Error = "signature match is not available"; return false; }
+                selectedBase = binding.SignatureMatchAddress;
+            }
+            else if (binding.Signal == 3)
+            {
+                if (binding.SignatureInstructionAddress == 0) { binding.Error = "instruction address is not available"; return false; }
+                selectedBase = binding.SignatureInstructionAddress;
+            }
+            else selectedBase = signatureBase;
+        }
+
+        const auto address = resolveRuntimeAddress(binding, pid, error, selectedBase);
+        if (!address) { binding.Error = std::move(error); return false; }
+        binding.AddressValue = *address;
+        binding.HasAddress = true;
+        binding.AddressProvenance.clear();
+        binding.AddressProvenance.push_back(std::string("process ") + binding.ProcessName + " pid " + std::to_string(pid));
+        if (binding.AddressMode == ProcessAddressMode::Signature)
+        {
+            if (binding.SignatureMatchAddress) binding.AddressProvenance.push_back("pattern match " + runtimeHexAddress(binding.SignatureMatchAddress));
+            if (binding.SignatureInstructionAddress) binding.AddressProvenance.push_back("instruction " + runtimeHexAddress(binding.SignatureInstructionAddress));
+            if (binding.SignatureCapturedRegister) binding.AddressProvenance.push_back(std::string(runtimeX64RegisterName(binding.SignatureRegister)) + " = " + runtimeHexAddress(static_cast<std::uintptr_t>(binding.SignatureCapturedRegister)));
+        }
+        binding.AddressProvenance.push_back("resolved " + runtimeHexAddress(binding.AddressValue));
+        output = 1.0f;
         binding.Error.clear();
         return true;
     }
@@ -6958,6 +7560,18 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         case RuntimeSourceKind::RGB: return "RGB output";
         case RuntimeSourceKind::NativeProcess: return "Native process memory";
         case RuntimeSourceKind::BindingStatus: return "Binding status";
+        case RuntimeSourceKind::Unbound: return "Unbound / writable value";
+        case RuntimeSourceKind::BindingValue: return "Binding value / passthrough";
+        case RuntimeSourceKind::ShaderState: return "Shader / renderer state";
+        case RuntimeSourceKind::ControlStatus: return "Control status";
+        case RuntimeSourceKind::Aggregate: return "Aggregate bindings / controls";
+        case RuntimeSourceKind::MassCompare: return "Mass compare bindings / controls";
+        case RuntimeSourceKind::NativeAddress: return "Native process address";
+        case RuntimeSourceKind::ObjectField: return "Object descriptor field";
+        case RuntimeSourceKind::ObjectStatus: return "Object descriptor status";
+        case RuntimeSourceKind::ValueBank: return "Value bank";
+        case RuntimeSourceKind::StringConstant: return "String constant";
+        case RuntimeSourceKind::ProfileState: return "Binding profile state";
         }
         return "Unknown";
     }
@@ -6967,18 +7581,217 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         switch (source)
         {
         case RuntimeSourceKind::Constant: return {"Value"};
-        case RuntimeSourceKind::Time: return {"Seconds", "Sine", "Cosine", "Saw 0..1"};
-        case RuntimeSourceKind::Audio: return {"RMS", "Peak", "Bass", "Mid", "Treble", "Effective gain", "Gain correction"};
-        case RuntimeSourceKind::Media: return {"Artwork amount", "Artwork R", "Artwork G", "Artwork B", "Playing"};
-        case RuntimeSourceKind::Keyboard: return {"Caps Lock", "Scroll Lock", "Held fraction", "Recent key pulse"};
-        case RuntimeSourceKind::RPC: return {"Keyboard CPU %", "Scan rate Hz", "Matrix us", "RGB us", "Scan period us"};
-        case RuntimeSourceKind::Host: return {"App CPU %"};
-        case RuntimeSourceKind::USB: return {"Connected", "TX KiB/s", "RX KiB/s", "TX transfers/s", "RX transfers/s", "Errors"};
-        case RuntimeSourceKind::RGB: return {"Average luma", "Lit fraction", "Average R", "Average G", "Average B"};
+        case RuntimeSourceKind::Time: return {"Seconds", "Sine", "Cosine", "Saw 0..1", "Triangle 0..1", "Pulse 1 Hz", "Pulse 2 Hz"};
+        case RuntimeSourceKind::Audio: return {"RMS", "Peak", "Bass", "Mid", "Treble", "Effective gain", "Gain correction", "Spectrum average", "Spectrum maximum", "Bass / treble ratio", "Bass peak"};
+        case RuntimeSourceKind::Media: return {"Artwork amount", "Artwork R", "Artwork G", "Artwork B", "Playing", "Title (string)"};
+        case RuntimeSourceKind::Keyboard: return {"Caps Lock", "Scroll Lock", "Held fraction", "Recent key pulse", "Keys held", "Recent events", "Last event column", "Last event row"};
+        case RuntimeSourceKind::RPC: return {"Keyboard CPU %", "Scan rate Hz", "Matrix us", "RGB us", "Scan period us", "State update us", "HID us", "Total measured us"};
+        case RuntimeSourceKind::Host: return {"App CPU %", "Frame delta ms", "Frame rate Hz"};
+        case RuntimeSourceKind::USB: return {"Connected", "TX KiB/s", "RX KiB/s", "TX transfers/s", "RX transfers/s", "Errors", "TX total MiB", "RX total MiB", "TX errors", "RX errors"};
+        case RuntimeSourceKind::RGB: return {"Average luma", "Lit fraction", "Average R", "Average G", "Average B", "Peak channel", "Peak luma"};
         case RuntimeSourceKind::NativeProcess: return {"Value"};
-        case RuntimeSourceKind::BindingStatus: return {"Has value", "Last read succeeded", "Enabled", "Process alive", "Address resolved", "Register captured", "Has error"};
+        case RuntimeSourceKind::BindingStatus: return {"Has value", "Last read succeeded", "Enabled", "Process alive", "Address resolved", "Register captured", "Has error", "Seconds since success", "Priority", "Has exact address"};
+        case RuntimeSourceKind::Unbound: return {"Value"};
+        case RuntimeSourceKind::BindingValue: return {"Value", "Raw value", "Has value", "Last read succeeded", "Enabled", "Priority"};
+        case RuntimeSourceKind::ShaderState: return {"Shader ID (string)", "Custom shader", "Transition active", "Transition progress", "Base color mode", "Global brightness", "Send framebuffer", "Framebuffer width", "Framebuffer height", "Previous shader ID (string)"};
+        case RuntimeSourceKind::ControlStatus: return {"Condition active", "Triggered this frame", "Enabled", "Trigger count", "Seconds since trigger", "Priority", "Source value"};
+        case RuntimeSourceKind::Aggregate: return {"Value"};
+        case RuntimeSourceKind::MassCompare: return {"Value"};
+        case RuntimeSourceKind::NativeAddress: return {"Resolved address", "Captured register", "Signature match", "Instruction address"};
+        case RuntimeSourceKind::ObjectField: return {"Value"};
+        case RuntimeSourceKind::ObjectStatus: return {"Resolved", "Size bytes", "Field count", "Process alive", "Base binding ready"};
+        case RuntimeSourceKind::ValueBank: return {"Value", "Boolean", "Integer", "Has value", "Changed this frame", "String length", "Address present"};
+        case RuntimeSourceKind::StringConstant: return {"Text present", "Length"};
+        case RuntimeSourceKind::ProfileState: return {"Active profile id", "Selected profile active", "Selected profile enabled", "Selected binding members", "Selected control members"};
         }
         return {"Value"};
+    }
+
+    static const char* runtimeAggregateOperationName(const RuntimeAggregateOperation operation) noexcept
+    {
+        static constexpr const char* Names[] = {"Sum", "Average", "Minimum", "Maximum", "Product", "Count", "Count truthy", "Fraction truthy", "Any", "All"};
+        return Names[std::clamp(static_cast<int>(operation), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static const char* runtimeCompareConditionName(const RuntimeCompareCondition condition) noexcept
+    {
+        static constexpr const char* Names[] = {"==", "!=", "<", "<=", ">", ">=", "between", "outside"};
+        return Names[std::clamp(static_cast<int>(condition), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static const char* runtimeMassCompareResultName(const RuntimeMassCompareResult result) noexcept
+    {
+        static constexpr const char* Names[] = {"Any", "All", "None", "Count", "Fraction", "First match index"};
+        return Names[std::clamp(static_cast<int>(result), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static const char* runtimeObjectFieldTypeName(const RuntimeObjectFieldType type) noexcept
+    {
+        static constexpr const char* Names[] = {"u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "float", "double", "bool", "pointer", "filler 1", "filler 2", "filler 4", "filler 8", "filler 16", "filler 32", "filler custom", "const char*", "const wchar_t*", "char[N]", "wchar_t[N]"};
+        return Names[std::clamp(static_cast<int>(type), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static const char* runtimeObjectPackingName(const RuntimeObjectPacking packing) noexcept
+    {
+        static constexpr const char* Names[] = {"Natural", "Pack 1", "Pack 2", "Pack 4", "Pack 8", "Pack 16"};
+        return Names[std::clamp(static_cast<int>(packing), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static const char* runtimeObjectAlignmentName(const RuntimeObjectAlignment alignment) noexcept
+    {
+        static constexpr const char* Names[] = {"Auto", "1", "2", "4", "8", "16"};
+        return Names[std::clamp(static_cast<int>(alignment), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static const char* runtimeBankValueTypeName(const RuntimeBankValueType type) noexcept
+    {
+        static constexpr const char* Names[] = {"Number", "Integer", "Boolean", "String", "Address"};
+        return Names[std::clamp(static_cast<int>(type), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static const char* runtimeActionTargetName(const RuntimeActionTarget target) noexcept
+    {
+        static constexpr const char* Names[] = {"Active shader", "Binding enabled", "Global brightness", "Send framebuffer", "Base color mode", "Material parameter", "Unbound binding value", "Value bank", "Control enabled", "Refresh binding", "Force binding update", "Invalidate binding", "Reset binding state", "Retry register capture", "Rescan binding pattern", "Rebind process", "Clear binding error"};
+        return Names[std::clamp(static_cast<int>(target), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static bool runtimeActionTargetIsBindingOperation(const RuntimeActionTarget target) noexcept
+    {
+        return target >= RuntimeActionTarget::BindingRefresh && target <= RuntimeActionTarget::BindingClearError;
+    }
+
+    static bool runtimeControlTargetIsBindingOperation(const RuntimeControlTarget target) noexcept
+    {
+        return target >= RuntimeControlTarget::BindingRefresh && target <= RuntimeControlTarget::BindingClearError;
+    }
+
+    static const char* runtimeActionValueModeName(const RuntimeActionValueMode mode) noexcept
+    {
+        static constexpr const char* Names[] = {"Constant", "Control/binding source", "Another binding", "Value bank"};
+        return Names[std::clamp(static_cast<int>(mode), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static const char* runtimeActionWhenName(const RuntimeActionWhen when) noexcept
+    {
+        static constexpr const char* Names[] = {"While active", "On trigger", "On update", "On change", "While truthy", "While falsy"};
+        return Names[std::clamp(static_cast<int>(when), 0, static_cast<int>(std::size(Names)) - 1)];
+    }
+
+    static bool runtimeObjectFieldIsFiller(const RuntimeObjectFieldType type) noexcept
+    {
+        return type >= RuntimeObjectFieldType::Filler1 && type <= RuntimeObjectFieldType::FillerCustom;
+    }
+
+    static std::size_t runtimeObjectFieldSize(const RuntimeObjectField& field) noexcept
+    {
+        switch (field.Type)
+        {
+        case RuntimeObjectFieldType::U8:
+        case RuntimeObjectFieldType::I8:
+        case RuntimeObjectFieldType::Bool:
+        case RuntimeObjectFieldType::Filler1: return 1;
+        case RuntimeObjectFieldType::U16:
+        case RuntimeObjectFieldType::I16:
+        case RuntimeObjectFieldType::Filler2: return 2;
+        case RuntimeObjectFieldType::U32:
+        case RuntimeObjectFieldType::I32:
+        case RuntimeObjectFieldType::Float:
+        case RuntimeObjectFieldType::Filler4: return 4;
+        case RuntimeObjectFieldType::U64:
+        case RuntimeObjectFieldType::I64:
+        case RuntimeObjectFieldType::Double:
+        case RuntimeObjectFieldType::Filler8: return 8;
+        case RuntimeObjectFieldType::Pointer:
+        case RuntimeObjectFieldType::CStringPointer:
+        case RuntimeObjectFieldType::WStringPointer: return sizeof(std::uintptr_t);
+        case RuntimeObjectFieldType::FixedCString: return static_cast<std::size_t>(std::max(field.FixedElementCount, 1));
+        case RuntimeObjectFieldType::FixedWString: return static_cast<std::size_t>(std::max(field.FixedElementCount, 1)) * sizeof(wchar_t);
+        case RuntimeObjectFieldType::Filler16: return 16;
+        case RuntimeObjectFieldType::Filler32: return 32;
+        case RuntimeObjectFieldType::FillerCustom: return static_cast<std::size_t>(std::max(field.CustomFillerBytes, 1));
+        }
+        return 1;
+    }
+
+    static std::size_t runtimeObjectNaturalAlignment(const RuntimeObjectField& field) noexcept
+    {
+        if (runtimeObjectFieldIsFiller(field.Type)) return 1;
+        switch (field.Type)
+        {
+        case RuntimeObjectFieldType::U8: case RuntimeObjectFieldType::I8: case RuntimeObjectFieldType::Bool: case RuntimeObjectFieldType::FixedCString: return 1;
+        case RuntimeObjectFieldType::U16: case RuntimeObjectFieldType::I16: return alignof(std::uint16_t);
+        case RuntimeObjectFieldType::U32: case RuntimeObjectFieldType::I32: return alignof(std::uint32_t);
+        case RuntimeObjectFieldType::Float: return alignof(float);
+        case RuntimeObjectFieldType::U64: case RuntimeObjectFieldType::I64: return alignof(std::uint64_t);
+        case RuntimeObjectFieldType::Double: return alignof(double);
+        case RuntimeObjectFieldType::Pointer: case RuntimeObjectFieldType::CStringPointer: case RuntimeObjectFieldType::WStringPointer: return alignof(std::uintptr_t);
+        case RuntimeObjectFieldType::FixedWString: return alignof(wchar_t);
+        default: return 1;
+        }
+    }
+
+    static std::size_t runtimeObjectPackingBytes(const RuntimeObjectPacking packing) noexcept
+    {
+        switch (packing)
+        {
+        case RuntimeObjectPacking::Pack1: return 1;
+        case RuntimeObjectPacking::Pack2: return 2;
+        case RuntimeObjectPacking::Pack4: return 4;
+        case RuntimeObjectPacking::Pack8: return 8;
+        case RuntimeObjectPacking::Pack16: return 16;
+        case RuntimeObjectPacking::Natural: return 0;
+        }
+        return 0;
+    }
+
+    static std::size_t runtimeObjectAlignmentBytes(const RuntimeObjectAlignment alignment) noexcept
+    {
+        switch (alignment)
+        {
+        case RuntimeObjectAlignment::Align1: return 1;
+        case RuntimeObjectAlignment::Align2: return 2;
+        case RuntimeObjectAlignment::Align4: return 4;
+        case RuntimeObjectAlignment::Align8: return 8;
+        case RuntimeObjectAlignment::Align16: return 16;
+        case RuntimeObjectAlignment::Auto: return 0;
+        }
+        return 0;
+    }
+
+    static std::size_t runtimeAlignUp(const std::size_t value, const std::size_t alignment) noexcept
+    {
+        if (alignment <= 1) return value;
+        return (value + alignment - 1) / alignment * alignment;
+    }
+
+    static std::size_t runtimeObjectFieldOffset(const RuntimeObjectDescriptor& object, const std::uint64_t fieldId, std::size_t* objectSize = nullptr) noexcept
+    {
+        std::size_t cursor = 0;
+        std::size_t maxAlignment = 1;
+        std::size_t wanted = 0;
+        bool found = false;
+        const std::size_t pack = runtimeObjectPackingBytes(object.Packing);
+        for (const auto& field : object.Fields)
+        {
+            if (!field.Enabled) continue;
+            const std::size_t natural = runtimeObjectNaturalAlignment(field);
+            const std::size_t overrideAlignment = runtimeObjectAlignmentBytes(field.Alignment);
+            std::size_t alignment = overrideAlignment ? overrideAlignment : natural;
+            if (pack) alignment = std::min(alignment, pack);
+            alignment = std::max<std::size_t>(alignment, 1);
+            maxAlignment = std::max(maxAlignment, alignment);
+            const std::size_t offset = field.ManualOffset ? static_cast<std::size_t>(std::max(field.Offset, 0)) : runtimeAlignUp(cursor, alignment);
+            if (field.Id == fieldId) { wanted = offset; found = true; }
+            cursor = std::max(cursor, offset + runtimeObjectFieldSize(field));
+        }
+        const std::size_t finalAlignment = pack ? std::min(maxAlignment, pack) : maxAlignment;
+        if (objectSize) *objectSize = runtimeAlignUp(cursor, std::max<std::size_t>(finalAlignment, 1));
+        return found ? wanted : std::numeric_limits<std::size_t>::max();
+    }
+
+    static std::string runtimeHexAddress(const std::uintptr_t value)
+    {
+        std::ostringstream stream; stream << "0x" << std::hex << std::uppercase << value; return stream.str();
     }
 
     class RuntimeBindingEngine
@@ -6991,14 +7804,29 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         const std::vector<RuntimeBinding>& bindings() const noexcept { return _bindings; }
         std::vector<RuntimeControlRule>& controls() noexcept { return _controls; }
         const std::vector<RuntimeControlRule>& controls() const noexcept { return _controls; }
+        std::vector<RuntimeObjectDescriptor>& objects() noexcept { return _objects; }
+        const std::vector<RuntimeObjectDescriptor>& objects() const noexcept { return _objects; }
+        std::vector<RuntimeObjectPointer>& pointers() noexcept { return _pointers; }
+        const std::vector<RuntimeObjectPointer>& pointers() const noexcept { return _pointers; }
+        std::vector<RuntimeValueBankEntry>& bank() noexcept { return _bank; }
+        const std::vector<RuntimeValueBankEntry>& bank() const noexcept { return _bank; }
+        std::vector<RuntimeBindingProfile>& profiles() noexcept { return _profiles; }
+        const std::vector<RuntimeBindingProfile>& profiles() const noexcept { return _profiles; }
+        std::uint64_t activeProfileId() const noexcept { return _activeProfileId; }
+        void clearActiveProfile() noexcept { if (_activeProfileId != 0) { _activeProfileId = 0; ++_revision; } }
         const RuntimeUSBRates& usbRates() const noexcept { return _usbRates; }
         std::uint64_t revision() const noexcept { return _revision; }
         const std::filesystem::path& path() const noexcept { return _path; }
+        int controlPassLimit() const noexcept { return _controlPassLimit; }
+        void setControlPassLimit(const int passes) noexcept { const int clamped = std::clamp(passes, 1, 16); if (_controlPassLimit != clamped) { _controlPassLimit = clamped; ++_revision; } }
+        int previousShaderPreset() const noexcept { return _previousShaderPreset; }
+        const std::string& previousShaderId() const noexcept { return _previousShaderId; }
 
         RuntimeBinding& add()
         {
             _bindings.emplace_back();
             _bindings.back().Id = _nextBindingId++;
+            _bindings.back().Order = static_cast<int>(_bindings.size() - 1);
             std::snprintf(_bindings.back().Name, sizeof(_bindings.back().Name), "Binding %zu", _bindings.size());
             ++_revision;
             return _bindings.back();
@@ -7009,15 +7837,186 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             _controls.emplace_back();
             auto& control = _controls.back();
             control.Id = _nextControlId++;
+            control.Order = static_cast<int>(_controls.size() - 1);
             std::snprintf(control.Name, sizeof(control.Name), "Control %zu", _controls.size());
             ++_revision;
             return control;
         }
 
+        RuntimeValueBankEntry& addBankValue()
+        {
+            _bank.emplace_back();
+            auto& value = _bank.back();
+            value.Id = _nextBankValueId++;
+            std::snprintf(value.Name, sizeof(value.Name), "Value %zu", _bank.size());
+            ++_revision;
+            return value;
+        }
+
+        RuntimeBindingProfile& addProfile()
+        {
+            _profiles.emplace_back();
+            auto& profile = _profiles.back();
+            profile.Id = _nextProfileId++;
+            std::snprintf(profile.Name, sizeof(profile.Name), "Profile %zu", _profiles.size());
+            ++_revision;
+            return profile;
+        }
+
+        void eraseProfile(const std::size_t index)
+        {
+            if (index >= _profiles.size()) return;
+            const std::uint64_t erasedId = _profiles[index].Id;
+            if (_activeProfileId == erasedId) _activeProfileId = 0;
+            _profiles.erase(_profiles.begin() + static_cast<std::ptrdiff_t>(index));
+            for (auto& binding : _bindings) if (binding.ProfileId == erasedId) binding.ProfileId = 0;
+            ++_revision;
+        }
+
+        void setProfileMembersEnabled(RuntimeBindingProfile& profile, const bool enabled)
+        {
+            for (const auto id : profile.BindingIds) if (auto* binding = findBinding(id)) binding->Enabled = enabled;
+            for (const auto id : profile.ControlIds) if (auto* control = findControl(id)) control->Enabled = enabled;
+            ++_revision;
+        }
+
+        void applyProfile(RuntimeBindingProfile& profile)
+        {
+            if (profile.Exclusive)
+            {
+                for (auto& binding : _bindings) binding.Enabled = false;
+                for (auto& control : _controls) control.Enabled = false;
+            }
+            setProfileMembersEnabled(profile, true);
+            _activeProfileId = profile.Id;
+            ++_revision;
+        }
+
+        void pollProfileHotkeys(GLFWwindow* window)
+        {
+            if (!window) return;
+            const bool ctrl = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+            const bool alt = glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
+            const bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+            for (auto& profile : _profiles)
+            {
+                if (!profile.Enabled || profile.HotkeyKey <= 0) { profile.HotkeyDown = false; continue; }
+                const bool modifiers = (!profile.HotkeyCtrl || ctrl) && (!profile.HotkeyAlt || alt) && (!profile.HotkeyShift || shift);
+                const bool down = modifiers && glfwGetKey(window, profile.HotkeyKey) == GLFW_PRESS;
+                if (down && !profile.HotkeyDown) applyProfile(profile);
+                profile.HotkeyDown = down;
+            }
+        }
+
+        RuntimeObjectPointer& addPointer()
+        {
+            _pointers.emplace_back();
+            auto& pointer = _pointers.back();
+            pointer.Id = _nextPointerId++;
+            pointer.Order = static_cast<int>(_pointers.size() - 1);
+            std::snprintf(pointer.Name, sizeof(pointer.Name), "Pointer %zu", _pointers.size());
+            ++_revision;
+            return pointer;
+        }
+
+        void erasePointer(const std::size_t index)
+        {
+            if (index >= _pointers.size()) return;
+            const auto id = _pointers[index].Id;
+            _pointers.erase(_pointers.begin() + static_cast<std::ptrdiff_t>(index));
+            for (auto& binding : _bindings) if (binding.ObjectPointerId == id) binding.ObjectPointerId = 0;
+            ++_revision;
+        }
+
+        RuntimeObjectPointer* findPointer(const std::uint64_t id) noexcept { const auto it = std::ranges::find_if(_pointers, [&](const RuntimeObjectPointer& p) { return p.Id == id; }); return it == _pointers.end() ? nullptr : &*it; }
+        const RuntimeObjectPointer* findPointer(const std::uint64_t id) const noexcept { const auto it = std::ranges::find_if(_pointers, [&](const RuntimeObjectPointer& p) { return p.Id == id; }); return it == _pointers.end() ? nullptr : &*it; }
+
+        RuntimeObjectDescriptor& addObject()
+        {
+            _objects.emplace_back();
+            auto& object = _objects.back();
+            object.Id = _nextObjectId++;
+            object.Order = static_cast<int>(_objects.size() - 1);
+            std::snprintf(object.Name, sizeof(object.Name), "Object %zu", _objects.size());
+            ++_revision;
+            return object;
+        }
+
+        RuntimeObjectField& addObjectField(RuntimeObjectDescriptor& object)
+        {
+            object.Fields.emplace_back();
+            auto& field = object.Fields.back();
+            field.Id = _nextObjectFieldId++;
+            std::snprintf(field.Name, sizeof(field.Name), "Field %zu", object.Fields.size());
+            ++_revision;
+            return field;
+        }
+
+        void eraseObjectField(RuntimeObjectDescriptor& object, const std::size_t index)
+        {
+            if (index >= object.Fields.size()) return;
+            const std::uint64_t fieldId = object.Fields[index].Id;
+            object.Fields.erase(object.Fields.begin() + static_cast<std::ptrdiff_t>(index));
+            for (auto& binding : _bindings)
+                if (binding.ObjectId == object.Id && binding.ObjectFieldId == fieldId) binding.ObjectFieldId = 0;
+            ++_revision;
+        }
+
+        void eraseObject(const std::size_t index)
+        {
+            if (index >= _objects.size()) return;
+            const std::uint64_t objectId = _objects[index].Id;
+            _objects.erase(_objects.begin() + static_cast<std::ptrdiff_t>(index));
+            for (auto& binding : _bindings)
+                if (binding.ObjectId == objectId) { binding.ObjectId = 0; binding.ObjectFieldId = 0; }
+            for (auto& pointer : _pointers) if (pointer.DescriptorId == objectId) pointer.DescriptorId = 0;
+            ++_revision;
+        }
+
+        void eraseBankValue(const std::size_t index)
+        {
+            if (index >= _bank.size()) return;
+            const std::uint64_t erasedId = _bank[index].Id;
+            _bank.erase(_bank.begin() + static_cast<std::ptrdiff_t>(index));
+            for (auto& binding : _bindings)
+            {
+                if (binding.BankValueId == erasedId) binding.BankValueId = 0;
+                if (binding.StoreBankValueId == erasedId) { binding.StoreBankValueId = 0; binding.StoreToBank = false; }
+                for (auto& action : binding.Actions)
+                {
+                    if (action.BankValueId == erasedId) action.BankValueId = 0;
+                    if (action.TargetBankValueId == erasedId) action.TargetBankValueId = 0;
+                }
+            }
+            for (auto& control : _controls)
+            {
+                if (control.TargetBankValueId == erasedId) control.TargetBankValueId = 0;
+                for (auto& action : control.Actions)
+                {
+                    if (action.BankValueId == erasedId) action.BankValueId = 0;
+                    if (action.TargetBankValueId == erasedId) action.TargetBankValueId = 0;
+                }
+            }
+            ++_revision;
+        }
+
         void eraseControl(const std::size_t index)
         {
             if (index >= _controls.size()) return;
+            const std::uint64_t erasedId = _controls[index].Id;
             _controls.erase(_controls.begin() + static_cast<std::ptrdiff_t>(index));
+            for (auto& binding : _bindings)
+            {
+                if (binding.ControlStatusId == erasedId) binding.ControlStatusId = 0;
+                for (auto& action : binding.Actions) if (action.TargetControlId == erasedId) action.TargetControlId = 0;
+                std::erase_if(binding.References, [&](const RuntimeSourceReference& reference) { return reference.Kind == RuntimeReferenceKind::Control && reference.Id == erasedId; });
+            }
+            for (auto& control : _controls)
+            {
+                if (control.TargetControlId == erasedId) control.TargetControlId = 0;
+                for (auto& action : control.Actions) if (action.TargetControlId == erasedId) action.TargetControlId = 0;
+            }
+            for (auto& profile : _profiles) std::erase(profile.ControlIds, erasedId);
             ++_revision;
         }
 
@@ -7029,14 +8028,32 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             for (auto& binding : _bindings)
             {
                 if (binding.StatusBindingId == erasedId) binding.StatusBindingId = 0;
+                if (binding.ValueBindingId == erasedId) binding.ValueBindingId = 0;
+                for (auto& action : binding.Actions)
+                {
+                    if (action.TargetBindingId == erasedId) action.TargetBindingId = 0;
+                    if (action.ValueBindingId == erasedId) action.ValueBindingId = 0;
+                }
                 for (auto& link : binding.ParameterLinks)
                     if (link.Enabled && link.BindingId == erasedId) link = {};
+                std::erase_if(binding.References, [&](const RuntimeSourceReference& reference) { return reference.Kind == RuntimeReferenceKind::Binding && reference.Id == erasedId; });
+            }
+            for (auto& object : _objects)
+            {
+                if (object.BaseBindingId == erasedId) object.BaseBindingId = 0;
+                if (object.ProcessBindingId == erasedId) object.ProcessBindingId = 0;
             }
             for (auto& control : _controls)
             {
                 if (control.SourceBindingId == erasedId) control.SourceBindingId = 0;
                 if (control.TargetBindingId == erasedId) control.TargetBindingId = 0;
+                for (auto& action : control.Actions)
+                {
+                    if (action.TargetBindingId == erasedId) action.TargetBindingId = 0;
+                    if (action.ValueBindingId == erasedId) action.ValueBindingId = 0;
+                }
             }
+            for (auto& profile : _profiles) std::erase(profile.BindingIds, erasedId);
             ++_revision;
         }
 
@@ -7052,6 +8069,66 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         {
             const auto it = std::ranges::find(_bindings, id, &RuntimeBinding::Id);
             return it == _bindings.end() ? nullptr : &*it;
+        }
+
+        RuntimeControlRule* findControl(const std::uint64_t id) noexcept
+        {
+            const auto it = std::ranges::find(_controls, id, &RuntimeControlRule::Id);
+            return it == _controls.end() ? nullptr : &*it;
+        }
+
+        const RuntimeControlRule* findControl(const std::uint64_t id) const noexcept
+        {
+            const auto it = std::ranges::find(_controls, id, &RuntimeControlRule::Id);
+            return it == _controls.end() ? nullptr : &*it;
+        }
+
+        RuntimeValueBankEntry* findBankValue(const std::uint64_t id) noexcept
+        {
+            const auto it = std::ranges::find(_bank, id, &RuntimeValueBankEntry::Id);
+            return it == _bank.end() ? nullptr : &*it;
+        }
+
+        const RuntimeValueBankEntry* findBankValue(const std::uint64_t id) const noexcept
+        {
+            const auto it = std::ranges::find(_bank, id, &RuntimeValueBankEntry::Id);
+            return it == _bank.end() ? nullptr : &*it;
+        }
+
+        RuntimeBindingProfile* findProfile(const std::uint64_t id) noexcept
+        {
+            const auto it = std::ranges::find(_profiles, id, &RuntimeBindingProfile::Id);
+            return it == _profiles.end() ? nullptr : &*it;
+        }
+
+        const RuntimeBindingProfile* findProfile(const std::uint64_t id) const noexcept
+        {
+            const auto it = std::ranges::find(_profiles, id, &RuntimeBindingProfile::Id);
+            return it == _profiles.end() ? nullptr : &*it;
+        }
+
+        RuntimeObjectDescriptor* findObject(const std::uint64_t id) noexcept
+        {
+            const auto it = std::ranges::find(_objects, id, &RuntimeObjectDescriptor::Id);
+            return it == _objects.end() ? nullptr : &*it;
+        }
+
+        const RuntimeObjectDescriptor* findObject(const std::uint64_t id) const noexcept
+        {
+            const auto it = std::ranges::find(_objects, id, &RuntimeObjectDescriptor::Id);
+            return it == _objects.end() ? nullptr : &*it;
+        }
+
+        RuntimeObjectField* findObjectField(RuntimeObjectDescriptor& object, const std::uint64_t id) noexcept
+        {
+            const auto it = std::ranges::find(object.Fields, id, &RuntimeObjectField::Id);
+            return it == object.Fields.end() ? nullptr : &*it;
+        }
+
+        const RuntimeObjectField* findObjectField(const RuntimeObjectDescriptor& object, const std::uint64_t id) const noexcept
+        {
+            const auto it = std::ranges::find(object.Fields, id, &RuntimeObjectField::Id);
+            return it == object.Fields.end() ? nullptr : &*it;
         }
 
         bool canParameterLink(const std::uint64_t ownerId, const std::uint64_t sourceId) const
@@ -7092,9 +8169,17 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
 
         void applyMaterialValues(ShaderFramebuffer& shader) const noexcept
         {
-            for (const auto& binding : _bindings)
-                if (binding.Enabled && binding.RuntimeEnabled && binding.WriteMaterial && binding.HasValue)
-                    shader.setMaterialParameter(binding.TargetId, binding.TargetComponent, binding.Value);
+            std::vector<const RuntimeBinding*> order;
+            order.reserve(_bindings.size());
+            for (const auto& binding : _bindings) order.push_back(&binding);
+            std::ranges::sort(order, [](const RuntimeBinding* a, const RuntimeBinding* b)
+            {
+                if (a->Priority != b->Priority) return a->Priority < b->Priority;
+                return a->Id < b->Id;
+            });
+            for (const RuntimeBinding* binding : order)
+                if (binding->Enabled && binding->RuntimeEnabled && binding->WriteMaterial && binding->HasValue)
+                    shader.setMaterialParameter(binding->TargetId, binding->TargetComponent, binding->Value);
         }
 
         void updateRates(const USBStatsSnapshot& stats, const double now)
@@ -7117,14 +8202,43 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
 
         void update(const RuntimeSignalContext& context, ShaderFramebuffer& shader)
         {
-            for (auto& binding : _bindings)
+            _lastRuntimeTime = context.Time;
+            _pendingOutput = {};
+            if (_frameTime != context.Time)
             {
+                _frameTime = context.Time;
+                for (auto& value : _bank) value.ChangedThisFrame = false;
+            }
+            if (_observedShaderPreset < 0) { _observedShaderPreset = context.CurrentShaderPreset; _previousShaderPreset = context.CurrentShaderPreset; }
+            else if (context.CurrentShaderPreset != _observedShaderPreset) { _previousShaderPreset = _observedShaderPreset; _observedShaderPreset = context.CurrentShaderPreset; }
+            if (_observedShaderId.empty()) { _observedShaderId = context.CurrentShaderId; _previousShaderId = context.CurrentShaderId; }
+            else if (!context.CurrentShaderId.empty() && context.CurrentShaderId != _observedShaderId) { _previousShaderId = _observedShaderId; _observedShaderId = context.CurrentShaderId; }
+            for (auto& binding : _bindings) binding.RuntimeEnabled = true;
+            for (auto& control : _controls) control.RuntimeEnabled = true;
+
+            std::vector<RuntimeBinding*> order;
+            order.reserve(_bindings.size());
+            for (auto& binding : _bindings) order.push_back(&binding);
+            std::ranges::sort(order, [](const RuntimeBinding* a, const RuntimeBinding* b)
+            {
+                if (a->Priority != b->Priority) return a->Priority < b->Priority;
+                return a->Id < b->Id;
+            });
+            for (RuntimeBinding* bindingPtr : order)
+            {
+                auto& binding = *bindingPtr;
                 if (!binding.Enabled || !binding.RuntimeEnabled || context.Time < binding.NextUpdate) continue;
                 const float updateHz = std::clamp(parameterValue(binding, RuntimeParameterSlot::UpdateHz, binding.UpdateHz), 0.5f, 500.0f);
                 binding.NextUpdate = context.Time + 1.0 / updateHz;
 
+                const float previousValue = binding.Value;
+                const std::string previousString = binding.StringValue;
+                const bool hadValue = binding.HasValue;
+                const bool hadString = binding.HasString;
                 float raw = 0.0f;
                 binding.LastReadSucceeded = false;
+                binding.HasString = false;
+                binding.StringValue.clear();
                 if (!readSource(binding, context, raw)) continue;
                 binding.LastReadSucceeded = true;
                 binding.LastSuccessTime = context.Time;
@@ -7163,53 +8277,82 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                     const float alpha = smoothingHz <= 0.0f ? 1.0f : 1.0f - std::exp(-smoothingHz * dt);
                     binding.Value += (transformed - binding.Value) * alpha;
                 }
+
+                const bool numericChanged = !hadValue || std::abs(binding.Value - previousValue) > 0.000001f;
+                const bool stringChanged = binding.HasString && (!hadString || binding.StringValue != previousString);
+                if (binding.StoreToBank && binding.StoreBankValueId != 0)
+                    writeBindingToBank(binding, binding.StoreBankValueId);
+                for (auto& action : binding.Actions)
+                {
+                    const bool run = action.When == RuntimeActionWhen::OnUpdate || action.When == RuntimeActionWhen::WhileActive
+                        || (action.When == RuntimeActionWhen::OnTrigger && (!hadValue || (!hadString && binding.HasString)))
+                        || (action.When == RuntimeActionWhen::OnChange && (numericChanged || stringChanged))
+                        || (action.When == RuntimeActionWhen::OnTruthy && binding.Value >= 0.5f)
+                        || (action.When == RuntimeActionWhen::OnFalsy && binding.Value < 0.5f);
+                    if (run && action.Enabled) applyAction(action, &binding, shader, _pendingOutput);
+                }
+
                 if (binding.WriteMaterial)
                 {
                     if (!shader.setMaterialParameter(binding.TargetId, binding.TargetComponent, binding.Value)) binding.Error = "material id/component not active in current shader";
                     else binding.Error.clear();
                 }
-                else
-                    binding.Error.clear();
+                else binding.Error.clear();
             }
+            for (auto& pointer : _pointers) resolveObjectPointer(pointer);
+            for (auto& object : _objects) runtimeObjectFieldOffset(object, 0, &object.Size);
         }
 
         RuntimeControlOutput evaluateControls(ShaderFramebuffer& shader)
         {
-            for (auto& binding : _bindings) binding.RuntimeEnabled = true;
-            RuntimeControlOutput output;
-            for (auto& control : _controls)
+            for (auto& control : _controls) control.TriggeredThisFrame = false;
+            RuntimeControlOutput output = _pendingOutput;
+            std::vector<RuntimeControlRule*> order;
+            order.reserve(_controls.size());
+            for (auto& control : _controls) order.push_back(&control);
+            std::ranges::sort(order, [](const RuntimeControlRule* a, const RuntimeControlRule* b)
             {
-                if (!control.Enabled) continue;
-                RuntimeBinding* source = findBinding(control.SourceBindingId);
-                if (!source || !source->Enabled || !source->HasValue) continue;
-                const float value = source->Value;
-                if (!evaluateControlCondition(control, value)) continue;
+                if (a->Priority != b->Priority) return a->Priority < b->Priority;
+                return a->Id < b->Id;
+            });
 
-                switch (control.Target)
+            for (int pass = 0; pass < _controlPassLimit; ++pass)
+            {
+                bool mutated = false;
+                for (RuntimeControlRule* controlPtr : order)
                 {
-                case RuntimeControlTarget::ActiveShader:
-                    if (control.ShaderPresetIndex > 0 && control.ShaderPresetIndex <= static_cast<int>(ShaderPresets.size()))
+                    auto& control = *controlPtr;
+                    if (!control.Enabled || !control.RuntimeEnabled) { control.ConditionActive = false; continue; }
+                    RuntimeBinding* source = findBinding(control.SourceBindingId);
+                    if (!source || !source->Enabled || !source->HasValue) { control.ConditionActive = false; continue; }
+                    const bool wasActive = control.ConditionActive;
+                    const bool active = evaluateControlCondition(control, *source);
+                    const bool event = runtimeControlConditionIsEvent(control.Condition);
+                    const bool triggered = event ? active : active && !wasActive;
+                    if (triggered && !control.TriggeredThisFrame)
                     {
-                        output.ShaderPresetIndex = control.ShaderPresetIndex;
-                        output.ShaderTransitionSeconds = std::clamp(control.TransitionSeconds, 0.0f, 10.0f);
+                        control.TriggeredThisFrame = true;
+                        control.LastTriggerTime = _lastRuntimeTime;
+                        ++control.TriggerCount;
                     }
-                    break;
-                case RuntimeControlTarget::BindingEnabled:
-                    if (RuntimeBinding* target = findBinding(control.TargetBindingId); target && target != source) target->RuntimeEnabled = control.TargetBool;
-                    break;
-                case RuntimeControlTarget::GlobalBrightness:
-                    output.GlobalBrightness = std::clamp(control.TargetValue, 0.0f, 1.0f);
-                    break;
-                case RuntimeControlTarget::SendFramebuffer:
-                    output.SendFramebuffer = control.TargetBool;
-                    break;
-                case RuntimeControlTarget::BaseColorMode:
-                    output.BaseColorMode = std::clamp(static_cast<int>(std::lround(control.TargetValue)), 0, 2);
-                    break;
-                case RuntimeControlTarget::MaterialParameter:
-                    shader.setMaterialParameter(control.TargetId, control.TargetComponent, control.TargetValue);
-                    break;
+                    if (!active && !triggered) continue;
+
+                    // Legacy single target stays valid for v5/v6 configs; binding operations are edge-triggered by default so an active comparison does not rescan/rearm every frame.
+                    if (runtimeControlTargetIsBindingOperation(control.Target)) { if (triggered) mutated |= applyLegacyControlTarget(control, *source, shader, output); }
+                    else if (active) mutated |= applyLegacyControlTarget(control, *source, shader, output);
+                    for (auto& action : control.Actions)
+                    {
+                        if (!action.Enabled) continue;
+                        const bool run = action.When == RuntimeActionWhen::WhileActive ? active
+                            : action.When == RuntimeActionWhen::OnTrigger ? triggered
+                            : action.When == RuntimeActionWhen::OnUpdate ? active
+                            : action.When == RuntimeActionWhen::OnChange ? triggered
+                            : action.When == RuntimeActionWhen::OnTruthy ? active && source->Value >= 0.5f
+                            : active && source->Value < 0.5f;
+                        if (run) mutated |= applyAction(action, source, shader, output);
+                    }
                 }
+                if (!mutated) break;
             }
             return output;
         }
@@ -7221,7 +8364,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             const auto temporary = std::filesystem::path(_path.string() + ".tmp");
             std::ofstream file(temporary, std::ios::trunc);
             if (!file) return false;
-            file << "# Quartz runtime material bindings v5\n";
+            file << "# Quartz runtime material bindings v10\n";
             for (const auto& b : _bindings)
             {
                 file << "B\t" << b.Enabled << '\t' << static_cast<int>(b.Source) << '\t' << b.Signal << '\t' << b.Constant << '\t'
@@ -7235,14 +8378,40 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                      << static_cast<int>(b.AddressMode) << '\t' << runtimeEscape(b.Signature) << '\t' << b.SignatureExecutableOnly << '\t'
                      << static_cast<int>(b.SignatureResolve) << '\t' << b.SignatureResultOffset << '\t' << b.SignatureInstructionSize << '\t' << b.SignatureRetrySeconds << '\t'
                      << runtimeEscape(serializeParameterLinks(b)) << '\t' << static_cast<int>(b.SignatureRegister) << '\t' << b.SignatureRegisterDisplacementOffset << '\t'
-                     << static_cast<int>(b.SignatureDisplacementType) << '\t' << b.SignatureManualDisplacement << '\t' << b.SignatureCaptureTimeoutSeconds << '\t' << b.StatusBindingId << '\t' << b.WriteMaterial << '\n';
+                     << static_cast<int>(b.SignatureDisplacementType) << '\t' << b.SignatureManualDisplacement << '\t' << b.SignatureCaptureTimeoutSeconds << '\t' << b.StatusBindingId << '\t' << b.WriteMaterial << '\t'
+                     << b.Priority << '\t' << b.UnboundValue << '\t' << b.ValueBindingId << '\t' << b.ControlStatusId << '\t' << b.ObjectId << '\t' << b.ObjectFieldId << '\t'
+                     << static_cast<int>(b.AggregateOperation) << '\t' << static_cast<int>(b.CompareCondition) << '\t' << static_cast<int>(b.CompareResult) << '\t'
+                     << b.CompareA << '\t' << b.CompareB << '\t' << b.CompareTolerance << '\t' << runtimeEscape(serializeReferences(b.References)) << '\t'
+                     << b.BankValueId << '\t' << b.StoreBankValueId << '\t' << b.StoreToBank << '\t' << runtimeEscape(b.StringConstant) << '\t' << runtimeEscape(serializeActions(b.Actions)) << '\t' << b.ProfileId << '\t'
+                     << static_cast<int>(b.SignaturePatternKind) << '\t' << b.Order << '\t' << runtimeEscape(b.Group) << '\t' << b.ObjectPointerId << '\n';
             }
             for (const auto& c : _controls)
             {
                 file << "C\t" << c.Enabled << '\t' << c.Id << '\t' << runtimeEscape(c.Name) << '\t' << c.SourceBindingId << '\t'
                      << static_cast<int>(c.Condition) << '\t' << c.ValueA << '\t' << c.ValueB << '\t' << c.Tolerance << '\t' << c.Hysteresis << '\t'
                      << static_cast<int>(c.Target) << '\t' << c.ShaderPresetIndex << '\t' << c.TargetBindingId << '\t' << c.TargetValue << '\t' << c.TargetBool << '\t'
-                     << c.TargetComponent << '\t' << runtimeEscape(c.TargetId) << '\t' << c.TransitionSeconds << '\n';
+                     << c.TargetComponent << '\t' << runtimeEscape(c.TargetId) << '\t' << c.TransitionSeconds << '\t' << c.Priority << '\t' << c.TargetUseSourceValue << '\t'
+                     << runtimeEscape(c.StringCompare) << '\t' << c.FireOnFirstSample << '\t' << runtimeEscape(serializeActions(c.Actions)) << '\t'
+                     << c.TargetBankValueId << '\t' << c.TargetControlId << '\t' << runtimeEscape(c.ShaderId) << '\t' << c.Order << '\t' << runtimeEscape(c.Group) << '\n';
+            }
+            file << "G\t" << _controlPassLimit << '\t' << _activeProfileId << '\n';
+            for (const auto& value : _bank)
+                file << "V\t" << value.Enabled << '\t' << value.Id << '\t' << runtimeEscape(value.Name) << '\t' << runtimeEscape(value.Description) << '\t'
+                     << static_cast<int>(value.Type) << '\t' << value.Number << '\t' << value.Integer << '\t' << value.Boolean << '\t' << runtimeEscape(value.String) << '\t'
+                     << static_cast<unsigned long long>(value.Address) << '\t' << value.HasValue << '\n';
+            for (const auto& profile : _profiles)
+                file << "P\t" << profile.Enabled << '\t' << profile.Id << '\t' << runtimeEscape(profile.Name) << '\t' << profile.Exclusive << '\t'
+                     << profile.HotkeyCtrl << '\t' << profile.HotkeyAlt << '\t' << profile.HotkeyShift << '\t' << profile.HotkeyKey << '\t'
+                     << serializeIdList(profile.BindingIds) << '\t' << serializeIdList(profile.ControlIds) << '\n';
+            for (const auto& pointer : _pointers)
+                file << "Q\t" << pointer.Enabled << '\t' << pointer.Id << '\t' << runtimeEscape(pointer.Name) << '\t' << pointer.DescriptorId << '\t' << pointer.BaseBindingId << '\t' << pointer.ProcessBindingId << '\t' << pointer.BaseOffset << '\t' << pointer.Order << '\t' << runtimeEscape(pointer.Group) << '\n';
+            for (const auto& object : _objects)
+            {
+                file << "O\t" << object.Enabled << '\t' << object.Id << '\t' << runtimeEscape(object.Name) << '\t' << runtimeEscape(object.Description) << '\t'
+                     << object.BaseBindingId << '\t' << object.ProcessBindingId << '\t' << object.BaseOffset << '\t' << static_cast<int>(object.Packing) << '\t' << object.Order << '\t' << runtimeEscape(object.Group) << '\n';
+                for (const auto& field : object.Fields)
+                    file << "F\t" << object.Id << '\t' << field.Id << '\t' << field.Enabled << '\t' << runtimeEscape(field.Name) << '\t' << static_cast<int>(field.Type) << '\t'
+                         << static_cast<int>(field.Alignment) << '\t' << field.ManualOffset << '\t' << field.Offset << '\t' << field.CustomFillerBytes << '\t' << field.StringMaxLength << '\t' << field.FixedElementCount << '\n';
             }
             file.close();
             if (!file) return false;
@@ -7292,7 +8461,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                     auto parseB = [&](const std::size_t index, bool& value) { return index < fields.size() && parseBool(fields[index], value); };
                     int source = 0, valueType = 0;
                     if (!parseB(0, b.Enabled) || !parseInt(1, source) || !parseInt(2, b.Signal) || !parseFloat(3, b.Constant)) continue;
-                    b.Source = static_cast<RuntimeSourceKind>(std::clamp(source, 0, static_cast<int>(RuntimeSourceKind::BindingStatus)));
+                    b.Source = static_cast<RuntimeSourceKind>(std::clamp(source, 0, static_cast<int>(RuntimeSourceKind::ProfileState)));
                     copyField(b.Name, runtimeUnescape(fields[4])); copyField(b.TargetId, runtimeUnescape(fields[5]));
                     parseInt(6, b.TargetComponent); parseInt(7, b.ProcessId); parseB(8, b.AutoReattach); parseInt(9, valueType);
                     b.ValueType = static_cast<ProcessValueType>(std::clamp(valueType, 0, static_cast<int>(ProcessValueType::Bool)));
@@ -7315,7 +8484,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                     if (fields.size() > 33) parseB(33, b.SignatureExecutableOnly);
                     int signatureResolve = static_cast<int>(SignatureResultMode::MatchAddress);
                     if (fields.size() > 34) parseInt(34, signatureResolve);
-                    b.SignatureResolve = static_cast<SignatureResultMode>(std::clamp(signatureResolve, 0, static_cast<int>(SignatureResultMode::RegisterRelativeCapture)));
+                    b.SignatureResolve = static_cast<SignatureResultMode>(std::clamp(signatureResolve, 0, static_cast<int>(SignatureResultMode::Address32AtOffset)));
                     if (fields.size() > 35) parseInt(35, b.SignatureResultOffset);
                     if (fields.size() > 36) parseInt(36, b.SignatureInstructionSize);
                     if (fields.size() > 37) parseFloat(37, b.SignatureRetrySeconds);
@@ -7331,6 +8500,33 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                     if (fields.size() > 43) parseFloat(43, b.SignatureCaptureTimeoutSeconds);
                     if (fields.size() > 44) parseNumber(fields[44], b.StatusBindingId);
                     if (fields.size() > 45) parseB(45, b.WriteMaterial);
+                    if (fields.size() > 46) parseInt(46, b.Priority);
+                    if (fields.size() > 47) parseFloat(47, b.UnboundValue);
+                    if (fields.size() > 48) parseNumber(fields[48], b.ValueBindingId);
+                    if (fields.size() > 49) parseNumber(fields[49], b.ControlStatusId);
+                    if (fields.size() > 50) parseNumber(fields[50], b.ObjectId);
+                    if (fields.size() > 51) parseNumber(fields[51], b.ObjectFieldId);
+                    int aggregateOperation = static_cast<int>(RuntimeAggregateOperation::Average), compareCondition = static_cast<int>(RuntimeCompareCondition::Greater), compareResult = static_cast<int>(RuntimeMassCompareResult::Any);
+                    if (fields.size() > 52) parseInt(52, aggregateOperation);
+                    if (fields.size() > 53) parseInt(53, compareCondition);
+                    if (fields.size() > 54) parseInt(54, compareResult);
+                    b.AggregateOperation = static_cast<RuntimeAggregateOperation>(std::clamp(aggregateOperation, 0, static_cast<int>(RuntimeAggregateOperation::All)));
+                    b.CompareCondition = static_cast<RuntimeCompareCondition>(std::clamp(compareCondition, 0, static_cast<int>(RuntimeCompareCondition::Outside)));
+                    b.CompareResult = static_cast<RuntimeMassCompareResult>(std::clamp(compareResult, 0, static_cast<int>(RuntimeMassCompareResult::FirstMatchIndex)));
+                    if (fields.size() > 55) parseFloat(55, b.CompareA);
+                    if (fields.size() > 56) parseFloat(56, b.CompareB);
+                    if (fields.size() > 57) parseFloat(57, b.CompareTolerance);
+                    if (fields.size() > 58) parseReferences(runtimeUnescape(fields[58]), b.References);
+                    if (fields.size() > 59) parseNumber(fields[59], b.BankValueId);
+                    if (fields.size() > 60) parseNumber(fields[60], b.StoreBankValueId);
+                    if (fields.size() > 61) parseB(61, b.StoreToBank);
+                    if (fields.size() > 62) copyField(b.StringConstant, runtimeUnescape(fields[62]));
+                    if (fields.size() > 63) parseActions(runtimeUnescape(fields[63]), b.Actions);
+                    if (fields.size() > 64) parseNumber(fields[64], b.ProfileId);
+                    int patternKind = 0; if (fields.size() > 65) parseInt(65, patternKind); b.SignaturePatternKind = static_cast<RuntimeSignaturePatternKind>(std::clamp(patternKind, 0, 1));
+                    if (fields.size() > 66) parseInt(66, b.Order);
+                    if (fields.size() > 67) copyField(b.Group, runtimeUnescape(fields[67]));
+                    if (fields.size() > 68) parseNumber(fields[68], b.ObjectPointerId);
                     if (b.Id == 0) b.Id = _nextBindingId++;
                     else _nextBindingId = std::max(_nextBindingId, b.Id + 1);
                     _bindings.emplace_back(std::move(b));
@@ -7353,21 +8549,262 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                     copyField(c.Name, runtimeUnescape(fields[2]));
                     parseNumber(fields[3], c.SourceBindingId);
                     parseNumber(fields[4], condition);
-                    c.Condition = static_cast<RuntimeControlCondition>(std::clamp(condition, 0, static_cast<int>(RuntimeControlCondition::FallingEdge)));
+                    c.Condition = static_cast<RuntimeControlCondition>(std::clamp(condition, 0, static_cast<int>(RuntimeControlCondition::StringContains)));
                     parseNumber(fields[5], c.ValueA); parseNumber(fields[6], c.ValueB); parseNumber(fields[7], c.Tolerance); parseNumber(fields[8], c.Hysteresis);
                     parseNumber(fields[9], target);
-                    c.Target = static_cast<RuntimeControlTarget>(std::clamp(target, 0, static_cast<int>(RuntimeControlTarget::MaterialParameter)));
+                    c.Target = static_cast<RuntimeControlTarget>(std::clamp(target, 0, static_cast<int>(RuntimeControlTarget::BindingClearError)));
                     parseNumber(fields[10], c.ShaderPresetIndex); parseNumber(fields[11], c.TargetBindingId); parseNumber(fields[12], c.TargetValue); parseBool(fields[13], c.TargetBool);
                     if (fields.size() > 14) parseNumber(fields[14], c.TargetComponent);
                     if (fields.size() > 15) copyField(c.TargetId, runtimeUnescape(fields[15]));
                     if (fields.size() > 16) parseNumber(fields[16], c.TransitionSeconds);
+                    if (fields.size() > 17) parseNumber(fields[17], c.Priority);
+                    if (fields.size() > 18) parseBool(fields[18], c.TargetUseSourceValue);
+                    if (fields.size() > 19) copyField(c.StringCompare, runtimeUnescape(fields[19]));
+                    if (fields.size() > 20) parseBool(fields[20], c.FireOnFirstSample);
+                    if (fields.size() > 21) parseActions(runtimeUnescape(fields[21]), c.Actions);
+                    if (fields.size() > 22) parseNumber(fields[22], c.TargetBankValueId);
+                    if (fields.size() > 23) parseNumber(fields[23], c.TargetControlId);
+                    if (fields.size() > 24) copyField(c.ShaderId, runtimeUnescape(fields[24]));
+                    if (fields.size() > 25) parseNumber(fields[25], c.Order);
+                    if (fields.size() > 26) copyField(c.Group, runtimeUnescape(fields[26]));
                     if (c.Id == 0) c.Id = _nextControlId++;
                     else _nextControlId = std::max(_nextControlId, c.Id + 1);
                     _controls.emplace_back(std::move(c));
                 }
+                else if (line.starts_with("G\t"))
+                {
+                    std::vector<std::string> fields; std::size_t start = 2;
+                    for (;;) { const std::size_t tab = line.find('\t', start); fields.emplace_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start)); if (tab == std::string::npos) break; start = tab + 1; }
+                    int passes = _controlPassLimit;
+                    if (!fields.empty() && parseNumber(fields[0], passes)) _controlPassLimit = std::clamp(passes, 1, 16);
+                    if (fields.size() > 1) parseNumber(fields[1], _activeProfileId);
+                }
+                else if (line.starts_with("V\t"))
+                {
+                    std::vector<std::string> fields;
+                    std::size_t start = 2;
+                    for (;;)
+                    {
+                        const std::size_t tab = line.find('\t', start);
+                        fields.emplace_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start));
+                        if (tab == std::string::npos) break;
+                        start = tab + 1;
+                    }
+                    if (fields.size() < 10) continue;
+                    RuntimeValueBankEntry value;
+                    int type = 0; unsigned long long address = 0;
+                    if (!parseBool(fields[0], value.Enabled) || !parseNumber(fields[1], value.Id)) continue;
+                    copyField(value.Name, runtimeUnescape(fields[2])); copyField(value.Description, runtimeUnescape(fields[3]));
+                    parseNumber(fields[4], type); value.Type = static_cast<RuntimeBankValueType>(std::clamp(type, 0, static_cast<int>(RuntimeBankValueType::Address)));
+                    parseNumber(fields[5], value.Number); parseNumber(fields[6], value.Integer); parseBool(fields[7], value.Boolean); copyField(value.String, runtimeUnescape(fields[8]));
+                    parseNumber(fields[9], address); value.Address = static_cast<std::uintptr_t>(address); if (fields.size() > 10) parseBool(fields[10], value.HasValue);
+                    if (value.Id == 0) value.Id = _nextBankValueId++; else _nextBankValueId = std::max(_nextBankValueId, value.Id + 1);
+                    _bank.emplace_back(std::move(value));
+                }
+                else if (line.starts_with("P\t"))
+                {
+                    std::vector<std::string> fields; std::size_t start = 2;
+                    for (;;) { const std::size_t tab = line.find('\t', start); fields.emplace_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start)); if (tab == std::string::npos) break; start = tab + 1; }
+                    if (fields.size() < 10) continue;
+                    RuntimeBindingProfile profile;
+                    if (!parseBool(fields[0], profile.Enabled) || !parseNumber(fields[1], profile.Id)) continue;
+                    copyField(profile.Name, runtimeUnescape(fields[2])); parseBool(fields[3], profile.Exclusive); parseBool(fields[4], profile.HotkeyCtrl); parseBool(fields[5], profile.HotkeyAlt); parseBool(fields[6], profile.HotkeyShift); parseNumber(fields[7], profile.HotkeyKey);
+                    parseIdList(fields[8], profile.BindingIds); parseIdList(fields[9], profile.ControlIds);
+                    if (profile.Id == 0) profile.Id = _nextProfileId++; else _nextProfileId = std::max(_nextProfileId, profile.Id + 1);
+                    _profiles.emplace_back(std::move(profile));
+                }
+                else if (line.starts_with("Q\t"))
+                {
+                    std::vector<std::string> fields; std::size_t start = 2; for (;;) { const std::size_t tab = line.find('\t', start); fields.emplace_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start)); if (tab == std::string::npos) break; start = tab + 1; }
+                    if (fields.size() >= 7)
+                    {
+                        RuntimeObjectPointer pointer; parseBool(fields[0], pointer.Enabled); parseNumber(fields[1], pointer.Id); copyField(pointer.Name, runtimeUnescape(fields[2])); parseNumber(fields[3], pointer.DescriptorId); parseNumber(fields[4], pointer.BaseBindingId); parseNumber(fields[5], pointer.ProcessBindingId); parseNumber(fields[6], pointer.BaseOffset); if (fields.size() > 7) parseNumber(fields[7], pointer.Order); if (fields.size() > 8) copyField(pointer.Group, runtimeUnescape(fields[8]));
+                        if (pointer.Id == 0) pointer.Id = _nextPointerId++; else _nextPointerId = std::max(_nextPointerId, pointer.Id + 1); _pointers.emplace_back(std::move(pointer));
+                    }
+                }
+                else if (line.starts_with("O\t"))
+                {
+                    std::vector<std::string> fields;
+                    std::size_t start = 2;
+                    for (;;)
+                    {
+                        const std::size_t tab = line.find('\t', start);
+                        fields.emplace_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start));
+                        if (tab == std::string::npos) break;
+                        start = tab + 1;
+                    }
+                    if (fields.size() < 8) continue;
+                    RuntimeObjectDescriptor object;
+                    int packing = 0;
+                    if (!parseBool(fields[0], object.Enabled) || !parseNumber(fields[1], object.Id)) continue;
+                    copyField(object.Name, runtimeUnescape(fields[2])); copyField(object.Description, runtimeUnescape(fields[3]));
+                    parseNumber(fields[4], object.BaseBindingId); parseNumber(fields[5], object.ProcessBindingId); parseNumber(fields[6], object.BaseOffset); parseNumber(fields[7], packing);
+                    object.Packing = static_cast<RuntimeObjectPacking>(std::clamp(packing, 0, static_cast<int>(RuntimeObjectPacking::Pack16)));
+                    if (fields.size() > 8) parseNumber(fields[8], object.Order);
+                    if (fields.size() > 9) copyField(object.Group, runtimeUnescape(fields[9]));
+                    if (object.Id == 0) object.Id = _nextObjectId++;
+                    else _nextObjectId = std::max(_nextObjectId, object.Id + 1);
+                    _objects.emplace_back(std::move(object));
+                }
+                else if (line.starts_with("F\t"))
+                {
+                    std::vector<std::string> fields;
+                    std::size_t start = 2;
+                    for (;;)
+                    {
+                        const std::size_t tab = line.find('\t', start);
+                        fields.emplace_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start));
+                        if (tab == std::string::npos) break;
+                        start = tab + 1;
+                    }
+                    if (fields.size() < 9) continue;
+                    std::uint64_t objectId = 0;
+                    if (!parseNumber(fields[0], objectId)) continue;
+                    RuntimeObjectDescriptor* object = findObject(objectId);
+                    if (!object) continue;
+                    RuntimeObjectField field;
+                    int type = 0, alignment = 0;
+                    parseNumber(fields[1], field.Id); parseBool(fields[2], field.Enabled); copyField(field.Name, runtimeUnescape(fields[3]));
+                    parseNumber(fields[4], type); parseNumber(fields[5], alignment); parseBool(fields[6], field.ManualOffset); parseNumber(fields[7], field.Offset); parseNumber(fields[8], field.CustomFillerBytes);
+                    if (fields.size() > 9) parseNumber(fields[9], field.StringMaxLength);
+                    if (fields.size() > 10) parseNumber(fields[10], field.FixedElementCount);
+                    field.Type = static_cast<RuntimeObjectFieldType>(std::clamp(type, 0, static_cast<int>(RuntimeObjectFieldType::FixedWString)));
+                    field.Alignment = static_cast<RuntimeObjectAlignment>(std::clamp(alignment, 0, static_cast<int>(RuntimeObjectAlignment::Align16)));
+                    if (field.Id == 0) field.Id = _nextObjectFieldId++;
+                    else _nextObjectFieldId = std::max(_nextObjectFieldId, field.Id + 1);
+                    object->Fields.emplace_back(std::move(field));
+                }
+            }
+            if (_pointers.empty())
+            {
+                for (auto& object : _objects) if (object.BaseBindingId != 0)
+                {
+                    auto& pointer = _pointers.emplace_back(); pointer.Id = _nextPointerId++; pointer.Order = static_cast<int>(_pointers.size() - 1); pointer.Enabled = object.Enabled; pointer.DescriptorId = object.Id; pointer.BaseBindingId = object.BaseBindingId; pointer.ProcessBindingId = object.ProcessBindingId; pointer.BaseOffset = object.BaseOffset; std::snprintf(pointer.Name, sizeof(pointer.Name), "%s instance", object.Name);
+                }
             }
             validateParameterLinks();
             _savedRevision = _revision;
+        }
+
+        static std::string serializeIdList(const std::vector<std::uint64_t>& ids)
+        {
+            std::string result;
+            for (const auto id : ids) { if (!result.empty()) result.push_back(','); result += std::to_string(id); }
+            return result;
+        }
+
+        static void parseIdList(const std::string_view text, std::vector<std::uint64_t>& ids)
+        {
+            ids.clear(); std::size_t start = 0;
+            while (start < text.size())
+            {
+                const std::size_t end = text.find(',', start);
+                std::uint64_t id = 0; const auto token = text.substr(start, end == std::string_view::npos ? text.size() - start : end - start);
+                if (parseNumber(token, id) && id != 0) ids.push_back(id);
+                if (end == std::string_view::npos) break; start = end + 1;
+            }
+        }
+
+        static std::string serializeActions(const std::vector<RuntimeAction>& actions)
+        {
+            std::string result;
+            for (const auto& action : actions)
+            {
+                if (!result.empty()) result.push_back(';');
+                result += std::to_string(action.Enabled) + "," + std::to_string(static_cast<int>(action.Target)) + "," + std::to_string(static_cast<int>(action.ValueMode)) + "," + std::to_string(static_cast<int>(action.When)) + ","
+                    + std::to_string(action.ShaderPresetIndex) + "," + std::to_string(action.TargetBindingId) + "," + std::to_string(action.TargetControlId) + "," + std::to_string(action.ValueBindingId) + ","
+                    + std::to_string(action.BankValueId) + "," + std::to_string(action.Value) + "," + std::to_string(action.BoolValue) + "," + std::to_string(action.TargetComponent) + ","
+                    + runtimeEscape(action.TargetId) + "," + runtimeEscape(action.StringValue) + "," + std::to_string(action.TransitionSeconds) + "," + std::to_string(action.TargetBankValueId) + "," + runtimeEscape(action.ShaderId);
+            }
+            return result;
+        }
+
+        static void parseActions(const std::string_view specification, std::vector<RuntimeAction>& actions)
+        {
+            actions.clear();
+            std::size_t start = 0;
+            while (start < specification.size())
+            {
+                const std::size_t end = specification.find(';', start);
+                const std::string token(specification.substr(start, end == std::string_view::npos ? specification.size() - start : end - start));
+                std::vector<std::string> fields;
+                std::size_t fieldStart = 0;
+                for (;;)
+                {
+                    const std::size_t comma = token.find(',', fieldStart);
+                    fields.emplace_back(token.substr(fieldStart, comma == std::string::npos ? std::string::npos : comma - fieldStart));
+                    if (comma == std::string::npos) break;
+                    fieldStart = comma + 1;
+                }
+                if (fields.size() >= 12)
+                {
+                    RuntimeAction action; int target = 0, mode = 0, when = 0;
+                    parseBool(fields[0], action.Enabled); parseNumber(fields[1], target); parseNumber(fields[2], mode); parseNumber(fields[3], when);
+                    action.Target = static_cast<RuntimeActionTarget>(std::clamp(target, 0, static_cast<int>(RuntimeActionTarget::BindingClearError)));
+                    action.ValueMode = static_cast<RuntimeActionValueMode>(std::clamp(mode, 0, static_cast<int>(RuntimeActionValueMode::BankValue)));
+                    action.When = static_cast<RuntimeActionWhen>(std::clamp(when, 0, static_cast<int>(RuntimeActionWhen::OnFalsy)));
+                    parseNumber(fields[4], action.ShaderPresetIndex); parseNumber(fields[5], action.TargetBindingId); parseNumber(fields[6], action.TargetControlId); parseNumber(fields[7], action.ValueBindingId);
+                    parseNumber(fields[8], action.BankValueId); parseNumber(fields[9], action.Value); parseBool(fields[10], action.BoolValue); parseNumber(fields[11], action.TargetComponent);
+                    if (fields.size() > 12) copyField(action.TargetId, runtimeUnescape(fields[12]));
+                    if (fields.size() > 13) copyField(action.StringValue, runtimeUnescape(fields[13]));
+                    if (fields.size() > 14) parseNumber(fields[14], action.TransitionSeconds);
+                    if (fields.size() > 15) parseNumber(fields[15], action.TargetBankValueId);
+                    if (fields.size() > 16) copyField(action.ShaderId, runtimeUnescape(fields[16]));
+                    actions.emplace_back(std::move(action));
+                }
+                if (end == std::string_view::npos) break;
+                start = end + 1;
+            }
+        }
+
+        static std::string serializeReferences(const std::vector<RuntimeSourceReference>& references)
+        {
+            std::string result;
+            for (const auto& reference : references)
+            {
+                if (!result.empty()) result.push_back(';');
+                result += std::to_string(static_cast<int>(reference.Kind)) + "," + std::to_string(reference.Id) + "," + std::to_string(reference.Signal) + "," + std::to_string(reference.Weight) + "," + (reference.Enabled ? "1" : "0")
+                    + "," + (reference.UseOwnComparison ? "1" : "0") + "," + std::to_string(static_cast<int>(reference.CompareCondition)) + "," + std::to_string(reference.CompareA) + "," + std::to_string(reference.CompareB) + "," + std::to_string(reference.CompareTolerance);
+            }
+            return result;
+        }
+
+        static void parseReferences(const std::string_view specification, std::vector<RuntimeSourceReference>& references)
+        {
+            references.clear();
+            std::size_t start = 0;
+            while (start < specification.size())
+            {
+                const std::size_t end = specification.find(';', start);
+                const std::string token(specification.substr(start, end == std::string_view::npos ? specification.size() - start : end - start));
+                std::vector<std::string> fields;
+                std::size_t fieldStart = 0;
+                for (;;)
+                {
+                    const std::size_t comma = token.find(',', fieldStart);
+                    fields.emplace_back(token.substr(fieldStart, comma == std::string::npos ? std::string::npos : comma - fieldStart));
+                    if (comma == std::string::npos) break;
+                    fieldStart = comma + 1;
+                }
+                if (fields.size() >= 2)
+                {
+                    RuntimeSourceReference reference; int kind = 0, compare = static_cast<int>(RuntimeCompareCondition::Greater);
+                    parseNumber(fields[0], kind); parseNumber(fields[1], reference.Id);
+                    if (fields.size() > 2) parseNumber(fields[2], reference.Signal);
+                    if (fields.size() > 3) parseNumber(fields[3], reference.Weight);
+                    if (fields.size() > 4) parseBool(fields[4], reference.Enabled);
+                    if (fields.size() > 5) parseBool(fields[5], reference.UseOwnComparison);
+                    if (fields.size() > 6) parseNumber(fields[6], compare);
+                    if (fields.size() > 7) parseNumber(fields[7], reference.CompareA);
+                    if (fields.size() > 8) parseNumber(fields[8], reference.CompareB);
+                    if (fields.size() > 9) parseNumber(fields[9], reference.CompareTolerance);
+                    reference.Kind = static_cast<RuntimeReferenceKind>(std::clamp(kind, 0, static_cast<int>(RuntimeReferenceKind::Control)));
+                    reference.CompareCondition = static_cast<RuntimeCompareCondition>(std::clamp(compare, 0, static_cast<int>(RuntimeCompareCondition::Outside)));
+                    if (reference.Id != 0) references.push_back(reference);
+                }
+                if (end == std::string_view::npos) break;
+                start = end + 1;
+            }
         }
 
         static std::string serializeParameterLinks(const RuntimeBinding& binding)
@@ -7405,8 +8842,319 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             }
         }
 
-        static bool evaluateControlCondition(RuntimeControlRule& control, const float value) noexcept
+        static bool runtimeControlConditionIsEvent(const RuntimeControlCondition condition) noexcept
         {
+            return condition == RuntimeControlCondition::RisingEdge || condition == RuntimeControlCondition::FallingEdge || condition == RuntimeControlCondition::OnChange
+                || condition == RuntimeControlCondition::ChangedTo || condition == RuntimeControlCondition::ChangedFrom || condition == RuntimeControlCondition::BecomesTrue || condition == RuntimeControlCondition::BecomesFalse;
+        }
+
+        static float bankNumericValue(const RuntimeValueBankEntry& value) noexcept
+        {
+            switch (value.Type)
+            {
+            case RuntimeBankValueType::Integer: return static_cast<float>(value.Integer);
+            case RuntimeBankValueType::Boolean: return value.Boolean ? 1.0f : 0.0f;
+            case RuntimeBankValueType::String: return static_cast<float>(std::strlen(value.String));
+            case RuntimeBankValueType::Address: return value.Address != 0 ? 1.0f : 0.0f;
+            case RuntimeBankValueType::Number: default: return value.Number;
+            }
+        }
+
+        bool writeBankValue(RuntimeValueBankEntry& target, const float numeric, const std::string_view stringValue = {}, const std::uintptr_t address = 0)
+        {
+            if (!target.Enabled) return false;
+            bool changed = false;
+            switch (target.Type)
+            {
+            case RuntimeBankValueType::Number:
+                changed = !target.HasValue || std::abs(target.Number - numeric) > 0.000001f;
+                target.Number = numeric;
+                break;
+            case RuntimeBankValueType::Integer:
+            {
+                const auto value = static_cast<std::int64_t>(std::llround(numeric));
+                changed = !target.HasValue || target.Integer != value;
+                target.Integer = value;
+                break;
+            }
+            case RuntimeBankValueType::Boolean:
+            {
+                const bool value = numeric >= 0.5f;
+                changed = !target.HasValue || target.Boolean != value;
+                target.Boolean = value;
+                break;
+            }
+            case RuntimeBankValueType::String:
+            {
+                const std::string value(stringValue);
+                changed = !target.HasValue || value != target.String;
+                std::snprintf(target.String, sizeof(target.String), "%s", value.c_str());
+                break;
+            }
+            case RuntimeBankValueType::Address:
+            {
+                const std::uintptr_t value = address != 0 ? address : static_cast<std::uintptr_t>(std::max(numeric, 0.0f));
+                changed = !target.HasValue || target.Address != value;
+                target.Address = value;
+                break;
+            }
+            }
+            target.HasValue = true;
+            target.ChangedThisFrame |= changed;
+            return changed;
+        }
+
+        bool writeBindingToBank(const RuntimeBinding& source, const std::uint64_t bankId)
+        {
+            RuntimeValueBankEntry* bank = findBankValue(bankId);
+            if (!bank) return false;
+            return writeBankValue(*bank, source.Value, source.HasString ? std::string_view(source.StringValue) : std::string_view{}, source.HasAddress ? source.AddressValue : 0);
+        }
+
+        static void invalidateBindingOutput(RuntimeBinding& binding)
+        {
+            binding.HasValue = false;
+            binding.HasString = false;
+            binding.StringValue.clear();
+            binding.HasAddress = false;
+            binding.AddressValue = 0;
+            binding.AddressProvenance.clear();
+            binding.LastReadSucceeded = false;
+        }
+
+        static void retryBindingRegisterCapture(RuntimeBinding& binding)
+        {
+            binding.SignatureRegisterCapture.reset();
+            binding.SignatureResolvedAddress = 0;
+            binding.SignatureCapturedRegister = 0;
+            binding.NextRegisterCapture = 0.0;
+            binding.NextUpdate = 0.0;
+            invalidateBindingOutput(binding);
+            if (binding.SignatureInstructionAddress != 0) binding.SignatureStatus = "register recapture requested";
+        }
+
+        static bool applyBindingOperation(RuntimeBinding& binding, const RuntimeBindingOperation operation)
+        {
+            switch (operation)
+            {
+            case RuntimeBindingOperation::Refresh:
+                invalidateBindingOutput(binding);
+                binding.NextUpdate = 0.0;
+                binding.Error.clear();
+                if ((binding.Source == RuntimeSourceKind::NativeProcess || binding.Source == RuntimeSourceKind::NativeAddress) && binding.AddressMode == ProcessAddressMode::Signature)
+                {
+                    if (binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture && binding.SignatureInstructionAddress != 0) retryBindingRegisterCapture(binding);
+                    else { resetRuntimeSignatureScan(binding); binding.SignatureConfigHash = 0; }
+                }
+                return false;
+            case RuntimeBindingOperation::ForceUpdate:
+                binding.NextUpdate = 0.0;
+                return false;
+            case RuntimeBindingOperation::Invalidate:
+                invalidateBindingOutput(binding);
+                return false;
+            case RuntimeBindingOperation::ResetState:
+                invalidateBindingOutput(binding);
+                binding.RawValue = 0.0f;
+                binding.Value = 0.0f;
+                binding.LastUpdate = 0.0;
+                binding.NextUpdate = 0.0;
+                binding.PreviousActionValue = 0.0f;
+                binding.PreviousActionString.clear();
+                binding.ActionPreviousInitialized = false;
+                return false;
+            case RuntimeBindingOperation::RetryRegisterCapture:
+                if ((binding.Source == RuntimeSourceKind::NativeProcess || binding.Source == RuntimeSourceKind::NativeAddress) && binding.AddressMode == ProcessAddressMode::Signature && binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture)
+                {
+                    if (binding.SignatureInstructionAddress != 0) retryBindingRegisterCapture(binding);
+                    else { resetRuntimeSignatureScan(binding); binding.SignatureConfigHash = 0; binding.NextUpdate = 0.0; invalidateBindingOutput(binding); }
+                }
+                return false;
+            case RuntimeBindingOperation::RescanPattern:
+                if ((binding.Source == RuntimeSourceKind::NativeProcess || binding.Source == RuntimeSourceKind::NativeAddress) && binding.AddressMode == ProcessAddressMode::Signature)
+                {
+                    resetRuntimeSignatureScan(binding);
+                    binding.SignatureConfigHash = 0;
+                    binding.NextUpdate = 0.0;
+                    invalidateBindingOutput(binding);
+                    binding.Error.clear();
+                }
+                return false;
+            case RuntimeBindingOperation::RebindProcess:
+                if (binding.Source == RuntimeSourceKind::NativeProcess || binding.Source == RuntimeSourceKind::NativeAddress)
+                {
+                    binding.ProcessId = 0;
+                    binding.NextProcessSearch = 0.0;
+                    resetRuntimeSignatureScan(binding);
+                    binding.SignatureConfigHash = 0;
+                    binding.NextUpdate = 0.0;
+                    invalidateBindingOutput(binding);
+                    binding.Error.clear();
+                }
+                return false;
+            case RuntimeBindingOperation::ClearError:
+                binding.Error.clear();
+                return false;
+            }
+            return false;
+        }
+
+        std::optional<float> actionNumericValue(const RuntimeAction& action, const RuntimeBinding* source) const noexcept
+        {
+            switch (action.ValueMode)
+            {
+            case RuntimeActionValueMode::SourceValue: return source && source->HasValue ? std::optional<float>(source->Value) : std::nullopt;
+            case RuntimeActionValueMode::BindingValue:
+                if (const RuntimeBinding* binding = findBinding(action.ValueBindingId); binding && binding->HasValue) return binding->Value;
+                return std::nullopt;
+            case RuntimeActionValueMode::BankValue:
+                if (const RuntimeValueBankEntry* bank = findBankValue(action.BankValueId); bank && bank->Enabled && bank->HasValue) return bankNumericValue(*bank);
+                return std::nullopt;
+            case RuntimeActionValueMode::Constant: default: return action.Value;
+            }
+        }
+
+        std::string actionStringValue(const RuntimeAction& action, const RuntimeBinding* source) const
+        {
+            switch (action.ValueMode)
+            {
+            case RuntimeActionValueMode::SourceValue: return source && source->HasString ? source->StringValue : std::string{};
+            case RuntimeActionValueMode::BindingValue:
+                if (const RuntimeBinding* binding = findBinding(action.ValueBindingId); binding && binding->HasString) return binding->StringValue;
+                return {};
+            case RuntimeActionValueMode::BankValue:
+                if (const RuntimeValueBankEntry* bank = findBankValue(action.BankValueId); bank && bank->Type == RuntimeBankValueType::String && bank->HasValue) return bank->String;
+                return {};
+            case RuntimeActionValueMode::Constant: default: return action.StringValue;
+            }
+        }
+
+        std::uintptr_t actionAddressValue(const RuntimeAction& action, const RuntimeBinding* source) const noexcept
+        {
+            switch (action.ValueMode)
+            {
+            case RuntimeActionValueMode::SourceValue: return source && source->HasAddress ? source->AddressValue : 0;
+            case RuntimeActionValueMode::BindingValue:
+                if (const RuntimeBinding* binding = findBinding(action.ValueBindingId); binding && binding->HasAddress) return binding->AddressValue;
+                return 0;
+            case RuntimeActionValueMode::BankValue:
+                if (const RuntimeValueBankEntry* bank = findBankValue(action.BankValueId); bank && bank->Type == RuntimeBankValueType::Address && bank->HasValue) return bank->Address;
+                return 0;
+            case RuntimeActionValueMode::Constant: default: return 0;
+            }
+        }
+
+        bool applyAction(RuntimeAction& action, const RuntimeBinding* source, ShaderFramebuffer& shader, RuntimeControlOutput& output)
+        {
+            const auto numeric = actionNumericValue(action, source);
+            const float value = numeric.value_or(action.Value);
+            switch (action.Target)
+            {
+            case RuntimeActionTarget::ActiveShader:
+            {
+                std::string shaderId = action.ValueMode == RuntimeActionValueMode::Constant && action.ShaderId[0] ? action.ShaderId : action.ValueMode != RuntimeActionValueMode::Constant ? actionStringValue(action, source) : std::string{};
+                int preset = action.ValueMode == RuntimeActionValueMode::Constant ? action.ShaderPresetIndex : static_cast<int>(std::lround(value));
+                if (preset == -1) { preset = _previousShaderPreset; if (shaderId.empty()) shaderId = _previousShaderId; }
+                if (!shaderId.empty())
+                {
+                    if (!findShaderPresetById(shaderId)) return false;
+                    const bool changed = !output.ShaderId || *output.ShaderId != shaderId; output.ShaderId = shaderId; output.ShaderPresetIndex.reset(); output.ShaderTransitionSeconds = std::clamp(action.TransitionSeconds, 0.0f, 10.0f); return changed;
+                }
+                if (preset > 0 && preset <= static_cast<int>(ShaderPresets.size())) { const bool changed = !output.ShaderPresetIndex || *output.ShaderPresetIndex != preset; output.ShaderPresetIndex = preset; output.ShaderId = shaderPresetIdByIndex(preset); output.ShaderTransitionSeconds = std::clamp(action.TransitionSeconds, 0.0f, 10.0f); return changed; }
+                return false;
+            }
+            case RuntimeActionTarget::BindingEnabled:
+                if (RuntimeBinding* target = findBinding(action.TargetBindingId)) { const bool next = action.ValueMode == RuntimeActionValueMode::Constant ? action.BoolValue : value >= 0.5f; const bool changed = target->RuntimeEnabled != next; target->RuntimeEnabled = next; return changed; }
+                return false;
+            case RuntimeActionTarget::GlobalBrightness:
+            {
+                const float next = std::clamp(value, 0.0f, 1.0f); const bool changed = !output.GlobalBrightness || std::abs(*output.GlobalBrightness - next) > 0.000001f; output.GlobalBrightness = next; return changed;
+            }
+            case RuntimeActionTarget::SendFramebuffer:
+            {
+                const bool next = action.ValueMode == RuntimeActionValueMode::Constant ? action.BoolValue : value >= 0.5f; const bool changed = !output.SendFramebuffer || *output.SendFramebuffer != next; output.SendFramebuffer = next; return changed;
+            }
+            case RuntimeActionTarget::BaseColorMode:
+            {
+                const int next = std::clamp(static_cast<int>(std::lround(value)), 0, 2); const bool changed = !output.BaseColorMode || *output.BaseColorMode != next; output.BaseColorMode = next; return changed;
+            }
+            case RuntimeActionTarget::MaterialParameter:
+                shader.setMaterialParameter(action.TargetId, action.TargetComponent, value);
+                return false;
+            case RuntimeActionTarget::BindingValue:
+                if (RuntimeBinding* target = findBinding(action.TargetBindingId); target && target->Source == RuntimeSourceKind::Unbound)
+                {
+                    const bool changed = !target->HasValue || std::abs(target->UnboundValue - value) > 0.000001f;
+                    target->UnboundValue = value; target->RawValue = value; target->Value = value; target->HasValue = true; target->LastReadSucceeded = true; target->LastSuccessTime = _lastRuntimeTime;
+                    return changed;
+                }
+                return false;
+            case RuntimeActionTarget::ValueBank:
+                if (RuntimeValueBankEntry* target = findBankValue(action.TargetBankValueId)) return writeBankValue(*target, value, actionStringValue(action, source), actionAddressValue(action, source));
+                return false;
+            case RuntimeActionTarget::ControlEnabled:
+                if (RuntimeControlRule* target = findControl(action.TargetControlId)) { const bool next = action.ValueMode == RuntimeActionValueMode::Constant ? action.BoolValue : value >= 0.5f; const bool changed = target->RuntimeEnabled != next; target->RuntimeEnabled = next; return changed; }
+                return false;
+            case RuntimeActionTarget::BindingRefresh: if (RuntimeBinding* target = findBinding(action.TargetBindingId)) return applyBindingOperation(*target, RuntimeBindingOperation::Refresh); return false;
+            case RuntimeActionTarget::BindingForceUpdate: if (RuntimeBinding* target = findBinding(action.TargetBindingId)) return applyBindingOperation(*target, RuntimeBindingOperation::ForceUpdate); return false;
+            case RuntimeActionTarget::BindingInvalidate: if (RuntimeBinding* target = findBinding(action.TargetBindingId)) return applyBindingOperation(*target, RuntimeBindingOperation::Invalidate); return false;
+            case RuntimeActionTarget::BindingResetState: if (RuntimeBinding* target = findBinding(action.TargetBindingId)) return applyBindingOperation(*target, RuntimeBindingOperation::ResetState); return false;
+            case RuntimeActionTarget::BindingRetryRegisterCapture: if (RuntimeBinding* target = findBinding(action.TargetBindingId)) return applyBindingOperation(*target, RuntimeBindingOperation::RetryRegisterCapture); return false;
+            case RuntimeActionTarget::BindingRescanPattern: if (RuntimeBinding* target = findBinding(action.TargetBindingId)) return applyBindingOperation(*target, RuntimeBindingOperation::RescanPattern); return false;
+            case RuntimeActionTarget::BindingRebindProcess: if (RuntimeBinding* target = findBinding(action.TargetBindingId)) return applyBindingOperation(*target, RuntimeBindingOperation::RebindProcess); return false;
+            case RuntimeActionTarget::BindingClearError: if (RuntimeBinding* target = findBinding(action.TargetBindingId)) return applyBindingOperation(*target, RuntimeBindingOperation::ClearError); return false;
+            }
+            return false;
+        }
+
+        bool applyLegacyControlTarget(RuntimeControlRule& control, const RuntimeBinding& source, ShaderFramebuffer& shader, RuntimeControlOutput& output)
+        {
+            switch (control.Target)
+            {
+            case RuntimeControlTarget::ActiveShader:
+            {
+                std::string shaderId = control.ShaderId[0] ? control.ShaderId : std::string{};
+                const int preset = control.ShaderPresetIndex == -1 ? _previousShaderPreset : control.ShaderPresetIndex;
+                if (control.ShaderPresetIndex == -1 && shaderId.empty()) shaderId = _previousShaderId;
+                if (!shaderId.empty()) { if (!findShaderPresetById(shaderId)) return false; const bool changed = !output.ShaderId || *output.ShaderId != shaderId; output.ShaderId = shaderId; output.ShaderPresetIndex.reset(); output.ShaderTransitionSeconds = std::clamp(control.TransitionSeconds, 0.0f, 10.0f); return changed; }
+                if (preset > 0 && preset <= static_cast<int>(ShaderPresets.size())) { const bool changed = !output.ShaderPresetIndex || *output.ShaderPresetIndex != preset; output.ShaderPresetIndex = preset; output.ShaderId = shaderPresetIdByIndex(preset); output.ShaderTransitionSeconds = std::clamp(control.TransitionSeconds, 0.0f, 10.0f); return changed; }
+                return false;
+            }
+            case RuntimeControlTarget::BindingEnabled:
+                if (RuntimeBinding* target = findBinding(control.TargetBindingId); target && target != &source) { const bool changed = target->RuntimeEnabled != control.TargetBool; target->RuntimeEnabled = control.TargetBool; return changed; }
+                return false;
+            case RuntimeControlTarget::GlobalBrightness: { const float next = std::clamp(control.TargetValue, 0.0f, 1.0f); const bool changed = !output.GlobalBrightness || std::abs(*output.GlobalBrightness - next) > 0.000001f; output.GlobalBrightness = next; return changed; }
+            case RuntimeControlTarget::SendFramebuffer: { const bool changed = !output.SendFramebuffer || *output.SendFramebuffer != control.TargetBool; output.SendFramebuffer = control.TargetBool; return changed; }
+            case RuntimeControlTarget::BaseColorMode: { const int next = std::clamp(static_cast<int>(std::lround(control.TargetValue)), 0, 2); const bool changed = !output.BaseColorMode || *output.BaseColorMode != next; output.BaseColorMode = next; return changed; }
+            case RuntimeControlTarget::MaterialParameter: shader.setMaterialParameter(control.TargetId, control.TargetComponent, control.TargetValue); return false;
+            case RuntimeControlTarget::BindingValue:
+                if (RuntimeBinding* target = findBinding(control.TargetBindingId); target && target != &source && target->Source == RuntimeSourceKind::Unbound)
+                {
+                    const float next = control.TargetUseSourceValue ? source.Value : control.TargetValue; const bool changed = !target->HasValue || std::abs(target->UnboundValue - next) > 0.000001f;
+                    target->UnboundValue = next; target->RawValue = next; target->Value = next; target->HasValue = true; target->LastReadSucceeded = true; target->LastSuccessTime = _lastRuntimeTime; return changed;
+                }
+                return false;
+            case RuntimeControlTarget::ValueBank:
+                if (RuntimeValueBankEntry* target = findBankValue(control.TargetBankValueId)) return writeBankValue(*target, control.TargetUseSourceValue ? source.Value : control.TargetValue, control.TargetUseSourceValue && source.HasString ? std::string_view(source.StringValue) : std::string_view{}, control.TargetUseSourceValue && source.HasAddress ? source.AddressValue : 0);
+                return false;
+            case RuntimeControlTarget::ControlEnabled:
+                if (RuntimeControlRule* target = findControl(control.TargetControlId); target && target != &control) { const bool changed = target->RuntimeEnabled != control.TargetBool; target->RuntimeEnabled = control.TargetBool; return changed; }
+                return false;
+            case RuntimeControlTarget::BindingRefresh: if (RuntimeBinding* target = findBinding(control.TargetBindingId); target && target != &source) return applyBindingOperation(*target, RuntimeBindingOperation::Refresh); return false;
+            case RuntimeControlTarget::BindingForceUpdate: if (RuntimeBinding* target = findBinding(control.TargetBindingId); target && target != &source) return applyBindingOperation(*target, RuntimeBindingOperation::ForceUpdate); return false;
+            case RuntimeControlTarget::BindingInvalidate: if (RuntimeBinding* target = findBinding(control.TargetBindingId); target && target != &source) return applyBindingOperation(*target, RuntimeBindingOperation::Invalidate); return false;
+            case RuntimeControlTarget::BindingResetState: if (RuntimeBinding* target = findBinding(control.TargetBindingId); target && target != &source) return applyBindingOperation(*target, RuntimeBindingOperation::ResetState); return false;
+            case RuntimeControlTarget::BindingRetryRegisterCapture: if (RuntimeBinding* target = findBinding(control.TargetBindingId); target && target != &source) return applyBindingOperation(*target, RuntimeBindingOperation::RetryRegisterCapture); return false;
+            case RuntimeControlTarget::BindingRescanPattern: if (RuntimeBinding* target = findBinding(control.TargetBindingId); target && target != &source) return applyBindingOperation(*target, RuntimeBindingOperation::RescanPattern); return false;
+            case RuntimeControlTarget::BindingRebindProcess: if (RuntimeBinding* target = findBinding(control.TargetBindingId); target && target != &source) return applyBindingOperation(*target, RuntimeBindingOperation::RebindProcess); return false;
+            case RuntimeControlTarget::BindingClearError: if (RuntimeBinding* target = findBinding(control.TargetBindingId); target && target != &source) return applyBindingOperation(*target, RuntimeBindingOperation::ClearError); return false;
+            }
+            return false;
+        }
+
+        static bool evaluateControlCondition(RuntimeControlRule& control, const RuntimeBinding& source) noexcept
+        {
+            const float value = source.Value;
             const float a = control.ValueA;
             const float b = control.ValueB;
             const float lo = std::min(a, b);
@@ -7442,16 +9190,45 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 active = control.ConditionActive ? value < lo + h || value > hi - h : value < lo || value > hi;
                 break;
             case RuntimeControlCondition::RisingEdge:
-                active = control.PreviousInitialized && control.PreviousValue < a && value >= a;
+                active = control.PreviousInitialized ? control.PreviousValue < a && value >= a : control.FireOnFirstSample && value >= a;
                 break;
             case RuntimeControlCondition::FallingEdge:
-                active = control.PreviousInitialized && control.PreviousValue > a && value <= a;
+                active = control.PreviousInitialized ? control.PreviousValue > a && value <= a : control.FireOnFirstSample && value <= a;
+                break;
+            case RuntimeControlCondition::OnChange:
+            {
+                const bool numeric = control.PreviousInitialized && std::abs(value - control.PreviousValue) > tolerance;
+                const bool text = source.HasString && control.PreviousStringInitialized && source.StringValue != control.PreviousString;
+                active = control.PreviousInitialized || control.PreviousStringInitialized ? numeric || text : control.FireOnFirstSample;
+                break;
+            }
+            case RuntimeControlCondition::ChangedTo:
+                active = std::abs(value - a) <= tolerance && (control.PreviousInitialized ? std::abs(control.PreviousValue - a) > tolerance : control.FireOnFirstSample);
+                break;
+            case RuntimeControlCondition::ChangedFrom:
+                active = control.PreviousInitialized && std::abs(control.PreviousValue - a) <= tolerance && std::abs(value - a) > tolerance;
+                break;
+            case RuntimeControlCondition::BecomesTrue:
+                active = value >= 0.5f && (control.PreviousInitialized ? control.PreviousValue < 0.5f : control.FireOnFirstSample);
+                break;
+            case RuntimeControlCondition::BecomesFalse:
+                active = value < 0.5f && (control.PreviousInitialized ? control.PreviousValue >= 0.5f : control.FireOnFirstSample);
+                break;
+            case RuntimeControlCondition::StringEqual:
+                active = source.HasString && source.StringValue == control.StringCompare;
+                break;
+            case RuntimeControlCondition::StringNotEqual:
+                active = source.HasString && source.StringValue != control.StringCompare;
+                break;
+            case RuntimeControlCondition::StringContains:
+                active = source.HasString && source.StringValue.find(control.StringCompare) != std::string::npos;
                 break;
             }
 
             control.PreviousValue = value;
             control.PreviousInitialized = true;
-            control.ConditionActive = control.Condition == RuntimeControlCondition::RisingEdge || control.Condition == RuntimeControlCondition::FallingEdge ? false : active;
+            if (source.HasString) { control.PreviousString = source.StringValue; control.PreviousStringInitialized = true; }
+            control.ConditionActive = runtimeControlConditionIsEvent(control.Condition) ? false : active;
             return active;
         }
 
@@ -7479,6 +9256,237 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             }
         }
 
+        bool resolveObjectPointer(RuntimeObjectPointer& pointer)
+        {
+            pointer.Resolved = false; pointer.Address = 0; pointer.ProcessId = 0; pointer.Provenance.clear();
+            if (!pointer.Enabled) { pointer.Status = "disabled"; return false; }
+            RuntimeObjectDescriptor* descriptor = findObject(pointer.DescriptorId);
+            if (!descriptor || !descriptor->Enabled) { pointer.Status = "descriptor model is missing or disabled"; return false; }
+            RuntimeBinding* base = findBinding(pointer.BaseBindingId);
+            if (!base || !base->Enabled || !base->HasAddress || base->AddressValue == 0) { pointer.Status = "base address binding is not ready"; return false; }
+            RuntimeBinding* process = pointer.ProcessBindingId ? findBinding(pointer.ProcessBindingId) : base;
+            if (!process || process->ProcessId <= 0 || !runtimeProcessIsAlive(static_cast<pid_t>(process->ProcessId))) { pointer.Status = "process binding is not alive"; return false; }
+            pointer.Address = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(base->AddressValue) + pointer.BaseOffset);
+            pointer.ProcessId = static_cast<pid_t>(process->ProcessId);
+            pointer.Resolved = pointer.Address != 0;
+            pointer.Provenance = base->AddressProvenance;
+            pointer.Provenance.push_back(std::string("binding ") + base->Name + " -> " + runtimeHexAddress(base->AddressValue));
+            if (pointer.BaseOffset != 0) pointer.Provenance.push_back("base offset " + std::to_string(pointer.BaseOffset) + " -> " + runtimeHexAddress(pointer.Address));
+            pointer.Provenance.push_back(std::string("model ") + descriptor->Name + " assigned @ " + runtimeHexAddress(pointer.Address));
+            if (!pointer.Resolved) { pointer.Status = "resolved address is null"; return false; }
+            std::size_t size = 0; runtimeObjectFieldOffset(*descriptor, 0, &size);
+            std::ostringstream status; status << runtimeHexAddress(pointer.Address) << "  pid " << pointer.ProcessId << "  model " << descriptor->Name << "  size " << size << " B"; pointer.Status = status.str();
+            return true;
+        }
+
+
+        static bool readRuntimeCString(const pid_t pid, const std::uintptr_t address, const std::size_t maxLength, std::string& result, std::string& error)
+        {
+            result.clear(); if (address == 0) { error = "null string pointer"; return false; }
+            const std::size_t cap = std::clamp<std::size_t>(maxLength, 1, 4096); std::vector<std::uint8_t> bytes(cap);
+            iovec local{bytes.data(), bytes.size()}; iovec remote{reinterpret_cast<void*>(address), bytes.size()}; errno = 0;
+            const ssize_t count = ::process_vm_readv(pid, &local, 1, &remote, 1, 0); if (count <= 0) { error = std::strerror(errno); return false; }
+            const auto end = std::find(bytes.begin(), bytes.begin() + count, 0); result.assign(reinterpret_cast<const char*>(bytes.data()), static_cast<std::size_t>(end - bytes.begin())); error.clear(); return true;
+        }
+
+        static bool readRuntimeWString(const pid_t pid, const std::uintptr_t address, const std::size_t maxLength, std::string& result, std::string& error)
+        {
+            result.clear(); if (address == 0) { error = "null wide string pointer"; return false; }
+            const std::size_t cap = std::clamp<std::size_t>(maxLength, 1, 2048); std::vector<wchar_t> chars(cap);
+            iovec local{chars.data(), chars.size() * sizeof(wchar_t)}; iovec remote{reinterpret_cast<void*>(address), chars.size() * sizeof(wchar_t)}; errno = 0;
+            const ssize_t count = ::process_vm_readv(pid, &local, 1, &remote, 1, 0); if (count <= 0) { error = std::strerror(errno); return false; }
+            const std::size_t available = static_cast<std::size_t>(count) / sizeof(wchar_t);
+            for (std::size_t i = 0; i < available && chars[i] != 0; ++i)
+            {
+                const std::uint32_t cp = static_cast<std::uint32_t>(chars[i]);
+                if (cp < 0x80) result.push_back(static_cast<char>(cp));
+                else if (cp < 0x800) { result.push_back(static_cast<char>(0xC0 | (cp >> 6))); result.push_back(static_cast<char>(0x80 | (cp & 0x3F))); }
+                else if (cp < 0x10000) { result.push_back(static_cast<char>(0xE0 | (cp >> 12))); result.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F))); result.push_back(static_cast<char>(0x80 | (cp & 0x3F))); }
+                else { result.push_back('?'); }
+            }
+            error.clear(); return true;
+        }
+
+        bool readObjectField(RuntimeBinding& binding, float& output)
+        {
+            binding.HasAddress = false; binding.AddressProvenance.clear(); binding.HasString = false; binding.StringValue.clear();
+            RuntimeObjectPointer* pointer = findPointer(binding.ObjectPointerId);
+            RuntimeObjectDescriptor* object = binding.ObjectId ? findObject(binding.ObjectId) : pointer ? findObject(pointer->DescriptorId) : nullptr;
+            if (!pointer && object)
+                for (auto& candidate : _pointers) if (candidate.DescriptorId == object->Id && candidate.Enabled) { pointer = &candidate; binding.ObjectPointerId = candidate.Id; break; }
+            if (!object) { binding.Error = "object descriptor model is missing"; return false; }
+            if (!pointer) { binding.Error = "object has no pointer assignment"; return false; }
+            if (!resolveObjectPointer(*pointer)) { binding.Error = pointer->Status; return false; }
+            RuntimeObjectField* field = findObjectField(*object, binding.ObjectFieldId);
+            if (!field || !field->Enabled) { binding.Error = "object field is missing or disabled"; return false; }
+            if (runtimeObjectFieldIsFiller(field->Type)) { binding.Error = "filler fields are layout-only and cannot be read"; return false; }
+            const std::size_t offset = runtimeObjectFieldOffset(*object, field->Id, &object->Size);
+            if (offset == std::numeric_limits<std::size_t>::max()) { binding.Error = "object field offset could not be resolved"; return false; }
+            const std::uintptr_t address = pointer->Address + offset; binding.ProcessId = static_cast<int>(pointer->ProcessId); binding.AddressValue = address; binding.HasAddress = true; binding.AddressProvenance = pointer->Provenance;
+            binding.AddressProvenance.push_back(std::string(object->Name) + "." + field->Name + " +0x" + [&]{ std::ostringstream ss; ss << std::hex << offset; return ss.str(); }() + " @ " + runtimeHexAddress(address));
+            std::string error;
+#define QUARTZ_READ_OBJECT(type) do { type value{}; if (!readProcessMemoryValue(pointer->ProcessId, address, value, error)) { binding.HasAddress = false; binding.Error = std::move(error); return false; } output = static_cast<float>(value); } while (false)
+            switch (field->Type)
+            {
+            case RuntimeObjectFieldType::U8: QUARTZ_READ_OBJECT(std::uint8_t); break;
+            case RuntimeObjectFieldType::I8: QUARTZ_READ_OBJECT(std::int8_t); break;
+            case RuntimeObjectFieldType::U16: QUARTZ_READ_OBJECT(std::uint16_t); break;
+            case RuntimeObjectFieldType::I16: QUARTZ_READ_OBJECT(std::int16_t); break;
+            case RuntimeObjectFieldType::U32: QUARTZ_READ_OBJECT(std::uint32_t); break;
+            case RuntimeObjectFieldType::I32: QUARTZ_READ_OBJECT(std::int32_t); break;
+            case RuntimeObjectFieldType::U64: QUARTZ_READ_OBJECT(std::uint64_t); break;
+            case RuntimeObjectFieldType::I64: QUARTZ_READ_OBJECT(std::int64_t); break;
+            case RuntimeObjectFieldType::Float: QUARTZ_READ_OBJECT(float); break;
+            case RuntimeObjectFieldType::Double: { double value{}; if (!readProcessMemoryValue(pointer->ProcessId, address, value, error)) { binding.HasAddress = false; binding.Error = std::move(error); return false; } output = static_cast<float>(value); break; }
+            case RuntimeObjectFieldType::Bool: { std::uint8_t value{}; if (!readProcessMemoryValue(pointer->ProcessId, address, value, error)) { binding.HasAddress = false; binding.Error = std::move(error); return false; } output = value ? 1.0f : 0.0f; break; }
+            case RuntimeObjectFieldType::Pointer: { std::uintptr_t value{}; if (!readProcessMemoryValue(pointer->ProcessId, address, value, error)) { binding.HasAddress = false; binding.Error = std::move(error); return false; } binding.AddressValue = value; binding.HasAddress = value != 0; output = value ? 1.0f : 0.0f; binding.AddressProvenance.push_back("dereference -> " + runtimeHexAddress(value)); break; }
+            case RuntimeObjectFieldType::CStringPointer:
+            case RuntimeObjectFieldType::WStringPointer:
+            {
+                std::uintptr_t value{}; if (!readProcessMemoryValue(pointer->ProcessId, address, value, error)) { binding.HasAddress = false; binding.Error = std::move(error); return false; }
+                binding.AddressValue = value; binding.HasAddress = value != 0; binding.AddressProvenance.push_back("string pointer -> " + runtimeHexAddress(value));
+                const bool ok = field->Type == RuntimeObjectFieldType::CStringPointer ? readRuntimeCString(pointer->ProcessId, value, field->StringMaxLength, binding.StringValue, error) : readRuntimeWString(pointer->ProcessId, value, field->StringMaxLength, binding.StringValue, error);
+                if (!ok) { binding.Error = error; return false; } binding.HasString = true; output = static_cast<float>(binding.StringValue.size()); break;
+            }
+            case RuntimeObjectFieldType::FixedCString:
+            case RuntimeObjectFieldType::FixedWString:
+            {
+                const bool ok = field->Type == RuntimeObjectFieldType::FixedCString ? readRuntimeCString(pointer->ProcessId, address, field->FixedElementCount, binding.StringValue, error) : readRuntimeWString(pointer->ProcessId, address, field->FixedElementCount, binding.StringValue, error);
+                if (!ok) { binding.Error = error; return false; } binding.HasString = true; output = static_cast<float>(binding.StringValue.size()); break;
+            }
+            default: binding.Error = "unsupported object field type"; return false;
+            }
+#undef QUARTZ_READ_OBJECT
+            binding.Error.clear(); return true;
+        }
+
+        std::optional<float> referenceValue(const RuntimeSourceReference& reference) const noexcept
+        {
+            if (!reference.Enabled || reference.Id == 0) return std::nullopt;
+            if (reference.Kind == RuntimeReferenceKind::Binding)
+            {
+                const RuntimeBinding* binding = findBinding(reference.Id);
+                if (!binding) return std::nullopt;
+                switch (reference.Signal)
+                {
+                case 1: return binding->RawValue;
+                case 2: return binding->HasValue ? 1.0f : 0.0f;
+                case 3: return binding->LastReadSucceeded ? 1.0f : 0.0f;
+                case 4: return binding->Enabled && binding->RuntimeEnabled ? 1.0f : 0.0f;
+                case 5: return static_cast<float>(binding->Priority);
+                case 6: return binding->HasAddress ? 1.0f : 0.0f;
+                case 7: return binding->Error.empty() ? 0.0f : 1.0f;
+                case 8: return binding->LastSuccessTime > 0.0 ? static_cast<float>(std::max(_lastRuntimeTime - binding->LastSuccessTime, 0.0)) : std::numeric_limits<float>::infinity();
+                default: return binding->HasValue ? std::optional<float>(binding->Value) : std::nullopt;
+                }
+            }
+            const RuntimeControlRule* control = findControl(reference.Id);
+            if (!control) return std::nullopt;
+            switch (reference.Signal)
+            {
+            case 1: return control->TriggeredThisFrame ? 1.0f : 0.0f;
+            case 2: return control->Enabled ? 1.0f : 0.0f;
+            case 3: return static_cast<float>(control->TriggerCount);
+            case 4: return static_cast<float>(control->Priority);
+            case 5: return control->LastTriggerTime > 0.0 ? static_cast<float>(std::max(_lastRuntimeTime - control->LastTriggerTime, 0.0)) : std::numeric_limits<float>::infinity();
+            case 6:
+            {
+                const RuntimeBinding* source = findBinding(control->SourceBindingId);
+                return source && source->HasValue ? std::optional<float>(source->Value) : std::nullopt;
+            }
+            default: return control->ConditionActive ? 1.0f : 0.0f;
+            }
+        }
+
+        static bool compareRuntimeValue(const RuntimeCompareCondition condition, const float value, const float a, const float b, const float tolerance) noexcept
+        {
+            const float lo = std::min(a, b), hi = std::max(a, b), t = std::max(tolerance, 0.000001f);
+            switch (condition)
+            {
+            case RuntimeCompareCondition::Equal: return std::abs(value - a) <= t;
+            case RuntimeCompareCondition::NotEqual: return std::abs(value - a) > t;
+            case RuntimeCompareCondition::Less: return value < a;
+            case RuntimeCompareCondition::LessEqual: return value <= a;
+            case RuntimeCompareCondition::Greater: return value > a;
+            case RuntimeCompareCondition::GreaterEqual: return value >= a;
+            case RuntimeCompareCondition::Between: return value >= lo && value <= hi;
+            case RuntimeCompareCondition::Outside: return value < lo || value > hi;
+            }
+            return false;
+        }
+
+        bool readAggregate(RuntimeBinding& binding, float& output) const
+        {
+            std::vector<std::pair<float, float>> values;
+            values.reserve(binding.References.size());
+            for (const auto& reference : binding.References)
+                if (const auto value = referenceValue(reference)) values.emplace_back(*value, reference.Weight);
+            if (values.empty()) { binding.Error = "aggregate has no readable members"; return false; }
+            switch (binding.AggregateOperation)
+            {
+            case RuntimeAggregateOperation::Sum:
+                output = std::accumulate(values.begin(), values.end(), 0.0f, [](const float total, const auto& item) { return total + item.first * item.second; });
+                break;
+            case RuntimeAggregateOperation::Average:
+            {
+                float weighted = 0.0f, weights = 0.0f;
+                for (const auto& [value, weight] : values) { weighted += value * weight; weights += std::abs(weight); }
+                output = weights > 0.000001f ? weighted / weights : 0.0f;
+                break;
+            }
+            case RuntimeAggregateOperation::Minimum:
+                output = std::min_element(values.begin(), values.end(), [](const auto& a, const auto& b) { return a.first < b.first; })->first;
+                break;
+            case RuntimeAggregateOperation::Maximum:
+                output = std::max_element(values.begin(), values.end(), [](const auto& a, const auto& b) { return a.first < b.first; })->first;
+                break;
+            case RuntimeAggregateOperation::Product:
+                output = 1.0f; for (const auto& [value, weight] : values) output *= value * weight;
+                break;
+            case RuntimeAggregateOperation::Count: output = static_cast<float>(values.size()); break;
+            case RuntimeAggregateOperation::CountTruthy: output = static_cast<float>(std::count_if(values.begin(), values.end(), [](const auto& item) { return item.first >= 0.5f; })); break;
+            case RuntimeAggregateOperation::FractionTruthy: output = static_cast<float>(std::count_if(values.begin(), values.end(), [](const auto& item) { return item.first >= 0.5f; })) / static_cast<float>(values.size()); break;
+            case RuntimeAggregateOperation::Any: output = std::ranges::any_of(values, [](const auto& item) { return item.first >= 0.5f; }) ? 1.0f : 0.0f; break;
+            case RuntimeAggregateOperation::All: output = std::ranges::all_of(values, [](const auto& item) { return item.first >= 0.5f; }) ? 1.0f : 0.0f; break;
+            }
+            binding.Error.clear();
+            return true;
+        }
+
+        bool readMassCompare(RuntimeBinding& binding, float& output) const
+        {
+            std::vector<bool> matches;
+            matches.reserve(binding.References.size());
+            for (const auto& reference : binding.References)
+            {
+                const auto value = referenceValue(reference);
+                if (!value) continue;
+                const RuntimeCompareCondition condition = reference.UseOwnComparison ? reference.CompareCondition : binding.CompareCondition;
+                const float a = reference.UseOwnComparison ? reference.CompareA : binding.CompareA;
+                const float b = reference.UseOwnComparison ? reference.CompareB : binding.CompareB;
+                const float tolerance = reference.UseOwnComparison ? reference.CompareTolerance : binding.CompareTolerance;
+                matches.push_back(compareRuntimeValue(condition, *value, a, b, tolerance));
+            }
+            if (matches.empty()) { binding.Error = "mass compare has no readable members"; return false; }
+            const std::size_t count = static_cast<std::size_t>(std::count(matches.begin(), matches.end(), true));
+            switch (binding.CompareResult)
+            {
+            case RuntimeMassCompareResult::Any: output = count != 0 ? 1.0f : 0.0f; break;
+            case RuntimeMassCompareResult::All: output = count == matches.size() ? 1.0f : 0.0f; break;
+            case RuntimeMassCompareResult::None: output = count == 0 ? 1.0f : 0.0f; break;
+            case RuntimeMassCompareResult::Count: output = static_cast<float>(count); break;
+            case RuntimeMassCompareResult::Fraction: output = static_cast<float>(count) / static_cast<float>(matches.size()); break;
+            case RuntimeMassCompareResult::FirstMatchIndex:
+            {
+                const auto it = std::find(matches.begin(), matches.end(), true);
+                output = it == matches.end() ? -1.0f : static_cast<float>(std::distance(matches.begin(), it));
+                break;
+            }
+            }
+            binding.Error.clear();
+            return true;
+        }
+
         bool readSource(RuntimeBinding& binding, const RuntimeSignalContext& context, float& output)
         {
             const auto signal = std::max(binding.Signal, 0);
@@ -7487,10 +9495,21 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             case RuntimeSourceKind::Constant:
                 output = binding.Constant;
                 return true;
+            case RuntimeSourceKind::Unbound:
+                output = binding.UnboundValue;
+                binding.Error.clear();
+                return true;
             case RuntimeSourceKind::Time:
                 if (signal == 1) output = std::sin(static_cast<float>(context.Time));
                 else if (signal == 2) output = std::cos(static_cast<float>(context.Time));
                 else if (signal == 3) output = static_cast<float>(context.Time - std::floor(context.Time));
+                else if (signal == 4)
+                {
+                    const float saw = static_cast<float>(context.Time - std::floor(context.Time));
+                    output = 1.0f - std::abs(saw * 2.0f - 1.0f);
+                }
+                else if (signal == 5) output = std::fmod(context.Time, 1.0) < 0.5 ? 1.0f : 0.0f;
+                else if (signal == 6) output = std::fmod(context.Time, 0.5) < 0.25 ? 1.0f : 0.0f;
                 else output = static_cast<float>(context.Time);
                 return true;
             case RuntimeSourceKind::Audio:
@@ -7500,6 +9519,19 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 else if (signal == 4) output = context.SmoothedBands ? std::accumulate(context.SmoothedBands->begin() + 11, context.SmoothedBands->end(), 0.0f) / 5.0f : 0.0f;
                 else if (signal == 5) output = context.EffectiveGain;
                 else if (signal == 6) output = context.GainCorrection;
+                else if (signal == 7) output = context.SmoothedBands ? std::accumulate(context.SmoothedBands->begin(), context.SmoothedBands->end(), 0.0f) / static_cast<float>(context.SmoothedBands->size()) : 0.0f;
+                else if (signal == 8) output = context.SmoothedBands ? *std::max_element(context.SmoothedBands->begin(), context.SmoothedBands->end()) : 0.0f;
+                else if (signal == 9)
+                {
+                    if (!context.SmoothedBands) output = 0.0f;
+                    else
+                    {
+                        const float bass = std::accumulate(context.SmoothedBands->begin(), context.SmoothedBands->begin() + 4, 0.0f) / 4.0f;
+                        const float treble = std::accumulate(context.SmoothedBands->begin() + 11, context.SmoothedBands->end(), 0.0f) / 5.0f;
+                        output = bass / std::max(treble, 0.0001f);
+                    }
+                }
+                else if (signal == 10) output = context.SmoothedBands ? *std::max_element(context.SmoothedBands->begin(), context.SmoothedBands->begin() + 4) : 0.0f;
                 else output = context.Audio.Rms;
                 return true;
             case RuntimeSourceKind::Media:
@@ -7509,6 +9541,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 else if (signal == 2) output = color.G / 255.0f;
                 else if (signal == 3) output = color.B / 255.0f;
                 else if (signal == 4) output = context.MediaPlaying ? 1.0f : 0.0f;
+                else if (signal == 5) { binding.StringValue = context.MediaTitle; binding.HasString = true; output = static_cast<float>(binding.StringValue.size()); }
                 else output = context.MediaAmount;
                 return true;
             }
@@ -7516,11 +9549,19 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 if (signal == 0) output = context.Keys.CapsLockActive ? 1.0f : 0.0f;
                 else if (signal == 1) output = context.Keys.ScrollLockActive ? 1.0f : 0.0f;
                 else if (signal == 2) output = std::accumulate(context.Keys.Down.begin(), context.Keys.Down.end(), 0.0f) / static_cast<float>(MatrixSize);
-                else
+                else if (signal == 3)
                 {
                     float pulse = 0.0f;
                     for (const auto& event : context.Keys.Events) if (event.Valid > 0.5f) pulse = std::max(pulse, std::exp(-std::max(static_cast<float>(context.Time) - event.Time, 0.0f) * 6.0f));
                     output = pulse;
+                }
+                else if (signal == 4) output = std::accumulate(context.Keys.Down.begin(), context.Keys.Down.end(), 0.0f);
+                else if (signal == 5) output = static_cast<float>(std::count_if(context.Keys.Events.begin(), context.Keys.Events.end(), [](const auto& event) { return event.Valid > 0.5f; }));
+                else
+                {
+                    const auto it = std::max_element(context.Keys.Events.begin(), context.Keys.Events.end(), [](const auto& a, const auto& b) { return a.Valid < b.Valid || (a.Valid == b.Valid && a.Time < b.Time); });
+                    if (it == context.Keys.Events.end() || it->Valid <= 0.5f) output = -1.0f;
+                    else output = signal == 6 ? it->Column : it->Row;
                 }
                 return true;
             case RuntimeSourceKind::RPC:
@@ -7529,6 +9570,13 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 else if (signal == 2) output = (context.Performance.BeginScanTicks + context.Performance.ScanTicks + context.Performance.EndScanTicks) * 1'000'000.0f / context.Performance.CoreClock;
                 else if (signal == 3) output = context.Performance.RGBTicks * 1'000'000.0f / context.Performance.CoreClock;
                 else if (signal == 4) output = context.Performance.AverageScanPeriodTicks * 1'000'000.0f / context.Performance.CoreClock;
+                else if (signal == 5) output = context.Performance.StateUpdateTicks * 1'000'000.0f / context.Performance.CoreClock;
+                else if (signal == 6) output = context.Performance.HIDTicks * 1'000'000.0f / context.Performance.CoreClock;
+                else if (signal == 7)
+                {
+                    const std::uint32_t total = context.Performance.BeginScanTicks + context.Performance.ScanTicks + context.Performance.EndScanTicks + context.Performance.StateUpdateTicks + context.Performance.HIDTicks + context.Performance.RGBTicks;
+                    output = total * 1'000'000.0f / context.Performance.CoreClock;
+                }
                 else
                 {
                     const std::uint32_t total = context.Performance.BeginScanTicks + context.Performance.ScanTicks + context.Performance.EndScanTicks + context.Performance.StateUpdateTicks + context.Performance.HIDTicks;
@@ -7536,7 +9584,9 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 }
                 return true;
             case RuntimeSourceKind::Host:
-                output = context.AppCpu;
+                if (signal == 1) output = context.DeltaTime * 1000.0f;
+                else if (signal == 2) output = context.DeltaTime > 0.000001f ? 1.0f / context.DeltaTime : 0.0f;
+                else output = context.AppCpu;
                 return true;
             case RuntimeSourceKind::USB:
                 if (signal == 0) output = context.USBConnected ? 1.0f : 0.0f;
@@ -7544,18 +9594,24 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 else if (signal == 2) output = static_cast<float>(context.USBRates.RxKiB);
                 else if (signal == 3) output = static_cast<float>(context.USBRates.TxTransfers);
                 else if (signal == 4) output = static_cast<float>(context.USBRates.RxTransfers);
-                else output = static_cast<float>(context.USB.TxErrors + context.USB.RxErrors);
+                else if (signal == 5) output = static_cast<float>(context.USB.TxErrors + context.USB.RxErrors);
+                else if (signal == 6) output = static_cast<float>(context.USB.TxBytes / (1024.0 * 1024.0));
+                else if (signal == 7) output = static_cast<float>(context.USB.RxBytes / (1024.0 * 1024.0));
+                else if (signal == 8) output = static_cast<float>(context.USB.TxErrors);
+                else output = static_cast<float>(context.USB.RxErrors);
                 return true;
             case RuntimeSourceKind::RGB:
             {
                 if (!context.Framebuffer) { binding.Error = "no framebuffer"; return false; }
-                float r = 0.0f, g = 0.0f, b = 0.0f, lit = 0.0f;
+                float r = 0.0f, g = 0.0f, b = 0.0f, lit = 0.0f, peak = 0.0f, peakLuma = 0.0f;
                 for (std::size_t row = 0; row < ActiveProbeRows; ++row)
                     for (std::size_t column = 0; column < Columns; ++column)
                     {
                         const auto& color = (*context.Framebuffer)[row * Columns + column];
                         r += color.R; g += color.G; b += color.B;
                         if (color.R || color.G || color.B) lit += 1.0f;
+                        peak = std::max(peak, std::max({color.R, color.G, color.B}) / 255.0f);
+                        peakLuma = std::max(peakLuma, (color.R * 0.2126f + color.G * 0.7152f + color.B * 0.0722f) / 255.0f);
                     }
                 constexpr float Count = static_cast<float>(ActiveProbeRows * Columns);
                 r /= 255.0f * Count; g /= 255.0f * Count; b /= 255.0f * Count;
@@ -7563,11 +9619,15 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 else if (signal == 2) output = r;
                 else if (signal == 3) output = g;
                 else if (signal == 4) output = b;
+                else if (signal == 5) output = peak;
+                else if (signal == 6) output = peakLuma;
                 else output = r * 0.2126f + g * 0.7152f + b * 0.0722f;
                 return true;
             }
             case RuntimeSourceKind::NativeProcess:
                 return readNativeBinding(binding, output);
+            case RuntimeSourceKind::NativeAddress:
+                return readNativeAddressBinding(binding, output);
             case RuntimeSourceKind::BindingStatus:
             {
                 RuntimeBinding* target = findBinding(binding.StatusBindingId);
@@ -7575,17 +9635,139 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 if (signal == 0) output = target->HasValue ? 1.0f : 0.0f;
                 else if (signal == 1) output = target->LastReadSucceeded ? 1.0f : 0.0f;
                 else if (signal == 2) output = target->Enabled && target->RuntimeEnabled ? 1.0f : 0.0f;
-                else if (signal == 3) output = target->Source == RuntimeSourceKind::NativeProcess && runtimeProcessIsAlive(static_cast<pid_t>(target->ProcessId)) ? 1.0f : 0.0f;
+                else if (signal == 3) output = target->ProcessId > 0 && runtimeProcessIsAlive(static_cast<pid_t>(target->ProcessId)) ? 1.0f : 0.0f;
                 else if (signal == 4)
                 {
-                    if (target->Source != RuntimeSourceKind::NativeProcess) output = target->HasValue ? 1.0f : 0.0f;
+                    if (target->Source != RuntimeSourceKind::NativeProcess && target->Source != RuntimeSourceKind::NativeAddress) output = target->HasValue ? 1.0f : 0.0f;
                     else if (target->AddressMode == ProcessAddressMode::Signature) output = target->SignatureResolvedAddress != 0 ? 1.0f : 0.0f;
                     else output = target->LastReadSucceeded ? 1.0f : 0.0f;
                 }
-                else if (signal == 5) output = target->Source == RuntimeSourceKind::NativeProcess && target->AddressMode == ProcessAddressMode::Signature && target->SignatureResolve == SignatureResultMode::RegisterRelativeCapture && target->SignatureResolvedAddress != 0 ? 1.0f : 0.0f;
-                else output = target->Error.empty() ? 0.0f : 1.0f;
+                else if (signal == 5) output = (target->Source == RuntimeSourceKind::NativeProcess || target->Source == RuntimeSourceKind::NativeAddress) && target->AddressMode == ProcessAddressMode::Signature && target->SignatureResolve == SignatureResultMode::RegisterRelativeCapture && target->SignatureCapturedRegister != 0 ? 1.0f : 0.0f;
+                else if (signal == 6) output = target->Error.empty() ? 0.0f : 1.0f;
+                else if (signal == 7) output = target->LastSuccessTime > 0.0 ? static_cast<float>(std::max(context.Time - target->LastSuccessTime, 0.0)) : std::numeric_limits<float>::infinity();
+                else if (signal == 8) output = static_cast<float>(target->Priority);
+                else output = target->HasAddress ? 1.0f : 0.0f;
                 binding.Error.clear();
                 return true;
+            }
+            case RuntimeSourceKind::BindingValue:
+            {
+                RuntimeBinding* target = findBinding(binding.ValueBindingId);
+                if (!target || target == &binding) { binding.HasAddress = false; binding.AddressValue = 0; binding.Error = "source binding is missing"; return false; }
+                binding.HasAddress = target->HasAddress;
+                binding.AddressValue = target->HasAddress ? target->AddressValue : 0;
+                binding.AddressProvenance = target->AddressProvenance;
+                binding.HasString = target->HasString;
+                if (target->HasString) binding.StringValue = target->StringValue;
+                if (target->ProcessId > 0) binding.ProcessId = target->ProcessId;
+                if (signal == 1) output = target->RawValue;
+                else if (signal == 2) output = target->HasValue ? 1.0f : 0.0f;
+                else if (signal == 3) output = target->LastReadSucceeded ? 1.0f : 0.0f;
+                else if (signal == 4) output = target->Enabled && target->RuntimeEnabled ? 1.0f : 0.0f;
+                else if (signal == 5) output = static_cast<float>(target->Priority);
+                else
+                {
+                    if (!target->HasValue) { binding.Error = "source binding has no value yet"; return false; }
+                    output = target->Value;
+                }
+                binding.Error.clear();
+                return true;
+            }
+            case RuntimeSourceKind::ShaderState:
+                binding.HasString = signal == 0 || signal == 9;
+                if (signal == 0) binding.StringValue = context.CurrentShaderId; else if (signal == 9) binding.StringValue = _previousShaderId;
+                if (signal == 1) output = context.CurrentShaderPreset == 0 ? 1.0f : 0.0f;
+                else if (signal == 2) output = context.ShaderTransitionActive ? 1.0f : 0.0f;
+                else if (signal == 3) output = context.ShaderTransitionProgress;
+                else if (signal == 4) output = static_cast<float>(context.BaseColorMode);
+                else if (signal == 5) output = context.GlobalBrightness;
+                else if (signal == 6) output = context.SendFramebuffer ? 1.0f : 0.0f;
+                else if (signal == 7) output = static_cast<float>(context.ShaderFramebufferWidth);
+                else if (signal == 8) output = static_cast<float>(context.ShaderFramebufferHeight);
+                else if (signal == 9) output = static_cast<float>(_previousShaderPreset);
+                else output = static_cast<float>(context.CurrentShaderPreset);
+                return true;
+            case RuntimeSourceKind::ControlStatus:
+            {
+                RuntimeControlRule* control = findControl(binding.ControlStatusId);
+                if (!control) { binding.Error = "control target is missing"; return false; }
+                if (signal == 1) output = control->TriggeredThisFrame ? 1.0f : 0.0f;
+                else if (signal == 2) output = control->Enabled && control->RuntimeEnabled ? 1.0f : 0.0f;
+                else if (signal == 3) output = static_cast<float>(control->TriggerCount);
+                else if (signal == 4) output = control->LastTriggerTime > 0.0 ? static_cast<float>(std::max(context.Time - control->LastTriggerTime, 0.0)) : std::numeric_limits<float>::infinity();
+                else if (signal == 5) output = static_cast<float>(control->Priority);
+                else if (signal == 6)
+                {
+                    const RuntimeBinding* sourceBinding = findBinding(control->SourceBindingId);
+                    if (!sourceBinding || !sourceBinding->HasValue) { binding.Error = "control source binding has no value"; return false; }
+                    output = sourceBinding->Value;
+                }
+                else output = control->ConditionActive ? 1.0f : 0.0f;
+                binding.Error.clear();
+                return true;
+            }
+            case RuntimeSourceKind::Aggregate:
+                return readAggregate(binding, output);
+            case RuntimeSourceKind::MassCompare:
+                return readMassCompare(binding, output);
+            case RuntimeSourceKind::ObjectField:
+                return readObjectField(binding, output);
+            case RuntimeSourceKind::ObjectStatus:
+            {
+                RuntimeObjectPointer* pointer = findPointer(binding.ObjectPointerId);
+                if (!pointer && binding.ObjectId != 0)
+                {
+                    const auto it = std::ranges::find_if(_pointers, [&](const RuntimeObjectPointer& candidate) { return candidate.DescriptorId == binding.ObjectId; });
+                    if (it != _pointers.end()) { pointer = &*it; binding.ObjectPointerId = pointer->Id; }
+                }
+                if (!pointer) { binding.HasAddress = false; binding.AddressValue = 0; binding.Error = "pointer assignment is missing"; output = 0.0f; return signal == 0; }
+                RuntimeObjectDescriptor* object = findObject(pointer->DescriptorId);
+                if (!object) { binding.HasAddress = false; binding.AddressValue = 0; binding.Error = "descriptor model is missing"; output = 0.0f; return signal == 0; }
+                const bool resolved = resolveObjectPointer(*pointer);
+                runtimeObjectFieldOffset(*object, 0, &object->Size);
+                binding.ObjectId = object->Id;
+                binding.HasAddress = resolved;
+                binding.AddressValue = resolved ? pointer->Address : 0;
+                binding.AddressProvenance = pointer->Provenance;
+                if (pointer->ProcessId > 0) binding.ProcessId = pointer->ProcessId;
+                if (signal == 1) output = static_cast<float>(object->Size);
+                else if (signal == 2) output = static_cast<float>(std::count_if(object->Fields.begin(), object->Fields.end(), [](const auto& field) { return field.Enabled; }));
+                else if (signal == 3) output = pointer->ProcessId > 0 && runtimeProcessIsAlive(pointer->ProcessId) ? 1.0f : 0.0f;
+                else if (signal == 4) { const RuntimeBinding* base = findBinding(pointer->BaseBindingId); output = base && base->HasAddress ? 1.0f : 0.0f; }
+                else output = resolved ? 1.0f : 0.0f;
+                if (!resolved) binding.Error = pointer->Status; else binding.Error.clear();
+                return true;
+            }
+            case RuntimeSourceKind::ValueBank:
+            {
+                RuntimeValueBankEntry* value = findBankValue(binding.BankValueId);
+                if (!value || !value->Enabled || !value->HasValue) { binding.Error = "value bank entry is missing, disabled, or empty"; return false; }
+                binding.HasAddress = value->Type == RuntimeBankValueType::Address && value->Address != 0;
+                binding.AddressValue = binding.HasAddress ? value->Address : 0;
+                binding.HasString = value->Type == RuntimeBankValueType::String;
+                if (binding.HasString) binding.StringValue = value->String;
+                if (signal == 1) output = value->Type == RuntimeBankValueType::Boolean ? (value->Boolean ? 1.0f : 0.0f) : bankNumericValue(*value) >= 0.5f ? 1.0f : 0.0f;
+                else if (signal == 2) output = value->Type == RuntimeBankValueType::Integer ? static_cast<float>(value->Integer) : bankNumericValue(*value);
+                else if (signal == 3) output = value->HasValue ? 1.0f : 0.0f;
+                else if (signal == 4) output = value->ChangedThisFrame ? 1.0f : 0.0f;
+                else if (signal == 5) output = value->Type == RuntimeBankValueType::String ? static_cast<float>(std::strlen(value->String)) : 0.0f;
+                else if (signal == 6) output = value->Type == RuntimeBankValueType::Address && value->Address != 0 ? 1.0f : 0.0f;
+                else output = bankNumericValue(*value);
+                binding.Error.clear();
+                return true;
+            }
+            case RuntimeSourceKind::StringConstant:
+                binding.StringValue = binding.StringConstant; binding.HasString = true; output = signal == 1 ? static_cast<float>(binding.StringValue.size()) : (binding.StringValue.empty() ? 0.0f : 1.0f); binding.Error.clear(); return true;
+            case RuntimeSourceKind::ProfileState:
+            {
+                if (signal == 0) { output = static_cast<float>(_activeProfileId); binding.Error.clear(); return true; }
+                const RuntimeBindingProfile* profile = findProfile(binding.ProfileId);
+                if (!profile) { binding.Error = "profile is missing"; return false; }
+                if (signal == 1) output = _activeProfileId == profile->Id ? 1.0f : 0.0f;
+                else if (signal == 2) output = profile->Enabled ? 1.0f : 0.0f;
+                else if (signal == 3) output = static_cast<float>(profile->BindingIds.size());
+                else output = static_cast<float>(profile->ControlIds.size());
+                binding.StringValue = profile->Name; binding.HasString = true; binding.Error.clear(); return true;
             }
             }
             return false;
@@ -7594,13 +9776,31 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         std::filesystem::path _path = runtimeBindingsPath();
         std::vector<RuntimeBinding> _bindings;
         std::vector<RuntimeControlRule> _controls;
+        std::vector<RuntimeObjectDescriptor> _objects;
+        std::vector<RuntimeObjectPointer> _pointers;
+        std::vector<RuntimeValueBankEntry> _bank;
+        std::vector<RuntimeBindingProfile> _profiles;
         std::uint64_t _nextBindingId = 1;
         std::uint64_t _nextControlId = 1;
+        std::uint64_t _nextBankValueId = 1;
+        std::uint64_t _nextProfileId = 1;
+        std::uint64_t _activeProfileId = 0;
+        std::uint64_t _nextObjectId = 1;
+        std::uint64_t _nextObjectFieldId = 1;
+        std::uint64_t _nextPointerId = 1;
+        int _controlPassLimit = 6;
         std::uint64_t _revision = 0;
         std::uint64_t _savedRevision = 0;
         USBStatsSnapshot _lastUSB{};
         RuntimeUSBRates _usbRates{};
+        RuntimeControlOutput _pendingOutput{};
+        double _frameTime = -1.0;
+        int _observedShaderPreset = -1;
+        int _previousShaderPreset = 0;
+        std::string _observedShaderId;
+        std::string _previousShaderId;
         double _rateTime = 0.0;
+        double _lastRuntimeTime = 0.0;
     };
 
     class RuntimeTelemetry
@@ -7874,7 +10074,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Preview-only neighboring-key color mixing; USB framebuffer data is unchanged.");
 
             ImGui::TableNextColumn();
-            ImGui::Text("Current shader: %s", settings.ShaderPresetIndex == 0 ? "Custom / current" : ShaderPresets[static_cast<std::size_t>(settings.ShaderPresetIndex - 1)].Name.c_str());
+            ImGui::Text("Current shader: %s", settings.ShaderPresetIndex == 0 ? "Custom / current" : ShaderPresets[static_cast<std::size_t>(settings.ShaderPresetIndex - 1)].Name.c_str()); ImGui::SameLine(); ImGui::TextDisabled("[%s]", settings.ShaderId.empty() ? "custom" : settings.ShaderId.c_str());
             ImGui::Text("Firmware: %s   QRPC: v%u", FirmwareVersion, static_cast<unsigned>(ProtocolVersion));
             ImGui::Text("VID:PID: %04X:%04X", VendorId, ProductId);
             ImGui::Text("Global brightness: %.0f%%   Preview interpolation: %.0f%%", settings.GlobalBrightness * 100.0f, settings.LiveOutputInterpolation * 100.0f);
@@ -8225,36 +10425,361 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         return changed;
     }
 
-    static bool drawRuntimeBinding(RuntimeBindingEngine& engine, ShaderFramebuffer& shaderFramebuffer, RuntimeBinding& binding, const std::size_t index, bool& erase)
+    static bool drawRuntimeBindingReferenceCombo(RuntimeBindingEngine& engine, const char* label, std::uint64_t& id, const std::uint64_t excludeId = 0, const bool unboundOnly = false)
+    {
+        bool changed = false;
+        const RuntimeBinding* selected = engine.findBinding(id);
+        ImGui::SetNextItemWidth(320.0f);
+        if (ImGui::BeginCombo(label, selected ? selected->Name : "<select binding>"))
+        {
+            if (ImGui::Selectable("<none>", id == 0)) { id = 0; changed = true; }
+            for (const auto& candidate : engine.bindings())
+            {
+                if (candidate.Id == excludeId || (unboundOnly && candidate.Source != RuntimeSourceKind::Unbound)) continue;
+                const bool isSelected = candidate.Id == id;
+                std::string display = std::string(candidate.Name) + "  [#" + std::to_string(candidate.Id) + ", p" + std::to_string(candidate.Priority) + "]";
+                if (ImGui::Selectable(display.c_str(), isSelected)) { id = candidate.Id; changed = true; }
+                if (isSelected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        return changed;
+    }
+
+    static bool drawRuntimeControlReferenceCombo(RuntimeBindingEngine& engine, const char* label, std::uint64_t& id)
+    {
+        bool changed = false;
+        const RuntimeControlRule* selected = engine.findControl(id);
+        ImGui::SetNextItemWidth(320.0f);
+        if (ImGui::BeginCombo(label, selected ? selected->Name : "<select control>"))
+        {
+            if (ImGui::Selectable("<none>", id == 0)) { id = 0; changed = true; }
+            for (const auto& candidate : engine.controls())
+            {
+                const bool isSelected = candidate.Id == id;
+                std::string display = std::string(candidate.Name) + "  [#" + std::to_string(candidate.Id) + ", p" + std::to_string(candidate.Priority) + "]";
+                if (ImGui::Selectable(display.c_str(), isSelected)) { id = candidate.Id; changed = true; }
+                if (isSelected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        return changed;
+    }
+
+    static bool drawRuntimeBankReferenceCombo(RuntimeBindingEngine& engine, const char* label, std::uint64_t& id)
+    {
+        bool changed = false;
+        const RuntimeValueBankEntry* selected = engine.findBankValue(id);
+        ImGui::SetNextItemWidth(300.0f);
+        if (ImGui::BeginCombo(label, selected ? selected->Name : "<select bank value>"))
+        {
+            if (ImGui::Selectable("<none>", id == 0)) { id = 0; changed = true; }
+            for (const auto& value : engine.bank())
+            {
+                const bool isSelected = value.Id == id;
+                std::string display = std::string(value.Name) + "  [" + runtimeBankValueTypeName(value.Type) + "]";
+                if (ImGui::Selectable(display.c_str(), isSelected)) { id = value.Id; changed = true; }
+                if (isSelected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        return changed;
+    }
+
+    static ImVec4 runtimeStateColor(const bool enabled, const bool good, const bool error = false, const bool waiting = false)
+    {
+        if (!enabled) return ImVec4(0.38f, 0.38f, 0.38f, 1.0f);
+        if (error) return ImVec4(0.92f, 0.18f, 0.18f, 1.0f);
+        if (waiting) return ImVec4(0.95f, 0.65f, 0.14f, 1.0f);
+        return good ? ImVec4(0.15f, 0.78f, 0.30f, 1.0f) : ImVec4(0.82f, 0.20f, 0.20f, 1.0f);
+    }
+
+    static bool runtimeBindingLooksBoolean(const RuntimeBinding& binding) noexcept
+    {
+        if (binding.Source == RuntimeSourceKind::MassCompare)
+            return binding.CompareResult == RuntimeMassCompareResult::Any || binding.CompareResult == RuntimeMassCompareResult::All || binding.CompareResult == RuntimeMassCompareResult::None;
+        if (binding.Source == RuntimeSourceKind::Aggregate)
+            return binding.AggregateOperation == RuntimeAggregateOperation::Any || binding.AggregateOperation == RuntimeAggregateOperation::All;
+        if (binding.Source == RuntimeSourceKind::BindingStatus) return (binding.Signal >= 0 && binding.Signal <= 6) || binding.Signal == 9;
+        if (binding.Source == RuntimeSourceKind::BindingValue) return binding.Signal >= 2 && binding.Signal <= 4;
+        if (binding.Source == RuntimeSourceKind::ControlStatus) return binding.Signal >= 0 && binding.Signal <= 2;
+        if (binding.Source == RuntimeSourceKind::ObjectStatus) return binding.Signal == 0 || binding.Signal == 3 || binding.Signal == 4;
+        if (binding.Source == RuntimeSourceKind::USB && binding.Signal == 0) return true;
+        if (binding.Source == RuntimeSourceKind::Keyboard && (binding.Signal == 0 || binding.Signal == 1)) return true;
+        if (binding.Source == RuntimeSourceKind::Media && binding.Signal == 4) return true;
+        if (binding.Source == RuntimeSourceKind::ShaderState && (binding.Signal == 1 || binding.Signal == 2 || binding.Signal == 6)) return true;
+        if (binding.Source == RuntimeSourceKind::ValueBank && (binding.Signal == 1 || binding.Signal == 3 || binding.Signal == 4 || binding.Signal == 6)) return true;
+        if (binding.Source == RuntimeSourceKind::StringConstant && binding.Signal == 0) return true;
+        if (binding.Source == RuntimeSourceKind::ProfileState && (binding.Signal == 1 || binding.Signal == 2)) return true;
+        return false;
+    }
+
+    static void drawRuntimeStateSquare(const char* id, const ImVec4 color)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, color);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, color);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, color);
+        ImGui::Button(id, ImVec2(11.0f, 11.0f));
+        ImGui::PopStyleColor(3);
+    }
+
+    static bool drawRuntimeActionList(RuntimeBindingEngine& engine, ShaderFramebuffer& shaderFramebuffer, std::vector<RuntimeAction>& actions, const std::uint64_t sourceBindingId, const bool controlOwner)
+    {
+        bool changed = false;
+        if (ImGui::SmallButton("Add action")) { actions.emplace_back(); actions.back().When = controlOwner ? RuntimeActionWhen::OnTrigger : RuntimeActionWhen::OnUpdate; changed = true; }
+        std::optional<std::size_t> erase;
+        for (std::size_t i = 0; i < actions.size(); ++i)
+        {
+            auto& action = actions[i];
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::Separator();
+            changed |= ImGui::Checkbox("##actionEnabled", &action.Enabled);
+            ImGui::SameLine(); ImGui::TextDisabled("Action %zu", i + 1);
+            ImGui::SameLine(); int when = static_cast<int>(action.When); ImGui::SetNextItemWidth(125.0f);
+            if (ImGui::Combo("##actionWhen", &when, "While active\0On trigger\0On update\0On change\0While truthy\0While falsy\0")) { action.When = static_cast<RuntimeActionWhen>(when); changed = true; }
+            ImGui::SameLine(); int target = static_cast<int>(action.Target); ImGui::SetNextItemWidth(170.0f);
+            if (ImGui::Combo("##actionTarget", &target, "Active shader\0Binding enabled\0Global brightness\0Send framebuffer\0Base color mode\0Material parameter\0Unbound binding value\0Value bank\0Control enabled\0Refresh binding\0Force binding update\0Invalidate binding\0Reset binding state\0Retry register capture\0Rescan binding pattern\0Rebind process\0Clear binding error\0")) { action.Target = static_cast<RuntimeActionTarget>(target); changed = true; }
+            ImGui::SameLine(); if (ImGui::SmallButton("Remove action")) erase = i;
+
+            const bool valueUseful = !runtimeActionTargetIsBindingOperation(action.Target);
+            if (valueUseful)
+            {
+                int mode = static_cast<int>(action.ValueMode); ImGui::SetNextItemWidth(180.0f);
+                if (ImGui::Combo("Value source", &mode, "Constant\0Owner/source value\0Another binding\0Value bank\0")) { action.ValueMode = static_cast<RuntimeActionValueMode>(mode); changed = true; }
+                if (action.ValueMode == RuntimeActionValueMode::BindingValue) changed |= drawRuntimeBindingReferenceCombo(engine, "Value binding", action.ValueBindingId, sourceBindingId);
+                else if (action.ValueMode == RuntimeActionValueMode::BankValue) changed |= drawRuntimeBankReferenceCombo(engine, "Value bank source", action.BankValueId);
+            }
+
+            if (action.Target == RuntimeActionTarget::ActiveShader)
+            {
+                if (action.ValueMode == RuntimeActionValueMode::Constant)
+                {
+                    const ShaderPreset* shaderById = action.ShaderId[0] ? findShaderPresetById(action.ShaderId) : nullptr;
+                    const char* preview = action.ShaderPresetIndex == -1 ? "<previous shader>" : shaderById ? shaderById->Name.c_str() : action.ShaderPresetIndex > 0 && action.ShaderPresetIndex <= static_cast<int>(ShaderPresets.size()) ? ShaderPresets[static_cast<std::size_t>(action.ShaderPresetIndex - 1)].Name.c_str() : "<select shader>";
+                    ImGui::SetNextItemWidth(300.0f);
+                    if (ImGui::BeginCombo("Shader", preview))
+                    {
+                        if (ImGui::Selectable("<previous shader>", action.ShaderPresetIndex == -1)) { action.ShaderPresetIndex = -1; action.ShaderId[0] = '\0'; changed = true; }
+                        for (std::size_t p = 0; p < ShaderPresets.size(); ++p) { const bool selected = action.ShaderPresetIndex == static_cast<int>(p + 1); if (ImGui::Selectable(ShaderPresets[p].Name.c_str(), selected)) { action.ShaderPresetIndex = static_cast<int>(p + 1); std::snprintf(action.ShaderId, sizeof(action.ShaderId), "%s", ShaderPresets[p].Id.c_str()); changed = true; } }
+                        ImGui::EndCombo();
+                    }
+                }
+                ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("Crossfade", &action.TransitionSeconds, 0.02f, 0.0f, 10.0f, "%.2f s");
+            }
+            else if (action.Target == RuntimeActionTarget::BindingEnabled)
+            {
+                changed |= drawRuntimeBindingReferenceCombo(engine, "Target binding", action.TargetBindingId, sourceBindingId);
+                if (action.ValueMode == RuntimeActionValueMode::Constant) changed |= ImGui::Checkbox("Enabled value", &action.BoolValue);
+            }
+            else if (action.Target == RuntimeActionTarget::GlobalBrightness)
+            {
+                if (action.ValueMode == RuntimeActionValueMode::Constant) changed |= ImGui::SliderFloat("Brightness", &action.Value, 0.0f, 1.0f, "%.3f");
+            }
+            else if (action.Target == RuntimeActionTarget::SendFramebuffer)
+            {
+                if (action.ValueMode == RuntimeActionValueMode::Constant) changed |= ImGui::Checkbox("Send framebuffer", &action.BoolValue);
+            }
+            else if (action.Target == RuntimeActionTarget::BaseColorMode)
+            {
+                if (action.ValueMode == RuntimeActionValueMode::Constant) { int mode = std::clamp(static_cast<int>(std::lround(action.Value)), 0, 2); if (ImGui::Combo("Base color mode", &mode, "RGB wave\0Solid\0Shader\0")) { action.Value = static_cast<float>(mode); changed = true; } }
+            }
+            else if (action.Target == RuntimeActionTarget::MaterialParameter)
+            {
+                ImGui::SetNextItemWidth(300.0f);
+                if (ImGui::BeginCombo("Material id", action.TargetId[0] ? action.TargetId : "<select material uniform>"))
+                {
+                    for (const auto& parameter : shaderFramebuffer.materialParameters())
+                    {
+                        const bool selected = parameter.PersistenceKey == action.TargetId;
+                        const std::string label = parameter.Label + "  [" + parameter.PersistenceKey + "]";
+                        if (ImGui::Selectable(label.c_str(), selected)) { std::snprintf(action.TargetId, sizeof(action.TargetId), "%s", parameter.PersistenceKey.c_str()); action.TargetComponent = std::clamp(action.TargetComponent, 0, std::max(parameter.Components - 1, 0)); changed = true; }
+                    }
+                    ImGui::EndCombo();
+                }
+                if (const auto* parameter = shaderFramebuffer.findMaterialParameter(action.TargetId); parameter && parameter->Components > 1) { ImGui::SameLine(); changed |= ImGui::SliderInt("Component", &action.TargetComponent, 0, parameter->Components - 1); }
+                if (action.ValueMode == RuntimeActionValueMode::Constant) { ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("Value", &action.Value, 0.01f); }
+            }
+            else if (action.Target == RuntimeActionTarget::BindingValue)
+            {
+                changed |= drawRuntimeBindingReferenceCombo(engine, "Unbound target", action.TargetBindingId, sourceBindingId, true);
+                if (action.ValueMode == RuntimeActionValueMode::Constant) { ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("Value", &action.Value, 0.01f); }
+            }
+            else if (action.Target == RuntimeActionTarget::ValueBank)
+            {
+                changed |= drawRuntimeBankReferenceCombo(engine, "Bank target", action.TargetBankValueId);
+                if (action.ValueMode == RuntimeActionValueMode::Constant)
+                {
+                    if (const RuntimeValueBankEntry* bank = engine.findBankValue(action.TargetBankValueId); bank && bank->Type == RuntimeBankValueType::String) changed |= ImGui::InputText("String value", action.StringValue, sizeof(action.StringValue));
+                    else { ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("Value", &action.Value, 0.01f); }
+                }
+            }
+            else if (action.Target == RuntimeActionTarget::ControlEnabled)
+            {
+                changed |= drawRuntimeControlReferenceCombo(engine, "Target control", action.TargetControlId);
+                if (action.ValueMode == RuntimeActionValueMode::Constant) changed |= ImGui::Checkbox("Enabled value", &action.BoolValue);
+            }
+            else if (runtimeActionTargetIsBindingOperation(action.Target))
+            {
+                changed |= drawRuntimeBindingReferenceCombo(engine, "Target binding", action.TargetBindingId, sourceBindingId);
+                ImGui::TextDisabled("Binding operation; value source is ignored.");
+            }
+            ImGui::PopID();
+        }
+        if (erase) { actions.erase(actions.begin() + static_cast<std::ptrdiff_t>(*erase)); changed = true; }
+        return changed;
+    }
+
+    static bool drawRuntimeReferenceList(RuntimeBindingEngine& engine, RuntimeBinding& binding, const bool showWeights, const bool massCompare = false)
+    {
+        bool changed = false;
+        if (ImGui::SmallButton("Add binding member")) { binding.References.push_back({RuntimeReferenceKind::Binding, 0, 0, 1.0f, true}); changed = true; }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Add control member")) { binding.References.push_back({RuntimeReferenceKind::Control, 0, 0, 1.0f, true}); changed = true; }
+        std::optional<std::size_t> erase;
+        for (std::size_t i = 0; i < binding.References.size(); ++i)
+        {
+            auto& reference = binding.References[i];
+            ImGui::PushID(static_cast<int>(i));
+            changed |= ImGui::Checkbox("##enabled", &reference.Enabled);
+            ImGui::SameLine();
+            int kind = static_cast<int>(reference.Kind);
+            ImGui::SetNextItemWidth(95.0f);
+            if (ImGui::Combo("##kind", &kind, "Binding\0Control\0")) { reference.Kind = static_cast<RuntimeReferenceKind>(kind); reference.Id = 0; reference.Signal = 0; changed = true; }
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(245.0f);
+            if (reference.Kind == RuntimeReferenceKind::Binding)
+            {
+                const RuntimeBinding* selected = engine.findBinding(reference.Id);
+                if (ImGui::BeginCombo("##member", selected ? selected->Name : "<select binding>"))
+                {
+                    for (const auto& candidate : engine.bindings())
+                    {
+                        if (candidate.Id == binding.Id) continue;
+                        const bool isSelected = candidate.Id == reference.Id;
+                        if (ImGui::Selectable(candidate.Name, isSelected)) { reference.Id = candidate.Id; changed = true; }
+                        if (isSelected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(135.0f);
+                static constexpr const char* Signals[] = {"Value", "Raw", "Has value", "Read ok", "Enabled", "Priority", "Has address", "Has error", "Seconds since success"};
+                reference.Signal = std::clamp(reference.Signal, 0, static_cast<int>(std::size(Signals)) - 1);
+                if (ImGui::Combo("##memberSignal", &reference.Signal, Signals, static_cast<int>(std::size(Signals)))) changed = true;
+            }
+            else
+            {
+                const RuntimeControlRule* selected = engine.findControl(reference.Id);
+                if (ImGui::BeginCombo("##member", selected ? selected->Name : "<select control>"))
+                {
+                    for (const auto& candidate : engine.controls())
+                    {
+                        const bool isSelected = candidate.Id == reference.Id;
+                        if (ImGui::Selectable(candidate.Name, isSelected)) { reference.Id = candidate.Id; changed = true; }
+                        if (isSelected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(135.0f);
+                static constexpr const char* Signals[] = {"Active", "Triggered", "Enabled", "Trigger count", "Priority", "Seconds since trigger", "Source value"};
+                reference.Signal = std::clamp(reference.Signal, 0, static_cast<int>(std::size(Signals)) - 1);
+                if (ImGui::Combo("##memberSignal", &reference.Signal, Signals, static_cast<int>(std::size(Signals)))) changed = true;
+            }
+            if (showWeights)
+            {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(80.0f);
+                changed |= ImGui::DragFloat("##weight", &reference.Weight, 0.01f, -1000.0f, 1000.0f, "w %.2f");
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) erase = i;
+
+            if (massCompare)
+            {
+                ImGui::Indent(24.0f);
+                changed |= ImGui::Checkbox("Own comparison", &reference.UseOwnComparison);
+                if (reference.UseOwnComparison)
+                {
+                    ImGui::SameLine();
+                    int condition = static_cast<int>(reference.CompareCondition);
+                    ImGui::SetNextItemWidth(105.0f);
+                    if (ImGui::Combo("##compareCondition", &condition, "==\0!=\0<\0<=\0>\0>=\0between\0outside\0")) { reference.CompareCondition = static_cast<RuntimeCompareCondition>(condition); changed = true; }
+                    ImGui::SameLine(); ImGui::SetNextItemWidth(100.0f); changed |= ImGui::DragFloat("A##memberCompare", &reference.CompareA, 0.01f);
+                    if (reference.CompareCondition == RuntimeCompareCondition::Between || reference.CompareCondition == RuntimeCompareCondition::Outside)
+                    { ImGui::SameLine(); ImGui::SetNextItemWidth(100.0f); changed |= ImGui::DragFloat("B##memberCompare", &reference.CompareB, 0.01f); }
+                    if (reference.CompareCondition == RuntimeCompareCondition::Equal || reference.CompareCondition == RuntimeCompareCondition::NotEqual)
+                    { ImGui::SameLine(); ImGui::SetNextItemWidth(100.0f); changed |= ImGui::DragFloat("Tol##memberCompare", &reference.CompareTolerance, 0.0001f, 0.000001f, 1000.0f, "%.4g"); }
+                }
+                ImGui::Unindent(24.0f);
+            }
+            ImGui::PopID();
+        }
+        if (erase) { binding.References.erase(binding.References.begin() + static_cast<std::ptrdiff_t>(*erase)); changed = true; }
+        return changed;
+    }
+
+    static bool drawRuntimeBinding(RuntimeBindingEngine& engine, ShaderFramebuffer& shaderFramebuffer, RuntimeBinding& binding, bool& erase)
     {
         bool changed = false;
         ImGui::PushID("RuntimeBinding");
         ImGui::PushID(static_cast<int>(binding.Id & 0x7fffffffULL));
-        const std::string bindingHeader = std::string(binding.Name[0] ? binding.Name : "Binding") + "###RuntimeBinding" + std::to_string(binding.Id);
+        const bool booleanState = runtimeBindingLooksBoolean(binding);
+        const bool runtimeEnabled = binding.Enabled && binding.RuntimeEnabled;
+        const bool waitingState = runtimeEnabled && !binding.HasValue && binding.Error.empty();
+        const bool goodState = binding.HasValue && (!booleanState || binding.Value >= 0.5f);
+        const ImVec4 stateColor = runtimeStateColor(runtimeEnabled, goodState, !binding.Error.empty(), waitingState);
+        drawRuntimeStateSquare("##bindingState", stateColor);
+        ImGui::SameLine();
+        std::string bindingHeader = std::string(binding.Name[0] ? binding.Name : "Binding") + "  [p" + std::to_string(binding.Priority) + "]";
+        if (!binding.Enabled) bindingHeader += "  DISABLED";
+        else if (!binding.RuntimeEnabled) bindingHeader += "  RUNTIME OFF";
+        else if (!binding.Error.empty()) bindingHeader += "  ERROR";
+        else if (!binding.HasValue) bindingHeader += "  WAITING";
+        else if (booleanState) bindingHeader += binding.Value >= 0.5f ? "  TRUE" : "  FALSE";
+        else { char value[64]; std::snprintf(value, sizeof(value), "  %.5g", binding.Value); bindingHeader += value; }
+        bindingHeader += "###RuntimeBinding" + std::to_string(binding.Id);
         if (!ImGui::CollapsingHeader(bindingHeader.c_str()))
         {
             ImGui::PopID();
             ImGui::PopID();
             return false;
         }
+        ImGui::Indent(10.0f);
+        ImGui::TextColored(stateColor, "%s", !binding.Enabled ? "Disabled" : !binding.RuntimeEnabled ? "Runtime disabled by control" : !binding.Error.empty() ? "Error" : !binding.HasValue ? "Waiting for value" : booleanState ? (binding.Value >= 0.5f ? "True / active" : "False / inactive") : "Ready");
+        ImGui::SameLine();
+        if (binding.HasValue) ImGui::TextDisabled("raw %.6g  value %.6g", binding.RawValue, binding.Value);
+        if (binding.HasString) { ImGui::SameLine(); ImGui::TextDisabled("string: %s", binding.StringValue.c_str()); }
+        if (!binding.Error.empty()) ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.42f, 1.0f), "%s", binding.Error.c_str());
         changed |= ImGui::Checkbox("Enabled", &binding.Enabled);
         ImGui::SameLine();
         if (ImGui::SmallButton("Remove")) erase = true;
         ImGui::SameLine();
         ImGui::SetNextItemWidth(220.0f);
         changed |= ImGui::InputText("Name", binding.Name, sizeof(binding.Name));
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(110.0f);
+        changed |= ImGui::InputInt("Priority", &binding.Priority);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lower priorities run first. Higher priorities run later and win material/output conflicts.");
+        ImGui::SameLine(); ImGui::SetNextItemWidth(160.0f); changed |= ImGui::InputText("Group", binding.Group, sizeof(binding.Group));
+        ImGui::SameLine(); ImGui::SetNextItemWidth(80.0f); changed |= ImGui::InputInt("Order", &binding.Order); ImGui::SameLine(); if (ImGui::SmallButton("Up##bindingOrder")) { --binding.Order; changed = true; } ImGui::SameLine(); if (ImGui::SmallButton("Down##bindingOrder")) { ++binding.Order; changed = true; }
 
         int source = static_cast<int>(binding.Source);
         ImGui::SetNextItemWidth(250.0f);
         if (ImGui::BeginCombo("Source", runtimeSourceName(binding.Source)))
         {
-            for (int i = 0; i <= static_cast<int>(RuntimeSourceKind::BindingStatus); ++i)
+            for (int i = 0; i <= static_cast<int>(RuntimeSourceKind::ProfileState); ++i)
             {
                 const auto candidate = static_cast<RuntimeSourceKind>(i);
                 if (ImGui::Selectable(runtimeSourceName(candidate), i == source))
                 {
                     binding.Source = candidate;
                     binding.Signal = 0;
+                    binding.HasValue = false;
+                    binding.LastReadSucceeded = false;
+                    binding.HasAddress = false;
+                    binding.AddressValue = 0;
+                    binding.NextUpdate = 0.0;
                     source = i;
                     changed = true;
                 }
@@ -8277,14 +10802,119 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
 
         if (binding.Source == RuntimeSourceKind::Constant)
             changed |= ImGui::DragFloat("Constant value", &binding.Constant, 0.01f);
+        else if (binding.Source == RuntimeSourceKind::Unbound)
+        {
+            ImGui::SeparatorText("Writable value");
+            changed |= ImGui::DragFloat("Stored value", &binding.UnboundValue, 0.01f);
+            ImGui::TextDisabled("Controls can write this binding directly. Other bindings can consume it through passthrough, aggregate, compare or parameter links.");
+        }
+        else if (binding.Source == RuntimeSourceKind::ValueBank)
+        {
+            ImGui::SeparatorText("Value bank");
+            changed |= drawRuntimeBankReferenceCombo(engine, "Bank value", binding.BankValueId);
+            if (const auto* value = engine.findBankValue(binding.BankValueId)) ImGui::TextDisabled("%s%s", runtimeBankValueTypeName(value->Type), value->ChangedThisFrame ? "  changed this frame" : "");
+        }
+        else if (binding.Source == RuntimeSourceKind::StringConstant)
+        {
+            ImGui::SeparatorText("String value");
+            changed |= ImGui::InputText("Text", binding.StringConstant, sizeof(binding.StringConstant));
+            ImGui::TextDisabled("String bindings expose a numeric presence/length signal plus a real string side-channel for string-aware controls and the value bank.");
+        }
+        else if (binding.Source == RuntimeSourceKind::ProfileState)
+        {
+            ImGui::SeparatorText("Binding profile state");
+            if (binding.Signal != 0)
+            {
+                const RuntimeBindingProfile* profile = engine.findProfile(binding.ProfileId);
+                ImGui::SetNextItemWidth(300.0f);
+                if (ImGui::BeginCombo("Profile", profile ? profile->Name : "<select profile>"))
+                {
+                    for (const auto& candidate : engine.profiles()) { const bool selected = candidate.Id == binding.ProfileId; if (ImGui::Selectable(candidate.Name, selected)) { binding.ProfileId = candidate.Id; changed = true; } if (selected) ImGui::SetItemDefaultFocus(); }
+                    ImGui::EndCombo();
+                }
+            }
+            ImGui::TextDisabled("Profile bindings can drive indicators or automation from the currently active graph profile.");
+        }
+        else if (binding.Source == RuntimeSourceKind::BindingValue)
+        {
+            ImGui::SeparatorText("Binding passthrough");
+            changed |= drawRuntimeBindingReferenceCombo(engine, "Source binding", binding.ValueBindingId, binding.Id);
+        }
+        else if (binding.Source == RuntimeSourceKind::ControlStatus)
+        {
+            ImGui::SeparatorText("Control status");
+            changed |= drawRuntimeControlReferenceCombo(engine, "Control to inspect", binding.ControlStatusId);
+        }
+        else if (binding.Source == RuntimeSourceKind::Aggregate)
+        {
+            ImGui::SeparatorText("Aggregate");
+            int operation = static_cast<int>(binding.AggregateOperation);
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::Combo("Operation", &operation, "Sum\0Average\0Minimum\0Maximum\0Product\0Count\0Count truthy\0Fraction truthy\0Any\0All\0")) { binding.AggregateOperation = static_cast<RuntimeAggregateOperation>(operation); changed = true; }
+            changed |= drawRuntimeReferenceList(engine, binding, binding.AggregateOperation <= RuntimeAggregateOperation::Product);
+            ImGui::TextDisabled("Members may be bindings or controls. Control members expose active/trigger state as numeric values.");
+        }
+        else if (binding.Source == RuntimeSourceKind::MassCompare)
+        {
+            ImGui::SeparatorText("Mass compare");
+            int condition = static_cast<int>(binding.CompareCondition);
+            ImGui::SetNextItemWidth(150.0f);
+            if (ImGui::Combo("Compare", &condition, "==\0!=\0<\0<=\0>\0>=\0between\0outside\0")) { binding.CompareCondition = static_cast<RuntimeCompareCondition>(condition); changed = true; }
+            ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("A", &binding.CompareA, 0.01f);
+            if (binding.CompareCondition == RuntimeCompareCondition::Between || binding.CompareCondition == RuntimeCompareCondition::Outside) { ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("B", &binding.CompareB, 0.01f); }
+            if (binding.CompareCondition == RuntimeCompareCondition::Equal || binding.CompareCondition == RuntimeCompareCondition::NotEqual) { ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("Tolerance", &binding.CompareTolerance, 0.0001f, 0.000001f, 1000.0f, "%.6f"); }
+            int result = static_cast<int>(binding.CompareResult);
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::Combo("Result", &result, "Any\0All\0None\0Count\0Fraction\0First match index\0")) { binding.CompareResult = static_cast<RuntimeMassCompareResult>(result); changed = true; }
+            changed |= drawRuntimeReferenceList(engine, binding, false, true);
+        }
+        else if (binding.Source == RuntimeSourceKind::ObjectField || binding.Source == RuntimeSourceKind::ObjectStatus)
+        {
+            ImGui::SeparatorText(binding.Source == RuntimeSourceKind::ObjectField ? "Object field" : "Object / pointer status");
+            RuntimeObjectPointer* pointer = engine.findPointer(binding.ObjectPointerId);
+            RuntimeObjectDescriptor* object = pointer ? engine.findObject(pointer->DescriptorId) : engine.findObject(binding.ObjectId);
+            ImGui::SetNextItemWidth(360.0f);
+            if (ImGui::BeginCombo("Pointer instance", pointer ? pointer->Name : "<select pointer>"))
+            {
+                for (auto& candidate : engine.pointers())
+                {
+                    const bool selected = candidate.Id == binding.ObjectPointerId;
+                    const auto* descriptor = engine.findObject(candidate.DescriptorId);
+                    std::string label = std::string(candidate.Name) + (descriptor ? "  [" + std::string(descriptor->Name) + "]" : "  [missing model]");
+                    if (ImGui::Selectable(label.c_str(), selected)) { binding.ObjectPointerId = candidate.Id; binding.ObjectId = candidate.DescriptorId; binding.ObjectFieldId = 0; object = engine.findObject(candidate.DescriptorId); changed = true; }
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            if (binding.Source == RuntimeSourceKind::ObjectField && object)
+            {
+                const RuntimeObjectField* field = engine.findObjectField(*object, binding.ObjectFieldId);
+                ImGui::SetNextItemWidth(320.0f);
+                if (ImGui::BeginCombo("Field", field ? field->Name : "<select readable field>"))
+                {
+                    for (const auto& candidate : object->Fields)
+                    {
+                        if (!candidate.Enabled || runtimeObjectFieldIsFiller(candidate.Type)) continue;
+                        const bool selected = candidate.Id == binding.ObjectFieldId;
+                        std::size_t objectSize = 0;
+                        const auto offset = runtimeObjectFieldOffset(*object, candidate.Id, &objectSize);
+                        std::ostringstream label; label << candidate.Name << "  +0x" << std::hex << offset << "  [" << runtimeObjectFieldTypeName(candidate.Type) << "]";
+                        if (ImGui::Selectable(label.str().c_str(), selected)) { binding.ObjectFieldId = candidate.Id; changed = true; }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+            if (pointer) ImGui::TextDisabled("%s", pointer->Status.c_str()); else if (object) ImGui::TextDisabled("model: %s", object->Name);
+        }
 
         static std::vector<RuntimeProcessInfo> processes;
-        if (binding.Source == RuntimeSourceKind::NativeProcess && processes.empty())
+        if ((binding.Source == RuntimeSourceKind::NativeProcess || binding.Source == RuntimeSourceKind::NativeAddress) && processes.empty())
             processes = enumerateRuntimeProcesses();
 
-        if (binding.Source == RuntimeSourceKind::NativeProcess)
+        if (binding.Source == RuntimeSourceKind::NativeProcess || binding.Source == RuntimeSourceKind::NativeAddress)
         {
-            ImGui::SeparatorText("Native process memory");
+            ImGui::SeparatorText(binding.Source == RuntimeSourceKind::NativeProcess ? "Native process memory" : "Native process address");
             changed |= drawRuntimeProcessSelector(binding, processes);
             static std::vector<RuntimeProcessModule> modules;
             static int modulePid = -1;
@@ -8312,7 +10942,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 }
                 ImGui::EndCombo();
             }
-            static constexpr const char* AddressModes[] = {"Address / pointer chain", "IDA signature"};
+            static constexpr const char* AddressModes[] = {"Address / pointer chain", "Pattern scan"};
             int addressMode = static_cast<int>(binding.AddressMode);
             ImGui::SetNextItemWidth(260.0f);
             if (ImGui::Combo("Address source", &addressMode, AddressModes, static_cast<int>(std::size(AddressModes))))
@@ -8329,17 +10959,33 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             }
             else
             {
-                const bool signatureChanged = ImGui::InputText("IDA signature", binding.Signature, sizeof(binding.Signature));
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("IDA-style bytes: DE AD ? BE EF ?   |   48 8B 05 ?? ?? ?? ??. Nibble wildcards such as A? and ?F are accepted.");
-                changed |= signatureChanged;
+                int patternKind = static_cast<int>(binding.SignaturePatternKind);
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::Combo("Pattern kind", &patternKind, "Hexadecimal pattern\0Opcode pattern\0")) { binding.SignaturePatternKind = static_cast<RuntimeSignaturePatternKind>(patternKind); resetRuntimeSignatureScan(binding); binding.SignatureConfigHash = 0; changed = true; }
+                if (binding.SignaturePatternKind == RuntimeSignaturePatternKind::HexadecimalPattern)
+                {
+                    const bool signatureChanged = ImGui::InputTextMultiline("Hexadecimal pattern", binding.Signature, sizeof(binding.Signature), ImVec2(-1.0f, 72.0f));
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hex bytes with wildcards: DE AD ? BE EF | 48 8B 05 ?? ?? ?? ?? | nibble wildcards A? and ?F.");
+                    changed |= signatureChanged;
+                }
+                else
+                {
+                    const bool signatureChanged = ImGui::InputTextMultiline("Opcode pattern", binding.Signature, sizeof(binding.Signature), ImVec2(-1.0f, 120.0f));
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("One Intel-syntax instruction per line. * matches any text and ? matches one character. Example:\nmov rax, r15\nmovsxd rax, dword ptr [rax+*]\ncvtsi2ss xmm0, eax");
+                    changed |= signatureChanged;
+#if !QUARTZ_HAS_ZYDIS
+                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f), "Opcode patterns require Zydis.");
+#endif
+                }
                 changed |= ImGui::Checkbox("Executable mappings only", &binding.SignatureExecutableOnly);
-                static constexpr const char* ResolveModes[] = {"Match address + offset", "x86-64 RIP-relative disp32", "Pointer stored at match + offset", "x86-64 register-relative capture"};
+                static constexpr const char* ResolveModes[] = {"Match address + offset", "x86-64 RIP-relative disp32", "Pointer stored at match + offset", "x86-64 register-relative capture", "32-bit address stored at match + offset"};
                 int resolveMode = static_cast<int>(binding.SignatureResolve);
                 ImGui::SetNextItemWidth(300.0f);
-                if (ImGui::Combo("Signature result", &resolveMode, ResolveModes, static_cast<int>(std::size(ResolveModes)))) { binding.SignatureResolve = static_cast<SignatureResultMode>(resolveMode); changed = true; }
+                if (ImGui::Combo("Pattern result", &resolveMode, ResolveModes, static_cast<int>(std::size(ResolveModes)))) { binding.SignatureResolve = static_cast<SignatureResultMode>(resolveMode); changed = true; }
                 ImGui::SetNextItemWidth(180.0f);
                 const char* resultOffsetLabel = binding.SignatureResolve == SignatureResultMode::RipRelative32 ? "Displacement offset" : binding.SignatureResolve == SignatureResultMode::RegisterRelativeCapture ? "Instruction offset" : "Result offset";
                 changed |= ImGui::InputInt(resultOffsetLabel, &binding.SignatureResultOffset);
+                if (binding.SignatureResolve == SignatureResultMode::Address32AtOffset) ImGui::TextDisabled("Reads a little-endian uint32_t at match + result offset, zero-extends it to uintptr_t, and uses that value as the resolved address.");
                 if (binding.SignatureResolve == SignatureResultMode::RipRelative32)
                 {
                     ImGui::SameLine();
@@ -8377,8 +11023,8 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 ImGui::SetNextItemWidth(180.0f);
                 changed |= ImGui::DragFloat("Retry interval", &binding.SignatureRetrySeconds, 0.05f, 0.1f, 60.0f, "%.2f s");
                 changed |= ImGui::InputText("Result / pointer chain", binding.Address, sizeof(binding.Address));
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("The resolved signature address becomes the base. Use +0x0 for the result itself or chains such as +0x0 -> +0x18.");
-                if (ImGui::Button("Rescan signature"))
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("The resolved pattern address becomes the base. Use +0x0 for the result itself or chains such as +0x0 -> +0x18.");
+                if (ImGui::Button("Rescan pattern"))
                 {
                     resetRuntimeSignatureScan(binding);
                     binding.SignatureConfigHash = 0;
@@ -8403,12 +11049,20 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                     if (binding.SignatureMatchAddress != 0) ImGui::TextDisabled("Match 0x%llX   instruction 0x%llX", static_cast<unsigned long long>(binding.SignatureMatchAddress), static_cast<unsigned long long>(binding.SignatureInstructionAddress));
                     if (binding.SignatureCapturedRegister != 0 || binding.SignatureResolvedAddress != 0) ImGui::TextDisabled("%s 0x%llX   displacement %lld", runtimeX64RegisterName(binding.SignatureRegister), static_cast<unsigned long long>(binding.SignatureCapturedRegister), static_cast<long long>(binding.SignatureCapturedDisplacement));
                 }
-                else ImGui::TextDisabled("The signature locates a stable instruction or data reference. RIP-relative mode resolves common x86-64 global references directly from the matched instruction.");
+                else ImGui::TextDisabled("The pattern locates a stable instruction or data reference. Hexadecimal patterns match bytes; opcode patterns match readable Intel-syntax instructions through Zydis.");
             }
-            static constexpr const char* Types[] = {"u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "float", "double", "bool"};
-            int valueType = static_cast<int>(binding.ValueType);
-            if (ImGui::Combo("Value type", &valueType, Types, static_cast<int>(std::size(Types)))) { binding.ValueType = static_cast<ProcessValueType>(valueType); changed = true; }
-            ImGui::TextDisabled("Read-only through process_vm_readv(); ptrace_scope/permissions still apply.");
+            if (binding.Source == RuntimeSourceKind::NativeProcess)
+            {
+                static constexpr const char* Types[] = {"u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "float", "double", "bool"};
+                int valueType = static_cast<int>(binding.ValueType);
+                if (ImGui::Combo("Value type", &valueType, Types, static_cast<int>(std::size(Types)))) { binding.ValueType = static_cast<ProcessValueType>(valueType); changed = true; }
+                ImGui::TextDisabled("Read-only through process_vm_readv(); ptrace_scope/permissions still apply.");
+            }
+            else
+            {
+                if (binding.HasAddress) ImGui::Text("Exact address: 0x%llX", static_cast<unsigned long long>(binding.AddressValue));
+                ImGui::TextDisabled("Address bindings preserve uintptr_t precision for object descriptors instead of squeezing pointers through float values.");
+            }
         }
         else if (binding.Source == RuntimeSourceKind::BindingStatus)
         {
@@ -8429,36 +11083,115 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             ImGui::TextDisabled("Status values are normal 0/1 binding sources, so they can drive shader uniforms, parameter links, or control rules.");
         }
 
+        if (ImGui::TreeNode("Value origin"))
+        {
+            const auto sourceSignals = runtimeSignalNames(binding.Source);
+            const int signalIndex = std::clamp(binding.Signal, 0, std::max(static_cast<int>(sourceSignals.size()) - 1, 0));
+            ImGui::Text("Source: %s", runtimeSourceName(binding.Source));
+            if (!sourceSignals.empty()) ImGui::Text("Signal: %s", sourceSignals[static_cast<std::size_t>(signalIndex)].data());
+            if (binding.Source == RuntimeSourceKind::BindingValue)
+            {
+                const RuntimeBinding* sourceBinding = engine.findBinding(binding.ValueBindingId);
+                ImGui::Text("From binding: %s (#%llu)", sourceBinding ? sourceBinding->Name : "<missing>", static_cast<unsigned long long>(binding.ValueBindingId));
+            }
+            else if (binding.Source == RuntimeSourceKind::BindingStatus)
+            {
+                const RuntimeBinding* sourceBinding = engine.findBinding(binding.StatusBindingId);
+                ImGui::Text("Status of: %s (#%llu)", sourceBinding ? sourceBinding->Name : "<missing>", static_cast<unsigned long long>(binding.StatusBindingId));
+            }
+            else if (binding.Source == RuntimeSourceKind::ObjectField || binding.Source == RuntimeSourceKind::ObjectStatus)
+            {
+                const RuntimeObjectPointer* pointer = engine.findPointer(binding.ObjectPointerId);
+                const RuntimeObjectDescriptor* model = pointer ? engine.findObject(pointer->DescriptorId) : engine.findObject(binding.ObjectId);
+                ImGui::Text("Pointer instance: %s (#%llu)", pointer ? pointer->Name : "<missing>", static_cast<unsigned long long>(binding.ObjectPointerId));
+                ImGui::Text("Descriptor model: %s", model ? model->Name : "<missing>");
+                if (binding.Source == RuntimeSourceKind::ObjectField && model)
+                {
+                    const RuntimeObjectField* field = engine.findObjectField(*model, binding.ObjectFieldId);
+                    ImGui::Text("Field: %s (#%llu)", field ? field->Name : "<missing>", static_cast<unsigned long long>(binding.ObjectFieldId));
+                }
+            }
+            else if (binding.Source == RuntimeSourceKind::ValueBank)
+            {
+                const RuntimeValueBankEntry* bank = engine.findBankValue(binding.BankValueId);
+                ImGui::Text("Bank value: %s (#%llu)", bank ? bank->Name : "<missing>", static_cast<unsigned long long>(binding.BankValueId));
+            }
+            else if (binding.Source == RuntimeSourceKind::Aggregate || binding.Source == RuntimeSourceKind::MassCompare)
+            {
+                ImGui::Text("Members: %zu", binding.References.size());
+                for (const auto& reference : binding.References)
+                {
+                    if (!reference.Enabled) continue;
+                    if (reference.Kind == RuntimeReferenceKind::Binding) { const RuntimeBinding* member = engine.findBinding(reference.Id); ImGui::BulletText("binding %s (#%llu)", member ? member->Name : "<missing>", static_cast<unsigned long long>(reference.Id)); }
+                    else { const RuntimeControlRule* member = engine.findControl(reference.Id); ImGui::BulletText("control %s (#%llu)", member ? member->Name : "<missing>", static_cast<unsigned long long>(reference.Id)); }
+                }
+            }
+            if (binding.HasString) ImGui::TextWrapped("String value: %s", binding.StringValue.c_str());
+            if (binding.HasValue) ImGui::Text("Raw %.9g  ->  value %.9g", binding.RawValue, binding.Value);
+            else ImGui::TextDisabled("No readable value yet.");
+            ImGui::TreePop();
+        }
+
+        if (binding.HasAddress)
+        {
+            if (ImGui::TreeNode("Address origin"))
+            {
+                ImGui::Text("Current exact address: 0x%llX", static_cast<unsigned long long>(binding.AddressValue));
+                if (binding.AddressProvenance.empty()) ImGui::TextDisabled("No provenance trace recorded yet.");
+                for (std::size_t i = 0; i < binding.AddressProvenance.size(); ++i)
+                {
+                    ImGui::PushID(static_cast<int>(i)); const bool leaf = i + 1 == binding.AddressProvenance.size();
+                    ImGui::TreeNodeEx("##origin", ImGuiTreeNodeFlags_DefaultOpen | (leaf ? ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen : ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen), "%s", binding.AddressProvenance[i].c_str()); ImGui::PopID();
+                }
+                ImGui::TreePop();
+            }
+        }
+
         ImGui::SeparatorText("Material binding");
         changed |= ImGui::Checkbox("Write value to shader material", &binding.WriteMaterial);
         if (binding.WriteMaterial) changed |= drawRuntimeTargetSelector(binding, shaderFramebuffer);
-        else ImGui::TextDisabled("Value-only binding: still available to parameter links, status sources and control rules.");
+        else ImGui::TextDisabled("Value-only binding: still available to links, bank values, status sources, controls and actions.");
 
-        ImGui::SeparatorText("Transform");
-        ImGui::TextDisabled("Transform controls can use local values or the output of another binding. Circular dependencies are rejected when a link is selected and sanitized when bindings are loaded.");
-        changed |= drawRuntimeLinkedBool(engine, binding, RuntimeParameterSlot::Normalize, "Normalize input", binding.Normalize);
-        if (binding.Normalize || binding.ParameterLinks[static_cast<std::size_t>(RuntimeParameterSlot::Normalize)].Enabled)
+        if (ImGui::BeginTabBar("BindingOptions", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_FittingPolicyResizeDown))
         {
-            changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::InputMin, "Input min", binding.InputMin);
-            changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::InputMax, "Input max", binding.InputMax);
+            if (ImGui::BeginTabItem("Output / actions"))
+            {
+                changed |= ImGui::Checkbox("Store successful value in bank", &binding.StoreToBank);
+                if (binding.StoreToBank) changed |= drawRuntimeBankReferenceCombo(engine, "Bank destination", binding.StoreBankValueId);
+                ImGui::SeparatorText("Actions");
+                ImGui::TextDisabled("Bindings can fan out to multiple side effects on update/change/truthy/falsy without creating helper controls.");
+                changed |= drawRuntimeActionList(engine, shaderFramebuffer, binding.Actions, binding.Id, false);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Advanced transform"))
+            {
+                ImGui::TextDisabled("Transform controls can use local values or another binding. This tab stays out of the way for normal graph editing.");
+                changed |= drawRuntimeLinkedBool(engine, binding, RuntimeParameterSlot::Normalize, "Normalize input", binding.Normalize);
+                if (binding.Normalize || binding.ParameterLinks[static_cast<std::size_t>(RuntimeParameterSlot::Normalize)].Enabled)
+                {
+                    changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::InputMin, "Input min", binding.InputMin);
+                    changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::InputMax, "Input max", binding.InputMax);
+                }
+                changed |= drawRuntimeLinkedBool(engine, binding, RuntimeParameterSlot::Invert, "Invert", binding.Invert);
+                changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::Scale, "Scale", binding.Scale);
+                changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::Offset, "Offset", binding.Offset);
+                changed |= drawRuntimeLinkedBool(engine, binding, RuntimeParameterSlot::Clamp, "Clamp output", binding.Clamp);
+                if (binding.Clamp || binding.ParameterLinks[static_cast<std::size_t>(RuntimeParameterSlot::Clamp)].Enabled)
+                {
+                    changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::OutputMin, "Output min", binding.OutputMin);
+                    changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::OutputMax, "Output max", binding.OutputMax);
+                }
+                changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::SmoothingHz, "Smoothing", binding.SmoothingHz, 0.1f, "%.1f Hz");
+                changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::UpdateHz, "Update rate", binding.UpdateHz, 0.5f, "%.1f Hz");
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
         }
-        changed |= drawRuntimeLinkedBool(engine, binding, RuntimeParameterSlot::Invert, "Invert", binding.Invert);
-        changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::Scale, "Scale", binding.Scale);
-        changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::Offset, "Offset", binding.Offset);
-        changed |= drawRuntimeLinkedBool(engine, binding, RuntimeParameterSlot::Clamp, "Clamp output", binding.Clamp);
-        if (binding.Clamp || binding.ParameterLinks[static_cast<std::size_t>(RuntimeParameterSlot::Clamp)].Enabled)
-        {
-            changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::OutputMin, "Output min", binding.OutputMin);
-            changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::OutputMax, "Output max", binding.OutputMax);
-        }
-        changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::SmoothingHz, "Smoothing", binding.SmoothingHz, 0.1f, "%.1f Hz");
-        changed |= drawRuntimeLinkedFloat(engine, binding, RuntimeParameterSlot::UpdateHz, "Update rate", binding.UpdateHz, 0.5f, "%.1f Hz");
 
-        if (binding.HasValue) ImGui::Text("Raw %.6g   ->   value %.6g", binding.RawValue, binding.Value);
-        else ImGui::TextDisabled("Waiting for first value...");
-        ImGui::SameLine();
-        ImGui::TextDisabled("read %s", binding.LastReadSucceeded ? "ok" : "not ready / failed");
-        if (!binding.Error.empty()) ImGui::TextColored(ImVec4(1.0f, 0.48f, 0.48f, 1.0f), "%s", binding.Error.c_str());
+        if (binding.HasAddress) ImGui::TextDisabled("Exact address: 0x%llX", static_cast<unsigned long long>(binding.AddressValue));
+        ImGui::Unindent(10.0f);
+        ImGui::Dummy(ImVec2(0.0f, 5.0f));
+        ImGui::Separator();
 
         if (changed) engine.markChanged();
         ImGui::PopID();
@@ -8468,13 +11201,13 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
 
     static const char* runtimeControlConditionName(const RuntimeControlCondition condition)
     {
-        static constexpr const char* Names[] = {"==", "!=", "<", "<=", ">", ">=", "between", "outside", "rising edge", "falling edge"};
+        static constexpr const char* Names[] = {"==", "!=", "<", "<=", ">", ">=", "between", "outside", "rising edge", "falling edge", "on change", "changed to", "changed from", "becomes true", "becomes false", "string ==", "string !=", "string contains"};
         return Names[std::clamp(static_cast<int>(condition), 0, static_cast<int>(std::size(Names)) - 1)];
     }
 
     static const char* runtimeControlTargetName(const RuntimeControlTarget target)
     {
-        static constexpr const char* Names[] = {"Active shader", "Binding enabled", "Global brightness", "Send framebuffer", "Base color mode", "Material parameter"};
+        static constexpr const char* Names[] = {"Active shader", "Binding enabled", "Global brightness", "Send framebuffer", "Base color mode", "Material parameter", "Unbound binding value", "Value bank", "Control enabled", "Refresh binding", "Force binding update", "Invalidate binding", "Reset binding state", "Retry register capture", "Rescan binding pattern", "Rebind process", "Clear binding error"};
         return Names[std::clamp(static_cast<int>(target), 0, static_cast<int>(std::size(Names)) - 1)];
     }
 
@@ -8511,219 +11244,590 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         bool changed = false;
         ImGui::PushID("RuntimeControl");
         ImGui::PushID(static_cast<int>(control.Id & 0x7fffffffULL));
-        const std::string header = std::string(control.Name[0] ? control.Name : "Control") + "###RuntimeControl" + std::to_string(control.Id);
-        if (!ImGui::CollapsingHeader(header.c_str())) { ImGui::PopID(); ImGui::PopID(); return false; }
-        changed |= ImGui::Checkbox("Enabled", &control.Enabled);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Remove")) erase = true;
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(220.0f);
-        changed |= ImGui::InputText("Name", control.Name, sizeof(control.Name));
-
         const RuntimeBinding* source = engine.findBinding(control.SourceBindingId);
+        const bool ready = source && source->Enabled && source->RuntimeEnabled && source->HasValue;
+        const bool runtimeEnabled = control.Enabled && control.RuntimeEnabled;
+        const bool on = control.ConditionActive || control.TriggeredThisFrame;
+        const ImVec4 stateColor = runtimeStateColor(runtimeEnabled, on, false, runtimeEnabled && !ready);
+        drawRuntimeStateSquare("##controlState", stateColor);
+        ImGui::SameLine();
+        std::string header = std::string(control.Name[0] ? control.Name : "Control") + "  [p" + std::to_string(control.Priority) + "]  ";
+        if (!control.Enabled) header += "DISABLED";
+        else if (!control.RuntimeEnabled) header += "RUNTIME OFF";
+        else if (!ready) header += "WAITING";
+        else if (control.TriggeredThisFrame) header += "TRIGGERED";
+        else header += control.ConditionActive ? "TRUE" : "FALSE";
+        header += "###RuntimeControl" + std::to_string(control.Id);
+        if (!ImGui::CollapsingHeader(header.c_str())) { ImGui::PopID(); ImGui::PopID(); return false; }
+        ImGui::Indent(10.0f);
+        ImGui::TextColored(stateColor, "%s", !control.Enabled ? "Disabled" : !control.RuntimeEnabled ? "Runtime disabled by control" : !ready ? "Waiting for source" : control.TriggeredThisFrame ? "Triggered this frame" : control.ConditionActive ? "Condition true" : "Condition false");
+        if (source) { ImGui::SameLine(); ImGui::TextDisabled("source %.6g%s", source->Value, source->HasString ? " + string" : ""); }
+
+        changed |= ImGui::Checkbox("Enabled", &control.Enabled);
+        ImGui::SameLine(); if (ImGui::SmallButton("Remove")) erase = true;
+        ImGui::SameLine(); ImGui::SetNextItemWidth(220.0f); changed |= ImGui::InputText("Name", control.Name, sizeof(control.Name));
+        ImGui::SameLine(); ImGui::SetNextItemWidth(110.0f); changed |= ImGui::InputInt("Priority", &control.Priority);
+        ImGui::SetNextItemWidth(160.0f); changed |= ImGui::InputText("Group", control.Group, sizeof(control.Group)); ImGui::SameLine(); ImGui::SetNextItemWidth(80.0f); changed |= ImGui::InputInt("Order", &control.Order); ImGui::SameLine(); if (ImGui::SmallButton("Up##controlOrder")) { --control.Order; changed = true; } ImGui::SameLine(); if (ImGui::SmallButton("Down##controlOrder")) { ++control.Order; changed = true; }
+
         ImGui::SetNextItemWidth(300.0f);
         if (ImGui::BeginCombo("Source binding", source ? source->Name : "<select binding>"))
         {
-            for (const auto& candidate : engine.bindings())
-            {
-                const bool selected = candidate.Id == control.SourceBindingId;
-                if (ImGui::Selectable(candidate.Name, selected)) { control.SourceBindingId = candidate.Id; changed = true; }
-                if (selected) ImGui::SetItemDefaultFocus();
-            }
+            for (const auto& candidate : engine.bindings()) { const bool selected = candidate.Id == control.SourceBindingId; if (ImGui::Selectable(candidate.Name, selected)) { control.SourceBindingId = candidate.Id; changed = true; } if (selected) ImGui::SetItemDefaultFocus(); }
             ImGui::EndCombo();
         }
 
         int condition = static_cast<int>(control.Condition);
-        ImGui::SetNextItemWidth(150.0f);
-        if (ImGui::Combo("Condition", &condition, "==\0!=\0<\0<=\0>\0>=\0between\0outside\0rising edge\0falling edge\0")) { control.Condition = static_cast<RuntimeControlCondition>(condition); changed = true; }
-        const bool twoValues = control.Condition == RuntimeControlCondition::Between || control.Condition == RuntimeControlCondition::Outside;
-        ImGui::SetNextItemWidth(150.0f);
-        changed |= ImGui::DragFloat(twoValues ? "Minimum" : "Compare value", &control.ValueA, 0.01f);
-        if (twoValues)
+        ImGui::SetNextItemWidth(175.0f);
+        if (ImGui::Combo("Condition", &condition, "==\0!=\0<\0<=\0>\0>=\0between\0outside\0rising edge\0falling edge\0on change\0changed to\0changed from\0becomes true\0becomes false\0string ==\0string !=\0string contains\0")) { control.Condition = static_cast<RuntimeControlCondition>(condition); changed = true; }
+        const bool stringCondition = control.Condition == RuntimeControlCondition::StringEqual || control.Condition == RuntimeControlCondition::StringNotEqual || control.Condition == RuntimeControlCondition::StringContains;
+        const bool eventCondition = control.Condition == RuntimeControlCondition::RisingEdge || control.Condition == RuntimeControlCondition::FallingEdge || control.Condition == RuntimeControlCondition::OnChange || control.Condition == RuntimeControlCondition::ChangedTo || control.Condition == RuntimeControlCondition::ChangedFrom || control.Condition == RuntimeControlCondition::BecomesTrue || control.Condition == RuntimeControlCondition::BecomesFalse;
+        const bool needsValue = control.Condition <= RuntimeControlCondition::FallingEdge || control.Condition == RuntimeControlCondition::ChangedTo || control.Condition == RuntimeControlCondition::ChangedFrom;
+        if (stringCondition) changed |= ImGui::InputText("Text target", control.StringCompare, sizeof(control.StringCompare));
+        else if (needsValue)
         {
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(150.0f);
-            changed |= ImGui::DragFloat("Maximum", &control.ValueB, 0.01f);
+            const bool twoValues = control.Condition == RuntimeControlCondition::Between || control.Condition == RuntimeControlCondition::Outside;
+            ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat(twoValues ? "Minimum" : "Target / threshold", &control.ValueA, 0.01f);
+            if (twoValues) { ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("Maximum", &control.ValueB, 0.01f); }
+            if (control.Condition == RuntimeControlCondition::Equal || control.Condition == RuntimeControlCondition::NotEqual || control.Condition == RuntimeControlCondition::ChangedTo || control.Condition == RuntimeControlCondition::ChangedFrom)
+            { ImGui::SameLine(); ImGui::SetNextItemWidth(135.0f); changed |= ImGui::DragFloat("Tolerance", &control.Tolerance, 0.0001f, 0.000001f, 1000.0f, "%.6f"); }
         }
-        if (control.Condition == RuntimeControlCondition::Equal || control.Condition == RuntimeControlCondition::NotEqual)
+        if (eventCondition) { changed |= ImGui::Checkbox("Fire on first matching sample", &control.FireOnFirstSample); ImGui::SameLine(); ImGui::TextDisabled("events are one-shot; iterative passes are capped"); }
+        else if (!stringCondition) { ImGui::SetNextItemWidth(150.0f); changed |= ImGui::DragFloat("Hysteresis", &control.Hysteresis, 0.001f, 0.0f, 1000.0f, "%.4f"); }
+
+        if (ImGui::BeginTabBar("ControlOptions", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_FittingPolicyResizeDown))
         {
-            ImGui::SetNextItemWidth(150.0f);
-            changed |= ImGui::DragFloat("Tolerance", &control.Tolerance, 0.0001f, 0.000001f, 1000.0f, "%.6f");
-        }
-        if (control.Condition != RuntimeControlCondition::RisingEdge && control.Condition != RuntimeControlCondition::FallingEdge)
-        {
-            ImGui::SetNextItemWidth(150.0f);
-            changed |= ImGui::DragFloat("Hysteresis", &control.Hysteresis, 0.001f, 0.0f, 1000.0f, "%.4f");
+            if (ImGui::BeginTabItem("Primary action"))
+            {
+                ImGui::TextDisabled("Compatibility action for existing configs. Extra actions below can run alongside it.");
+                int target = static_cast<int>(control.Target); ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::Combo("Target", &target, "Active shader\0Binding enabled\0Global brightness\0Send framebuffer\0Base color mode\0Material parameter\0Unbound binding value\0Value bank\0Control enabled\0Refresh binding\0Force binding update\0Invalidate binding\0Reset binding state\0Retry register capture\0Rescan binding pattern\0Rebind process\0Clear binding error\0")) { control.Target = static_cast<RuntimeControlTarget>(target); changed = true; }
+                if (control.Target == RuntimeControlTarget::ActiveShader)
+                {
+                    const ShaderPreset* shaderById = control.ShaderId[0] ? findShaderPresetById(control.ShaderId) : nullptr;
+                    const char* preview = control.ShaderPresetIndex == -1 ? "<previous shader>" : shaderById ? shaderById->Name.c_str() : control.ShaderPresetIndex > 0 && control.ShaderPresetIndex <= static_cast<int>(ShaderPresets.size()) ? ShaderPresets[static_cast<std::size_t>(control.ShaderPresetIndex - 1)].Name.c_str() : "<select shader>";
+                    ImGui::SetNextItemWidth(300.0f);
+                    if (ImGui::BeginCombo("Shader", preview))
+                    {
+                        if (ImGui::Selectable("<previous shader>", control.ShaderPresetIndex == -1)) { control.ShaderPresetIndex = -1; control.ShaderId[0] = '\0'; changed = true; }
+                        for (std::size_t i = 0; i < ShaderPresets.size(); ++i) { const bool selected = control.ShaderPresetIndex == static_cast<int>(i + 1); if (ImGui::Selectable(ShaderPresets[i].Name.c_str(), selected)) { control.ShaderPresetIndex = static_cast<int>(i + 1); std::snprintf(control.ShaderId, sizeof(control.ShaderId), "%s", ShaderPresets[i].Id.c_str()); changed = true; } }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetNextItemWidth(160.0f); changed |= ImGui::DragFloat("Crossfade", &control.TransitionSeconds, 0.02f, 0.0f, 10.0f, "%.2f s");
+                }
+                else if (control.Target == RuntimeControlTarget::BindingEnabled) { changed |= drawRuntimeBindingReferenceCombo(engine, "Target binding", control.TargetBindingId, control.SourceBindingId); changed |= ImGui::Checkbox("Runtime enabled", &control.TargetBool); }
+                else if (control.Target == RuntimeControlTarget::GlobalBrightness) changed |= ImGui::SliderFloat("Brightness", &control.TargetValue, 0.0f, 1.0f, "%.3f");
+                else if (control.Target == RuntimeControlTarget::SendFramebuffer) changed |= ImGui::Checkbox("Send framebuffer", &control.TargetBool);
+                else if (control.Target == RuntimeControlTarget::BaseColorMode) { int mode = std::clamp(static_cast<int>(std::lround(control.TargetValue)), 0, 2); if (ImGui::Combo("Base color mode", &mode, "RGB wave\0Solid\0Shader\0")) { control.TargetValue = static_cast<float>(mode); changed = true; } }
+                else if (control.Target == RuntimeControlTarget::MaterialParameter) { changed |= drawRuntimeControlMaterialTarget(control, shaderFramebuffer); ImGui::SetNextItemWidth(180.0f); changed |= ImGui::DragFloat("Target value", &control.TargetValue, 0.01f); }
+                else if (control.Target == RuntimeControlTarget::BindingValue) { changed |= drawRuntimeBindingReferenceCombo(engine, "Unbound target", control.TargetBindingId, control.SourceBindingId, true); changed |= ImGui::Checkbox("Use source value", &control.TargetUseSourceValue); if (!control.TargetUseSourceValue) { ImGui::SetNextItemWidth(180.0f); changed |= ImGui::DragFloat("Written value", &control.TargetValue, 0.01f); } }
+                else if (control.Target == RuntimeControlTarget::ValueBank) { changed |= drawRuntimeBankReferenceCombo(engine, "Bank target", control.TargetBankValueId); changed |= ImGui::Checkbox("Use source value", &control.TargetUseSourceValue); if (!control.TargetUseSourceValue) { ImGui::SetNextItemWidth(180.0f); changed |= ImGui::DragFloat("Written value", &control.TargetValue, 0.01f); } }
+                else if (control.Target == RuntimeControlTarget::ControlEnabled) { changed |= drawRuntimeControlReferenceCombo(engine, "Target control", control.TargetControlId); changed |= ImGui::Checkbox("Runtime enabled", &control.TargetBool); }
+                else if (runtimeControlTargetIsBindingOperation(control.Target)) { changed |= drawRuntimeBindingReferenceCombo(engine, "Target binding", control.TargetBindingId, control.SourceBindingId); ImGui::TextDisabled("Primary binding operations fire when the condition enters true (or an event fires). Use an additional action with While active for repeated operations."); }
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Additional actions"))
+            {
+                ImGui::TextDisabled("Actions execute in priority order. On-trigger actions are ideal for saving/restoring shader state through the value bank.");
+                changed |= drawRuntimeActionList(engine, shaderFramebuffer, control.Actions, control.SourceBindingId, true);
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
         }
 
-        int target = static_cast<int>(control.Target);
-        ImGui::SetNextItemWidth(220.0f);
-        if (ImGui::Combo("Target", &target, "Active shader\0Binding enabled\0Global brightness\0Send framebuffer\0Base color mode\0Material parameter\0")) { control.Target = static_cast<RuntimeControlTarget>(target); changed = true; }
-        if (control.Target == RuntimeControlTarget::ActiveShader)
-        {
-            const int safeIndex = std::clamp(control.ShaderPresetIndex, 1, static_cast<int>(ShaderPresets.size()));
-            const char* preview = ShaderPresets[static_cast<std::size_t>(safeIndex - 1)].Name.c_str();
-            ImGui::SetNextItemWidth(300.0f);
-            if (ImGui::BeginCombo("Shader", preview))
-            {
-                for (std::size_t i = 0; i < ShaderPresets.size(); ++i)
-                {
-                    const bool selected = control.ShaderPresetIndex == static_cast<int>(i + 1);
-                    if (ImGui::Selectable(ShaderPresets[i].Name.c_str(), selected)) { control.ShaderPresetIndex = static_cast<int>(i + 1); changed = true; }
-                    if (selected) ImGui::SetItemDefaultFocus();
-                }
-                ImGui::EndCombo();
-            }
-            ImGui::SetNextItemWidth(160.0f);
-            changed |= ImGui::DragFloat("Crossfade", &control.TransitionSeconds, 0.02f, 0.0f, 10.0f, "%.2f s");
-        }
-        else if (control.Target == RuntimeControlTarget::BindingEnabled)
-        {
-            const RuntimeBinding* targetBinding = engine.findBinding(control.TargetBindingId);
-            ImGui::SetNextItemWidth(300.0f);
-            if (ImGui::BeginCombo("Target binding", targetBinding ? targetBinding->Name : "<select binding>"))
-            {
-                for (const auto& candidate : engine.bindings())
-                {
-                    if (candidate.Id == control.SourceBindingId) continue;
-                    const bool selected = candidate.Id == control.TargetBindingId;
-                    if (ImGui::Selectable(candidate.Name, selected)) { control.TargetBindingId = candidate.Id; changed = true; }
-                    if (selected) ImGui::SetItemDefaultFocus();
-                }
-                ImGui::EndCombo();
-            }
-            changed |= ImGui::Checkbox("Runtime enabled", &control.TargetBool);
-        }
-        else if (control.Target == RuntimeControlTarget::GlobalBrightness)
-        {
-            changed |= ImGui::SliderFloat("Brightness", &control.TargetValue, 0.0f, 1.0f, "%.3f");
-        }
-        else if (control.Target == RuntimeControlTarget::SendFramebuffer)
-        {
-            changed |= ImGui::Checkbox("Send framebuffer", &control.TargetBool);
-        }
-        else if (control.Target == RuntimeControlTarget::BaseColorMode)
-        {
-            int mode = std::clamp(static_cast<int>(std::lround(control.TargetValue)), 0, 2);
-            if (ImGui::Combo("Base color mode", &mode, "RGB wave\0Solid\0Shader\0")) { control.TargetValue = static_cast<float>(mode); changed = true; }
-        }
-        else if (control.Target == RuntimeControlTarget::MaterialParameter)
-        {
-            changed |= drawRuntimeControlMaterialTarget(control, shaderFramebuffer);
-            ImGui::SetNextItemWidth(180.0f);
-            changed |= ImGui::DragFloat("Target value", &control.TargetValue, 0.01f);
-        }
-
-        if (source)
-        {
-            ImGui::TextDisabled("Source %.6g   condition %s", source->Value, control.ConditionActive ? "active" : "inactive");
-        }
-        ImGui::TextDisabled("Rules are evaluated in list order; later active rules win when they target the same setting.");
+        ImGui::TextDisabled("Triggers: %llu   %s", static_cast<unsigned long long>(control.TriggerCount), control.LastTriggerTime > 0.0 ? "has fired" : "never fired");
         if (changed) engine.markChanged();
-        ImGui::PopID();
-        ImGui::PopID();
+        ImGui::Unindent(10.0f);
+        ImGui::Dummy(ImVec2(0.0f, 5.0f));
+        ImGui::Separator();
+        ImGui::PopID(); ImGui::PopID();
         return changed;
+    }
+
+    template<typename T>
+    static void runtimeSortUiNodes(std::vector<T*>& nodes)
+    {
+        std::ranges::sort(nodes, [](const T* a, const T* b) { if (a->Order != b->Order) return a->Order < b->Order; return a->Id < b->Id; });
+    }
+
+    static bool runtimeWriteProcessMemory(const pid_t pid, const std::uintptr_t address, const std::span<const std::uint8_t> bytes, std::string& error)
+    {
+        if (bytes.empty()) { error = "nothing to write"; return false; }
+        iovec local{const_cast<std::uint8_t*>(bytes.data()), bytes.size()}; iovec remote{reinterpret_cast<void*>(address), bytes.size()}; errno = 0;
+        const ssize_t count = ::process_vm_writev(pid, &local, 1, &remote, 1, 0);
+        if (count == static_cast<ssize_t>(bytes.size())) { error.clear(); return true; }
+        const std::string vmError = count < 0 ? std::string(std::strerror(errno)) : "short write (" + std::to_string(count) + "/" + std::to_string(bytes.size()) + ")";
+        const std::string memPath = "/proc/" + std::to_string(pid) + "/mem"; const int fd = ::open(memPath.c_str(), O_RDWR | O_CLOEXEC);
+        if (fd < 0) { error = "process_vm_writev: " + vmError + "; /proc/pid/mem: " + std::strerror(errno); return false; }
+        errno = 0; const ssize_t written = ::pwrite(fd, bytes.data(), bytes.size(), static_cast<off_t>(address)); const int savedErrno = errno; ::close(fd);
+        if (written == static_cast<ssize_t>(bytes.size())) { error.clear(); return true; }
+        const std::string memError = written < 0 ? std::string(std::strerror(savedErrno)) : "short write (" + std::to_string(written) + "/" + std::to_string(bytes.size()) + ")";
+        error = "process_vm_writev: " + vmError + "; /proc/pid/mem: " + memError; return false;
+    }
+
+    static bool runtimeParseHexBytes(const std::string_view text, std::vector<std::uint8_t>& bytes, std::string& error)
+    {
+        bytes.clear(); std::istringstream stream{std::string(text)}; std::string token;
+        while (stream >> token)
+        {
+            if (token.size() != 2 || runtimeHexNibble(token[0]) < 0 || runtimeHexNibble(token[1]) < 0) { error = "expected hexadecimal bytes such as 90 90 CC"; return false; }
+            bytes.push_back(static_cast<std::uint8_t>((runtimeHexNibble(token[0]) << 4) | runtimeHexNibble(token[1])));
+        }
+        if (bytes.empty()) { error = "no bytes entered"; return false; } error.clear(); return true;
+    }
+
+    static std::string runtimeFormatHexBytes(const std::span<const std::uint8_t> bytes)
+    {
+        std::ostringstream out; out << std::hex << std::uppercase << std::setfill('0');
+        for (std::size_t i = 0; i < bytes.size(); ++i) { if (i) out << ' '; out << std::setw(2) << static_cast<unsigned>(bytes[i]); } return out.str();
+    }
+
+    struct RuntimeMemoryInspectorState
+    {
+        pid_t Pid = 0;
+        std::uintptr_t Address = 0;
+        int ReadSize = 128;
+        std::vector<std::uint8_t> Original;
+        std::vector<std::uint8_t> Patched;
+        std::array<char, 16 * 1024> HexEdit{};
+        std::string Status;
+        TextEditor Disassembly;
+        bool EditorInitialized = false;
+        int WriteConfirm = 0;
+    };
+
+    static void runtimeRefreshMemoryInspector(RuntimeMemoryInspectorState& state)
+    {
+        state.Original.assign(static_cast<std::size_t>(std::clamp(state.ReadSize, 1, 4096)), 0); std::string error;
+        if (!readProcessMemoryBlock(state.Pid, state.Address, state.Original, error)) { state.Original.clear(); state.Status = "read failed: " + error; return; }
+        const std::string formatted = runtimeFormatHexBytes(state.Original); std::snprintf(state.HexEdit.data(), state.HexEdit.size(), "%s", formatted.c_str()); state.Status = "read " + std::to_string(state.Original.size()) + " bytes"; state.WriteConfirm = 0;
+#if QUARTZ_HAS_ZYDIS
+        std::ostringstream disassembly; std::size_t offset = 0;
+        while (offset < state.Original.size())
+        {
+            std::string text; std::size_t length = 0; if (!runtimeDecodeInstructionText(std::span<const std::uint8_t>(state.Original).subspan(offset), state.Address + offset, text, length) || length == 0) break;
+            disassembly << runtimeHexAddress(state.Address + offset) << "  " << text << '\n'; offset += length;
+        }
+        if (!state.EditorInitialized) { state.Disassembly.SetPalette(shaderEditorPalette()); state.Disassembly.SetShowLineNumbersEnabled(false); state.Disassembly.SetWordWrapEnabled(false); state.EditorInitialized = true; }
+        state.Disassembly.SetText(disassembly.str());
+#else
+        if (!state.EditorInitialized) { state.Disassembly.SetPalette(shaderEditorPalette()); state.Disassembly.SetShowLineNumbersEnabled(false); state.Disassembly.SetWordWrapEnabled(false); state.EditorInitialized = true; }
+        state.Disassembly.SetText("Zydis is not available. Install/link Zydis to enable disassembly.");
+#endif
+    }
+
+    static void drawRuntimeMemoryInspector(RuntimeMemoryInspectorState& state)
+    {
+        ImGui::SeparatorText("Memory / disassembly");
+        int pidValue = static_cast<int>(state.Pid); ImGui::SetNextItemWidth(100.0f); if (ImGui::InputInt("PID##memory", &pidValue)) state.Pid = static_cast<pid_t>(std::max(pidValue, 0)); ImGui::SameLine();
+        unsigned long long address = state.Address; ImGui::SetNextItemWidth(190.0f); if (ImGui::InputScalar("Address##memory", ImGuiDataType_U64, &address, nullptr, nullptr, "0x%llX", ImGuiInputTextFlags_CharsHexadecimal)) state.Address = static_cast<std::uintptr_t>(address); ImGui::SameLine();
+        ImGui::SetNextItemWidth(100.0f); ImGui::InputInt("Bytes", &state.ReadSize); state.ReadSize = std::clamp(state.ReadSize, 1, 4096); ImGui::SameLine(); if (ImGui::Button("Read / disassemble")) runtimeRefreshMemoryInspector(state);
+        if (!state.Status.empty()) ImGui::TextDisabled("%s", state.Status.c_str());
+        if (!state.Original.empty())
+        {
+            ImGui::TextDisabled("Editable bytes (snapshot is retained separately for verification/restore)"); ImGui::InputTextMultiline("##hexPatch", state.HexEdit.data(), state.HexEdit.size(), ImVec2(-1.0f, 80.0f));
+            ImGui::TextDisabled("Disassembly"); state.Disassembly.Render("##disassembly", ImVec2(-1.0f, 220.0f));
+            std::vector<std::uint8_t> patch; std::string error; const bool patchValid = runtimeParseHexBytes(state.HexEdit.data(), patch, error) && patch.size() <= state.Original.size();
+            if (!patchValid) ImGui::TextColored(ImVec4(1.0f,0.55f,0.2f,1.0f), "%s", error.empty() ? "patch is larger than the read window" : error.c_str());
+            if (state.WriteConfirm == 0) { if (ImGui::Button("WRITE") && patchValid) state.WriteConfirm = 1; }
+            else if (state.WriteConfirm == 1) { ImGui::TextColored(ImVec4(1.0f,0.65f,0.2f,1.0f), "Are you sure? PID %d @ %s", state.Pid, runtimeHexAddress(state.Address).c_str()); if (ImGui::Button("Nope")) state.WriteConfirm = 0; ImGui::SameLine(); if (ImGui::Button("Yes, continue")) state.WriteConfirm = 2; }
+            else if (state.WriteConfirm == 2) { ImGui::TextColored(ImVec4(1.0f,0.45f,0.2f,1.0f), "Hmm... really really sure?"); if (ImGui::Button("Abort")) state.WriteConfirm = 0; ImGui::SameLine(); if (ImGui::Button("REALLY WRITE")) state.WriteConfirm = 3; }
+            else
+            {
+                ImGui::TextColored(ImVec4(1.0f,0.25f,0.25f,1.0f), "Final check: this writes directly into another process.");
+                if (ImGui::Button("I changed my mind")) state.WriteConfirm = 0; ImGui::SameLine();
+                if (ImGui::Button("DO IT"))
+                {
+                    std::vector<std::uint8_t> current(patch.size());
+                    if (!readProcessMemoryBlock(state.Pid, state.Address, current, error)) state.Status = "write refused: verification read failed: " + error;
+                    else if (!std::equal(current.begin(), current.end(), state.Original.begin())) state.Status = "write refused: target bytes changed since preview";
+                    else if (runtimeWriteProcessMemory(state.Pid, state.Address, patch, error)) { state.Patched = patch; state.Status = "it somehow worked"; state.WriteConfirm = 0; }
+                    else state.Status = "write failed: " + error;
+                }
+            }
+            if (!state.Patched.empty())
+            {
+                if (ImGui::Button("Restore original bytes if not ded to hell"))
+                {
+                    std::vector<std::uint8_t> current(state.Patched.size());
+                    if (!runtimeProcessIsAlive(state.Pid)) state.Status = "target process no longer exists: ded to hell";
+                    else if (!readProcessMemoryBlock(state.Pid, state.Address, current, error)) state.Status = "restore refused: read failed: " + error;
+                    else if (current != state.Patched) state.Status = "restore refused: memory no longer matches patched bytes";
+                    else if (runtimeWriteProcessMemory(state.Pid, state.Address, std::span<const std::uint8_t>(state.Original).first(state.Patched.size()), error)) { state.Status = "original bytes restored"; state.Patched.clear(); runtimeRefreshMemoryInspector(state); }
+                    else state.Status = "restore failed: " + error;
+                }
+            }
+        }
+    }
+
+    static void drawRuntimePointers(RuntimeBindingEngine& engine)
+    {
+        static RuntimeMemoryInspectorState inspector;
+        ImGui::TextUnformatted("Pointer assignments"); ImGui::SameLine(); if (ImGui::Button("+ Add pointer")) engine.addPointer();
+        ImGui::SameLine(); ImGui::TextDisabled("Descriptors are models; pointers assign a model to a real process address and retain provenance.");
+        std::optional<std::size_t> erase;
+        std::vector<RuntimeObjectPointer*> order; for (auto& pointer : engine.pointers()) order.push_back(&pointer); runtimeSortUiNodes(order);
+        auto renderPointer = [&](RuntimeObjectPointer* pointer)
+        {
+            const std::size_t index = static_cast<std::size_t>(pointer - engine.pointers().data()); ImGui::PushID(static_cast<int>(pointer->Id & 0x7fffffffULL));
+            const std::string header = std::string(pointer->Name) + (pointer->Resolved ? "  " + runtimeHexAddress(pointer->Address) : "  UNRESOLVED") + "###Pointer" + std::to_string(pointer->Id);
+            if (ImGui::CollapsingHeader(header.c_str()))
+            {
+                bool changed = false; changed |= ImGui::Checkbox("Enabled", &pointer->Enabled); ImGui::SameLine(); if (ImGui::SmallButton("Remove")) erase = index; ImGui::SameLine(); ImGui::SetNextItemWidth(220.0f); changed |= ImGui::InputText("Name", pointer->Name, sizeof(pointer->Name));
+                ImGui::SetNextItemWidth(170.0f); changed |= ImGui::InputText("Group", pointer->Group, sizeof(pointer->Group)); ImGui::SameLine(); ImGui::SetNextItemWidth(80.0f); changed |= ImGui::InputInt("Order", &pointer->Order); ImGui::SameLine(); if (ImGui::SmallButton("Up##pointerOrder")) { --pointer->Order; changed = true; } ImGui::SameLine(); if (ImGui::SmallButton("Down##pointerOrder")) { ++pointer->Order; changed = true; }
+                RuntimeObjectDescriptor* descriptor = engine.findObject(pointer->DescriptorId); ImGui::SetNextItemWidth(320.0f);
+                if (ImGui::BeginCombo("Descriptor model", descriptor ? descriptor->Name : "<select model>")) { for (auto& model : engine.objects()) { const bool selected = model.Id == pointer->DescriptorId; if (ImGui::Selectable(model.Name, selected)) { pointer->DescriptorId = model.Id; changed = true; } if (selected) ImGui::SetItemDefaultFocus(); } ImGui::EndCombo(); }
+                changed |= drawRuntimeBindingReferenceCombo(engine, "Base address binding", pointer->BaseBindingId); const RuntimeBinding* process = pointer->ProcessBindingId ? engine.findBinding(pointer->ProcessBindingId) : engine.findBinding(pointer->BaseBindingId); ImGui::SetNextItemWidth(320.0f);
+                if (ImGui::BeginCombo("Process binding", pointer->ProcessBindingId == 0 ? "<same as base>" : process ? process->Name : "<missing>")) { if (ImGui::Selectable("<same as base>", pointer->ProcessBindingId == 0)) { pointer->ProcessBindingId = 0; changed = true; } for (const auto& candidate : engine.bindings()) { if (candidate.ProcessId <= 0) continue; const bool selected = candidate.Id == pointer->ProcessBindingId; if (ImGui::Selectable(candidate.Name, selected)) { pointer->ProcessBindingId = candidate.Id; changed = true; } } ImGui::EndCombo(); }
+                const int step = 1, fast = 16; ImGui::SetNextItemWidth(150.0f); changed |= ImGui::InputScalar("Base offset", ImGuiDataType_S32, &pointer->BaseOffset, &step, &fast, "0x%X", ImGuiInputTextFlags_CharsHexadecimal);
+                ImGui::Text("Resolved: %s   PID: %d", pointer->Resolved ? runtimeHexAddress(pointer->Address).c_str() : "<none>", static_cast<int>(pointer->ProcessId)); if (!pointer->Status.empty()) ImGui::TextDisabled("%s", pointer->Status.c_str());
+                if (ImGui::TreeNode("Where did this pointer come from?")) { if (pointer->Provenance.empty()) ImGui::TextDisabled("Waiting for provenance..."); for (const auto& stepText : pointer->Provenance) ImGui::BulletText("%s", stepText.c_str()); ImGui::TreePop(); }
+                if (pointer->Resolved && ImGui::Button("Inspect this address")) { inspector.Pid = pointer->ProcessId; inspector.Address = pointer->Address; runtimeRefreshMemoryInspector(inspector); }
+                if (descriptor && pointer->Resolved)
+                {
+                    ImGui::SeparatorText("Fields at this instance");
+                    if (ImGui::BeginTable("PointerFields", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable))
+                    {
+                        ImGui::TableSetupColumn("Field"); ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_WidthFixed, 80); ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 150); ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 110); ImGui::TableSetupColumn("Raw", ImGuiTableColumnFlags_WidthStretch); ImGui::TableSetupColumn("Target", ImGuiTableColumnFlags_WidthStretch); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 65); ImGui::TableHeadersRow();
+                        for (auto& field : descriptor->Fields)
+                        {
+                            if (!field.Enabled || runtimeObjectFieldIsFiller(field.Type)) continue; const auto offset = runtimeObjectFieldOffset(*descriptor, field.Id); const auto addressValue = pointer->Address + offset; ImGui::PushID(static_cast<int>(field.Id & 0x7fffffffULL)); ImGui::TableNextRow();
+                            ImGui::TableNextColumn(); ImGui::TextUnformatted(field.Name); ImGui::TableNextColumn(); ImGui::Text("+0x%zX", offset); ImGui::TableNextColumn(); ImGui::Text("0x%llX", static_cast<unsigned long long>(addressValue)); ImGui::TableNextColumn(); ImGui::TextUnformatted(runtimeObjectFieldTypeName(field.Type)); ImGui::TableNextColumn();
+                            const std::size_t size = std::min<std::size_t>(runtimeObjectFieldSize(field), 32); std::array<std::uint8_t, 32> raw{}; std::string error; const bool rawOk = readProcessMemoryBlock(pointer->ProcessId, addressValue, std::span<std::uint8_t>(raw).first(size), error); if (rawOk) ImGui::TextUnformatted(runtimeFormatHexBytes(std::span<const std::uint8_t>(raw).first(size)).c_str()); else ImGui::TextDisabled("%s", error.c_str());
+                            ImGui::TableNextColumn();
+                            const bool pointerLike = field.Type == RuntimeObjectFieldType::Pointer || field.Type == RuntimeObjectFieldType::CStringPointer || field.Type == RuntimeObjectFieldType::WStringPointer;
+                            if (pointerLike) { std::uintptr_t target = 0; if (readProcessMemoryValue(pointer->ProcessId, addressValue, target, error)) { ImGui::Text("0x%llX", static_cast<unsigned long long>(target)); if (target != 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Dereferenced pointer target"); } else ImGui::TextDisabled("%s", error.c_str()); }
+                            else ImGui::TextDisabled("-");
+                            ImGui::TableNextColumn(); if (ImGui::SmallButton("Inspect")) { inspector.Pid = pointer->ProcessId; inspector.Address = addressValue; runtimeRefreshMemoryInspector(inspector); } ImGui::PopID();
+                        }
+                        ImGui::EndTable();
+                    }
+                }
+                if (changed) engine.markChanged();
+            }
+            ImGui::Separator(); ImGui::PopID();
+                };
+        for (auto* pointer : order) if (pointer->Group[0] == '\0') renderPointer(pointer);
+        std::vector<std::string> pointerGroups;
+        for (const auto* pointer : order) if (pointer->Group[0] != '\0' && std::ranges::find(pointerGroups, std::string(pointer->Group)) == pointerGroups.end()) pointerGroups.emplace_back(pointer->Group);
+        for (const auto& group : pointerGroups)
+        {
+            if (!ImGui::CollapsingHeader((group + "###PointerGroup" + group).c_str(), ImGuiTreeNodeFlags_DefaultOpen)) continue;
+            ImGui::Indent(8.0f);
+            for (auto* pointer : order) if (group == pointer->Group) renderPointer(pointer);
+            ImGui::Unindent(8.0f);
+        }
+        if (erase) engine.erasePointer(*erase); if (engine.pointers().empty()) ImGui::TextDisabled("No pointer assignments yet. Add one and point it at a binding with an exact address.");
+        drawRuntimeMemoryInspector(inspector);
+    }
+
+    static void drawRuntimeObjectDescriptors(RuntimeBindingEngine& engine)
+    {
+        ImGui::SeparatorText("Object descriptors");
+        ImGui::TextWrapped("Object descriptors are reusable layout models only. They do not own a runtime address; assign a model to a real address in the Pointers tab, then bind fields from that pointer instance.");
+        if (ImGui::Button("Add object descriptor")) engine.addObject();
+        ImGui::SameLine();
+        ImGui::TextDisabled("Use filler fields and packing/alignment controls to mirror native layouts, including unwanted padding.");
+
+        constexpr int offsetStep = 1, offsetFastStep = 16;
+        std::optional<std::size_t> eraseObject;
+        std::vector<RuntimeObjectDescriptor*> objectOrder; for (auto& model : engine.objects()) objectOrder.push_back(&model); runtimeSortUiNodes(objectOrder);
+        auto renderObject = [&](RuntimeObjectDescriptor* objectPtr)
+        {
+            auto& object = *objectPtr; const std::size_t objectIndex = static_cast<std::size_t>(objectPtr - engine.objects().data());
+            ImGui::PushID("RuntimeObject");
+            ImGui::PushID(static_cast<int>(object.Id & 0x7fffffffULL));
+            const std::string header = std::string(object.Name[0] ? object.Name : "Object") + "###RuntimeObject" + std::to_string(object.Id);
+            if (!ImGui::CollapsingHeader(header.c_str())) { ImGui::PopID(); ImGui::PopID(); return; }
+            bool changed = false;
+            changed |= ImGui::Checkbox("Enabled", &object.Enabled);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Remove object")) eraseObject = objectIndex;
+            ImGui::SameLine(); ImGui::SetNextItemWidth(220.0f); changed |= ImGui::InputText("Name", object.Name, sizeof(object.Name));
+            ImGui::SetNextItemWidth(690.0f); changed |= ImGui::InputText("Description", object.Description, sizeof(object.Description));
+            ImGui::SetNextItemWidth(180.0f); changed |= ImGui::InputText("Group", object.Group, sizeof(object.Group)); ImGui::SameLine(); ImGui::SetNextItemWidth(80.0f); changed |= ImGui::InputInt("Order", &object.Order); ImGui::SameLine(); if (ImGui::SmallButton("Up##objectOrder")) { --object.Order; changed = true; } ImGui::SameLine(); if (ImGui::SmallButton("Down##objectOrder")) { ++object.Order; changed = true; }
+
+            /* v9 compatibility assignment UI removed: address assignment now lives in the Pointers tab. */
+            if (false) changed |= drawRuntimeBindingReferenceCombo(engine, "Base address binding", object.BaseBindingId);
+            int packing = static_cast<int>(object.Packing); ImGui::SetNextItemWidth(150.0f);
+            if (ImGui::Combo("Packing", &packing, "Natural\0Pack 1\0Pack 2\0Pack 4\0Pack 8\0Pack 16\0")) { object.Packing = static_cast<RuntimeObjectPacking>(packing); changed = true; }
+            std::size_t objectSize = 0; runtimeObjectFieldOffset(object, 0, &objectSize);
+            ImGui::SameLine(); ImGui::TextDisabled("Model size: %zu B | pointer instances: %zu", objectSize, static_cast<std::size_t>(std::count_if(engine.pointers().begin(), engine.pointers().end(), [&](const RuntimeObjectPointer& p) { return p.DescriptorId == object.Id; })));
+
+            if (ImGui::SmallButton("Add field")) { engine.addObjectField(object); changed = true; }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Add 4-byte filler"))
+            {
+                auto& field = engine.addObjectField(object);
+                std::snprintf(field.Name, sizeof(field.Name), "Padding");
+                field.Type = RuntimeObjectFieldType::Filler4;
+                changed = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Add 8-byte filler"))
+            {
+                auto& field = engine.addObjectField(object);
+                std::snprintf(field.Name, sizeof(field.Name), "Padding");
+                field.Type = RuntimeObjectFieldType::Filler8;
+                changed = true;
+            }
+
+            std::optional<std::size_t> eraseField;
+            if (ImGui::BeginTable("ObjectFields", 9, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingStretchProp))
+            {
+                ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed, 32.0f);
+                ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+                ImGui::TableSetupColumn("Name");
+                ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+                ImGui::TableSetupColumn("Align", ImGuiTableColumnFlags_WidthFixed, 75.0f);
+                ImGui::TableSetupColumn("Manual", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+                ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+                ImGui::TableSetupColumn("String", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+                ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 58.0f);
+                ImGui::TableHeadersRow();
+                for (std::size_t fieldIndex = 0; fieldIndex < object.Fields.size(); ++fieldIndex)
+                {
+                    auto& field = object.Fields[fieldIndex];
+                    ImGui::PushID(static_cast<int>(field.Id & 0x7fffffffULL));
+                    const std::size_t offset = runtimeObjectFieldOffset(object, field.Id, &objectSize);
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn(); changed |= ImGui::Checkbox("##on", &field.Enabled);
+                    ImGui::TableNextColumn(); ImGui::Text("0x%zX", offset == std::numeric_limits<std::size_t>::max() ? 0 : offset);
+                    ImGui::TableNextColumn(); ImGui::SetNextItemWidth(-1.0f); changed |= ImGui::InputText("##name", field.Name, sizeof(field.Name));
+                    ImGui::TableNextColumn();
+                    int type = static_cast<int>(field.Type);
+                    ImGui::SetNextItemWidth(-1.0f);
+                    if (ImGui::Combo("##type", &type, "u8\0i8\0u16\0i16\0u32\0i32\0u64\0i64\0float\0double\0bool\0pointer\0filler 1\0filler 2\0filler 4\0filler 8\0filler 16\0filler 32\0filler custom\0const char*\0const wchar_t*\0char[N]\0wchar_t[N]\0")) { field.Type = static_cast<RuntimeObjectFieldType>(type); changed = true; }
+                    ImGui::TableNextColumn();
+                    int alignment = static_cast<int>(field.Alignment);
+                    ImGui::SetNextItemWidth(-1.0f);
+                    static constexpr const char* Alignments[] = {"Auto", "1", "2", "4", "8", "16"};
+                    if (ImGui::Combo("##alignment", &alignment, Alignments, static_cast<int>(std::size(Alignments)))) { field.Alignment = static_cast<RuntimeObjectAlignment>(alignment); changed = true; }
+                    ImGui::TableNextColumn();
+                    changed |= ImGui::Checkbox("##manual", &field.ManualOffset);
+                    if (field.ManualOffset) { ImGui::SameLine(); ImGui::SetNextItemWidth(65.0f); changed |= ImGui::InputScalar("##offset", ImGuiDataType_S32, &field.Offset, &offsetStep, &offsetFastStep, "0x%X", ImGuiInputTextFlags_CharsHexadecimal); }
+                    ImGui::TableNextColumn();
+                    if (field.Type == RuntimeObjectFieldType::FillerCustom)
+                    {
+                        ImGui::SetNextItemWidth(-1.0f);
+                        changed |= ImGui::InputInt("##customSize", &field.CustomFillerBytes);
+                        field.CustomFillerBytes = std::max(field.CustomFillerBytes, 1);
+                    }
+                    else ImGui::Text("%zu", runtimeObjectFieldSize(field));
+                    ImGui::TableNextColumn();
+                    if (field.Type == RuntimeObjectFieldType::CStringPointer || field.Type == RuntimeObjectFieldType::WStringPointer) { ImGui::SetNextItemWidth(-1.0f); changed |= ImGui::InputInt("##stringMax", &field.StringMaxLength); field.StringMaxLength = std::clamp(field.StringMaxLength, 1, 4096); }
+                    else if (field.Type == RuntimeObjectFieldType::FixedCString || field.Type == RuntimeObjectFieldType::FixedWString) { ImGui::SetNextItemWidth(-1.0f); changed |= ImGui::InputInt("##elements", &field.FixedElementCount); field.FixedElementCount = std::clamp(field.FixedElementCount, 1, 4096); }
+                    else ImGui::TextDisabled("-");
+                    ImGui::TableNextColumn();
+                    if (!runtimeObjectFieldIsFiller(field.Type))
+                    {
+                        if (ImGui::SmallButton("+"))
+                        {
+                            auto& binding = engine.add();
+                            std::snprintf(binding.Name, sizeof(binding.Name), "%s.%s", object.Name, field.Name);
+                            binding.Source = RuntimeSourceKind::ObjectField;
+                            binding.ObjectId = object.Id;
+                            if (const auto it = std::ranges::find_if(engine.pointers(), [&](const RuntimeObjectPointer& p) { return p.DescriptorId == object.Id; }); it != engine.pointers().end()) binding.ObjectPointerId = it->Id;
+                            binding.ObjectFieldId = field.Id;
+                            binding.WriteMaterial = false;
+                            binding.Clamp = false;
+                            binding.SmoothingHz = 0.0f;
+                            binding.Priority = 10;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create an Object field binding for this field. Pointer fields preserve the exact pointer for chaining another descriptor.");
+                        ImGui::SameLine();
+                    }
+                    if (ImGui::SmallButton("x")) eraseField = fieldIndex;
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
+            }
+            if (eraseField) { engine.eraseObjectField(object, *eraseField); changed = true; }
+            runtimeObjectFieldOffset(object, 0, &object.Size);
+            if (changed) engine.markChanged();
+            ImGui::PopID(); ImGui::PopID();
+                };
+        for (auto* object : objectOrder) if (object->Group[0] == '\0') renderObject(object);
+        std::vector<std::string> objectGroups;
+        for (const auto* object : objectOrder) if (object->Group[0] != '\0' && std::ranges::find(objectGroups, std::string(object->Group)) == objectGroups.end()) objectGroups.emplace_back(object->Group);
+        for (const auto& group : objectGroups)
+        {
+            if (!ImGui::CollapsingHeader((group + "###ObjectGroup" + group).c_str(), ImGuiTreeNodeFlags_DefaultOpen)) continue;
+            ImGui::Indent(8.0f);
+            for (auto* object : objectOrder) if (group == object->Group) renderObject(object);
+            ImGui::Unindent(8.0f);
+        }
+        if (eraseObject) engine.eraseObject(*eraseObject);
+        if (engine.objects().empty()) ImGui::TextDisabled("No object descriptors yet. Create a Native process address binding first, capture the object pointer, then describe its fields here.");
+    }
+
+    static bool drawProfileHotkey(RuntimeBindingProfile& profile)
+    {
+        struct KeyOption { const char* Name; int Key; };
+        static constexpr KeyOption Keys[] = {
+            {"None", 0}, {"F1", GLFW_KEY_F1}, {"F2", GLFW_KEY_F2}, {"F3", GLFW_KEY_F3}, {"F4", GLFW_KEY_F4}, {"F5", GLFW_KEY_F5}, {"F6", GLFW_KEY_F6},
+            {"F7", GLFW_KEY_F7}, {"F8", GLFW_KEY_F8}, {"F9", GLFW_KEY_F9}, {"F10", GLFW_KEY_F10}, {"F11", GLFW_KEY_F11}, {"F12", GLFW_KEY_F12},
+            {"1", GLFW_KEY_1}, {"2", GLFW_KEY_2}, {"3", GLFW_KEY_3}, {"4", GLFW_KEY_4}, {"5", GLFW_KEY_5}, {"6", GLFW_KEY_6}, {"7", GLFW_KEY_7}, {"8", GLFW_KEY_8}, {"9", GLFW_KEY_9}, {"0", GLFW_KEY_0},
+            {"A", GLFW_KEY_A}, {"B", GLFW_KEY_B}, {"C", GLFW_KEY_C}, {"D", GLFW_KEY_D}, {"E", GLFW_KEY_E}, {"F", GLFW_KEY_F}, {"G", GLFW_KEY_G}, {"H", GLFW_KEY_H}, {"I", GLFW_KEY_I}, {"J", GLFW_KEY_J},
+            {"K", GLFW_KEY_K}, {"L", GLFW_KEY_L}, {"M", GLFW_KEY_M}, {"N", GLFW_KEY_N}, {"O", GLFW_KEY_O}, {"P", GLFW_KEY_P}, {"Q", GLFW_KEY_Q}, {"R", GLFW_KEY_R}, {"S", GLFW_KEY_S}, {"T", GLFW_KEY_T},
+            {"U", GLFW_KEY_U}, {"V", GLFW_KEY_V}, {"W", GLFW_KEY_W}, {"X", GLFW_KEY_X}, {"Y", GLFW_KEY_Y}, {"Z", GLFW_KEY_Z}
+        };
+        bool changed = false;
+        changed |= ImGui::Checkbox("Ctrl", &profile.HotkeyCtrl); ImGui::SameLine(); changed |= ImGui::Checkbox("Alt", &profile.HotkeyAlt); ImGui::SameLine(); changed |= ImGui::Checkbox("Shift", &profile.HotkeyShift); ImGui::SameLine();
+        const char* preview = "None"; for (const auto& key : Keys) if (key.Key == profile.HotkeyKey) { preview = key.Name; break; }
+        ImGui::SetNextItemWidth(100.0f);
+        if (ImGui::BeginCombo("Key", preview))
+        {
+            for (const auto& key : Keys) { const bool selected = key.Key == profile.HotkeyKey; if (ImGui::Selectable(key.Name, selected)) { profile.HotkeyKey = key.Key; changed = true; } if (selected) ImGui::SetItemDefaultFocus(); }
+            ImGui::EndCombo();
+        }
+        return changed;
+    }
+
+    static void drawRuntimeValueBank(RuntimeBindingEngine& engine)
+    {
+        ImGui::TextUnformatted("Value bank"); ImGui::SameLine(); if (ImGui::Button("+ Add value")) engine.addBankValue();
+        ImGui::SameLine(); ImGui::TextDisabled("Persistent scratch values survive source loss/restarts and can hold numbers, booleans, strings, or exact addresses.");
+        std::optional<std::size_t> erase;
+        if (ImGui::BeginTable("RuntimeValueBank", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp))
+        {
+            ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 48.0f); ImGui::TableSetupColumn("Name"); ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 110.0f); ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch); ImGui::TableSetupColumn("Description"); ImGui::TableSetupColumn("Id", ImGuiTableColumnFlags_WidthFixed, 55.0f); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 34.0f); ImGui::TableHeadersRow();
+            for (std::size_t i = 0; i < engine.bank().size(); ++i)
+            {
+                auto& value = engine.bank()[i]; bool changed = false, valueChanged = false; ImGui::PushID(static_cast<int>(value.Id & 0x7fffffffULL)); ImGui::TableNextRow();
+                ImGui::TableNextColumn(); changed |= ImGui::Checkbox("##enabled", &value.Enabled); ImGui::SameLine(); const bool bankGood = value.HasValue && (value.Type == RuntimeBankValueType::Boolean ? value.Boolean : value.Type == RuntimeBankValueType::Address ? value.Address != 0 : value.Type == RuntimeBankValueType::String ? value.String[0] != '\0' : true); drawRuntimeStateSquare("##bankState", runtimeStateColor(value.Enabled, bankGood, false, !value.HasValue));
+                ImGui::TableNextColumn(); ImGui::SetNextItemWidth(-1.0f); changed |= ImGui::InputText("##name", value.Name, sizeof(value.Name));
+                ImGui::TableNextColumn(); int type = static_cast<int>(value.Type); ImGui::SetNextItemWidth(-1.0f); if (ImGui::Combo("##type", &type, "Number\0Integer\0Boolean\0String\0Address\0")) { value.Type = static_cast<RuntimeBankValueType>(type); changed = valueChanged = true; }
+                ImGui::TableNextColumn(); ImGui::SetNextItemWidth(-1.0f);
+                if (value.Type == RuntimeBankValueType::Number) { if (ImGui::DragFloat("##number", &value.Number, 0.01f)) changed = valueChanged = true; }
+                else if (value.Type == RuntimeBankValueType::Integer) { long long temp = static_cast<long long>(value.Integer); if (ImGui::InputScalar("##integer", ImGuiDataType_S64, &temp)) { value.Integer = static_cast<std::int64_t>(temp); changed = valueChanged = true; } }
+                else if (value.Type == RuntimeBankValueType::Boolean) { if (ImGui::Checkbox("##boolean", &value.Boolean)) changed = valueChanged = true; }
+                else if (value.Type == RuntimeBankValueType::String) { if (ImGui::InputText("##string", value.String, sizeof(value.String))) changed = valueChanged = true; }
+                else { unsigned long long address = static_cast<unsigned long long>(value.Address); if (ImGui::InputScalar("##address", ImGuiDataType_U64, &address, nullptr, nullptr, "0x%llX", ImGuiInputTextFlags_CharsHexadecimal)) { value.Address = static_cast<std::uintptr_t>(address); changed = valueChanged = true; } }
+                ImGui::TableNextColumn(); ImGui::SetNextItemWidth(-1.0f); changed |= ImGui::InputText("##description", value.Description, sizeof(value.Description));
+                ImGui::TableNextColumn(); ImGui::Text("#%llu", static_cast<unsigned long long>(value.Id));
+                ImGui::TableNextColumn(); if (ImGui::SmallButton("x")) erase = i;
+                if (valueChanged) { value.HasValue = true; value.ChangedThisFrame = true; }
+                if (changed) engine.markChanged();
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        if (erase) engine.eraseBankValue(*erase);
+        if (engine.bank().empty()) ImGui::TextDisabled("No bank values yet. Add one to remember state such as the shader that was active before a game took over.");
+    }
+
+    static void drawRuntimeProfiles(RuntimeBindingEngine& engine)
+    {
+        ImGui::TextUnformatted("Binding profiles"); ImGui::SameLine(); if (ImGui::Button("+ Add profile")) engine.addProfile();
+        ImGui::SameLine(); ImGui::TextDisabled("Profiles mass-enable/disable graph nodes and can be activated with a key combination while Quartz has keyboard focus.");
+        if (!engine.profiles().empty())
+        {
+            const RuntimeBindingProfile* active = engine.findProfile(engine.activeProfileId());
+            ImGui::SetNextItemWidth(280.0f);
+            if (ImGui::BeginCombo("Active profile", active ? active->Name : "<manual / none>"))
+            {
+                if (ImGui::Selectable("<manual / none>", engine.activeProfileId() == 0)) engine.clearActiveProfile();
+                for (auto& profile : engine.profiles()) { const bool selected = profile.Id == engine.activeProfileId(); if (ImGui::Selectable(profile.Name, selected)) engine.applyProfile(profile); if (selected) ImGui::SetItemDefaultFocus(); }
+                ImGui::EndCombo();
+            }
+        }
+        std::optional<std::size_t> erase;
+        for (std::size_t i = 0; i < engine.profiles().size(); ++i)
+        {
+            auto& profile = engine.profiles()[i]; ImGui::PushID(static_cast<int>(profile.Id & 0x7fffffffULL));
+            drawRuntimeStateSquare("##profileState", runtimeStateColor(profile.Enabled, profile.Id == engine.activeProfileId())); ImGui::SameLine();
+            const std::string header = std::string(profile.Name) + (profile.Id == engine.activeProfileId() ? "  ACTIVE" : "") + "###Profile" + std::to_string(profile.Id);
+            if (ImGui::CollapsingHeader(header.c_str()))
+            {
+                bool changed = false; changed |= ImGui::Checkbox("Enabled", &profile.Enabled); ImGui::SameLine(); ImGui::SetNextItemWidth(220.0f); changed |= ImGui::InputText("Name", profile.Name, sizeof(profile.Name));
+                changed |= ImGui::Checkbox("Exclusive activation", &profile.Exclusive); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Exclusive profiles disable every binding/control first, then enable their selected members.");
+                if (ImGui::Button("Activate")) engine.applyProfile(profile); ImGui::SameLine(); if (ImGui::Button("Enable members")) engine.setProfileMembersEnabled(profile, true); ImGui::SameLine(); if (ImGui::Button("Disable members")) engine.setProfileMembersEnabled(profile, false); ImGui::SameLine(); if (ImGui::Button("Remove profile")) erase = i;
+                ImGui::SeparatorText("Hotkey"); changed |= drawProfileHotkey(profile);
+                ImGui::SeparatorText("Bindings");
+                if (ImGui::BeginTable("ProfileBindings", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
+                {
+                    ImGui::TableSetupColumn("Member", ImGuiTableColumnFlags_WidthFixed, 65.0f); ImGui::TableSetupColumn("Binding"); ImGui::TableSetupColumn("Current", ImGuiTableColumnFlags_WidthFixed, 80.0f); ImGui::TableHeadersRow();
+                    for (const auto& binding : engine.bindings()) { ImGui::TableNextRow(); ImGui::TableNextColumn(); bool member = std::find(profile.BindingIds.begin(), profile.BindingIds.end(), binding.Id) != profile.BindingIds.end(); if (ImGui::Checkbox(("##pb" + std::to_string(binding.Id)).c_str(), &member)) { if (member) profile.BindingIds.push_back(binding.Id); else std::erase(profile.BindingIds, binding.Id); changed = true; } ImGui::TableNextColumn(); ImGui::TextUnformatted(binding.Name); ImGui::TableNextColumn(); ImGui::TextColored(binding.Enabled ? ImVec4(0.2f,0.8f,0.3f,1) : ImVec4(0.8f,0.25f,0.25f,1), "%s", binding.Enabled ? "enabled" : "disabled"); }
+                    ImGui::EndTable();
+                }
+                ImGui::SeparatorText("Controls");
+                if (ImGui::BeginTable("ProfileControls", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
+                {
+                    ImGui::TableSetupColumn("Member", ImGuiTableColumnFlags_WidthFixed, 65.0f); ImGui::TableSetupColumn("Control"); ImGui::TableSetupColumn("Current", ImGuiTableColumnFlags_WidthFixed, 80.0f); ImGui::TableHeadersRow();
+                    for (const auto& control : engine.controls()) { ImGui::TableNextRow(); ImGui::TableNextColumn(); bool member = std::find(profile.ControlIds.begin(), profile.ControlIds.end(), control.Id) != profile.ControlIds.end(); if (ImGui::Checkbox(("##pc" + std::to_string(control.Id)).c_str(), &member)) { if (member) profile.ControlIds.push_back(control.Id); else std::erase(profile.ControlIds, control.Id); changed = true; } ImGui::TableNextColumn(); ImGui::TextUnformatted(control.Name); ImGui::TableNextColumn(); ImGui::TextColored(control.Enabled ? ImVec4(0.2f,0.8f,0.3f,1) : ImVec4(0.8f,0.25f,0.25f,1), "%s", control.Enabled ? "enabled" : "disabled"); }
+                    ImGui::EndTable();
+                }
+                if (changed) engine.markChanged();
+            }
+            ImGui::Separator(); ImGui::PopID();
+        }
+        if (erase) engine.eraseProfile(*erase);
+    }
+
+    static void drawGroupedBindings(RuntimeBindingEngine& engine, ShaderFramebuffer& shaderFramebuffer)
+    {
+        std::vector<RuntimeBinding*> order; for (auto& binding : engine.bindings()) order.push_back(&binding); runtimeSortUiNodes(order); std::set<std::string> groups; for (auto* binding : order) if (binding->Group[0]) groups.insert(binding->Group);
+        std::optional<std::size_t> erase;
+        auto drawOne = [&](RuntimeBinding& binding) { bool shouldErase = false; drawRuntimeBinding(engine, shaderFramebuffer, binding, shouldErase); if (shouldErase) erase = static_cast<std::size_t>(&binding - engine.bindings().data()); };
+        for (auto* binding : order) if (!binding->Group[0]) drawOne(*binding);
+        for (const auto& group : groups) if (ImGui::CollapsingHeader((group + "###BindingGroup" + group).c_str(), ImGuiTreeNodeFlags_DefaultOpen)) { ImGui::Indent(8.0f); for (auto* binding : order) if (group == binding->Group) drawOne(*binding); ImGui::Unindent(8.0f); }
+        if (erase) engine.erase(*erase);
+    }
+
+    static void drawGroupedControls(RuntimeBindingEngine& engine, ShaderFramebuffer& shaderFramebuffer)
+    {
+        std::vector<RuntimeControlRule*> order; for (auto& control : engine.controls()) order.push_back(&control); runtimeSortUiNodes(order); std::set<std::string> groups; for (auto* control : order) if (control->Group[0]) groups.insert(control->Group);
+        std::optional<std::size_t> erase;
+        auto drawOne = [&](RuntimeControlRule& control) { bool shouldErase = false; drawRuntimeControlRule(engine, shaderFramebuffer, control, shouldErase); if (shouldErase) erase = static_cast<std::size_t>(&control - engine.controls().data()); };
+        for (auto* control : order) if (!control->Group[0]) drawOne(*control);
+        for (const auto& group : groups) if (ImGui::CollapsingHeader((group + "###ControlGroup" + group).c_str(), ImGuiTreeNodeFlags_DefaultOpen)) { ImGui::Indent(8.0f); for (auto* control : order) if (group == control->Group) drawOne(*control); ImGui::Unindent(8.0f); }
+        if (erase) engine.eraseControl(*erase);
     }
 
     static void drawRuntimeBindingsPage(RuntimeBindingEngine& engine, ShaderFramebuffer& shaderFramebuffer)
     {
-        ImGui::SeparatorText("Runtime data -> shader material");
-        ImGui::TextWrapped("Bindings produce reusable runtime values. They can drive persistent shader material ids, feed other bindings, expose native-process health/status, and act as sources for control rules.");
-        if (ImGui::Button("Add binding"))
-        {
-            engine.add();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Save bindings")) engine.save();
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", engine.path().string().c_str());
+        ImGui::TextWrapped("Runtime bindings are a priority-ordered dataflow graph. Native/object sources, aggregate/comparison nodes, the value bank and controls can all feed each other; control iteration is bounded to prevent runaway loops.");
+        int passes = engine.controlPassLimit(); ImGui::SetNextItemWidth(110.0f); if (ImGui::InputInt("Control passes", &passes)) engine.setControlPassLimit(passes); ImGui::SameLine(); ImGui::TextDisabled("max iterative passes/frame");
 
-        if (ImGui::CollapsingHeader("Quick bindings"))
+        constexpr ImGuiTabBarFlags RuntimeTabs = ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_FittingPolicyResizeDown | ImGuiTabBarFlags_TabListPopupButton;
+        if (ImGui::BeginTabBar("RuntimeGraphTabs", RuntimeTabs))
         {
-            auto addPreset = [&](const char* name, const RuntimeSourceKind source, const int signal, const char* target)
+            if (ImGui::BeginTabItem("Bindings"))
             {
-                auto& binding = engine.add();
-                std::snprintf(binding.Name, sizeof(binding.Name), "%s", name);
-                binding.Source = source;
-                binding.Signal = signal;
-                std::snprintf(binding.TargetId, sizeof(binding.TargetId), "%s", target);
-                binding.Clamp = true;
-                binding.OutputMin = 0.0f;
-                binding.OutputMax = 1.0f;
-                binding.SmoothingHz = 8.0f;
-                binding.UpdateHz = source == RuntimeSourceKind::NativeProcess ? 20.0f : 60.0f;
-                return &binding;
-            };
-            if (ImGui::SmallButton("Native -> runtime.native")) addPreset("Native process value", RuntimeSourceKind::NativeProcess, 0, "runtime.native");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Status -> runtime.status")) addPreset("Binding status", RuntimeSourceKind::BindingStatus, 0, "runtime.status");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Audio -> runtime.audio")) addPreset("Audio RMS", RuntimeSourceKind::Audio, 0, "runtime.audio");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("CPU -> runtime.system"))
-            {
-                auto* binding = addPreset("Host CPU", RuntimeSourceKind::Host, 0, "runtime.system");
-                binding->Normalize = true;
-                binding->InputMin = 0.0f;
-                binding->InputMax = 100.0f;
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Health tri-color setup"))
-            {
-                auto addHealthScalar = [&](const char* name, const char* target, const float value, const int component = 0)
+                ImGui::TextUnformatted("Bindings"); ImGui::SameLine(); if (ImGui::Button("+ Add binding")) engine.add(); ImGui::SameLine(); if (ImGui::Button("Save")) engine.save(); ImGui::SameLine(); ImGui::TextDisabled("%s", engine.path().string().c_str());
+                if (ImGui::CollapsingHeader("Quick bindings"))
                 {
-                    auto* binding = addPreset(name, RuntimeSourceKind::Constant, 0, target);
-                    binding->Constant = value;
-                    binding->TargetComponent = component;
-                    binding->Normalize = false;
-                    binding->Clamp = false;
-                    binding->SmoothingHz = 0.0f;
-                    return binding;
-                };
-                addHealthScalar("Health value", "health.value", 100.0f);
-                addHealthScalar("Health maximum", "health.maximum", 100.0f);
-                addHealthScalar("Healthy R", "health.color.high", 0.05f, 0);
-                addHealthScalar("Healthy G", "health.color.high", 1.00f, 1);
-                addHealthScalar("Healthy B", "health.color.high", 0.12f, 2);
-                addHealthScalar("Half health R", "health.color.mid", 1.00f, 0);
-                addHealthScalar("Half health G", "health.color.mid", 0.72f, 1);
-                addHealthScalar("Half health B", "health.color.mid", 0.02f, 2);
-                addHealthScalar("Critical R", "health.color.low", 1.00f, 0);
-                addHealthScalar("Critical G", "health.color.low", 0.02f, 1);
-                addHealthScalar("Critical B", "health.color.low", 0.01f, 2);
+                    auto addPreset = [&](const char* name, const RuntimeSourceKind source, const int signal, const char* target)
+                    {
+                        auto& binding = engine.add(); std::snprintf(binding.Name, sizeof(binding.Name), "%s", name); binding.Source = source; binding.Signal = signal; std::snprintf(binding.TargetId, sizeof(binding.TargetId), "%s", target); binding.Clamp = true; binding.OutputMin = 0.0f; binding.OutputMax = 1.0f; binding.SmoothingHz = 8.0f; binding.UpdateHz = source == RuntimeSourceKind::NativeProcess ? 20.0f : 60.0f; return &binding;
+                    };
+                    if (ImGui::SmallButton("Native value")) addPreset("Native process value", RuntimeSourceKind::NativeProcess, 0, "runtime.native"); ImGui::SameLine();
+                    if (ImGui::SmallButton("Native address")) { auto* b = addPreset("Native object address", RuntimeSourceKind::NativeAddress, 1, "runtime.address"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; } ImGui::SameLine();
+                    if (ImGui::SmallButton("Writable")) { auto* b = addPreset("Writable state", RuntimeSourceKind::Unbound, 0, "runtime.state"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; } ImGui::SameLine();
+                    if (ImGui::SmallButton("Current shader")) { auto* b = addPreset("Current shader", RuntimeSourceKind::ShaderState, 0, "runtime.shader"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; } ImGui::SameLine();
+                    if (ImGui::SmallButton("Previous shader")) { auto* b = addPreset("Previous shader", RuntimeSourceKind::ShaderState, 9, "runtime.previous_shader"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; } ImGui::SameLine();
+                    if (ImGui::SmallButton("Active profile")) { auto* b = addPreset("Active profile", RuntimeSourceKind::ProfileState, 0, "runtime.profile"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; } ImGui::SameLine();
+                    if (ImGui::SmallButton("Audio RMS")) { auto* b = addPreset("Audio RMS", RuntimeSourceKind::Audio, 0, "runtime.audio"); b->WriteMaterial = false; } ImGui::SameLine();
+                    if (ImGui::SmallButton("Media title")) { auto* b = addPreset("Media title", RuntimeSourceKind::Media, 5, "runtime.media_title"); b->WriteMaterial = false; b->Clamp = false; b->SmoothingHz = 0.0f; }
+                }
+                if (shaderFramebuffer.materialParameters().empty()) ImGui::TextDisabled("Current shader has no reflected material parameters.");
+                drawGroupedBindings(engine, shaderFramebuffer);
+                if (engine.bindings().empty()) ImGui::TextDisabled("No bindings yet.");
+                ImGui::EndTabItem();
             }
-            ImGui::TextDisabled("Dashboard and data shaders consume persistent material IDs. The health setup creates current/max plus green/yellow/red color bindings that can be replaced with any runtime source.");
+            if (ImGui::BeginTabItem("Controls"))
+            {
+                ImGui::TextUnformatted("Controls"); ImGui::SameLine(); if (ImGui::Button("+ Add control")) engine.addControl(); ImGui::SameLine(); ImGui::TextDisabled("green/red squares show the current boolean state; higher priority wins output conflicts");
+                drawGroupedControls(engine, shaderFramebuffer);
+                if (engine.controls().empty()) ImGui::TextDisabled("No control rules yet.");
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Objects")) { drawRuntimeObjectDescriptors(engine); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Pointers")) { drawRuntimePointers(engine); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Value Bank")) { drawRuntimeValueBank(engine); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Profiles")) { drawRuntimeProfiles(engine); ImGui::EndTabItem(); }
+            ImGui::EndTabBar();
         }
-        if (shaderFramebuffer.materialParameters().empty()) ImGui::TextDisabled("Current shader has no reflected material parameters. Select a parameterized preset or add an active @ui uniform.");
-
-        std::optional<std::size_t> erase;
-        for (std::size_t i = 0; i < engine.bindings().size(); ++i)
-        {
-            bool shouldErase = false;
-            drawRuntimeBinding(engine, shaderFramebuffer, engine.bindings()[i], i, shouldErase);
-            if (shouldErase) erase = i;
-        }
-        if (erase) engine.erase(*erase);
-        if (engine.bindings().empty())
-        {
-            ImGui::Dummy(ImVec2(0.0f, 8.0f));
-            ImGui::TextDisabled("No bindings yet. Add one and point it at any reflected shader material id.");
-        }
-
-        ImGui::SeparatorText("Control rules");
-        ImGui::TextWrapped("Control rules consume any binding value and drive app state. Use normal comparisons/ranges with hysteresis, or edge triggers for one-shot switches. Binding-status sources make process/read/address health usable here too.");
-        if (ImGui::Button("Add control rule")) engine.addControl();
-        ImGui::SameLine();
-        ImGui::TextDisabled("Shader switches can crossfade by rendering the outgoing and incoming shaders simultaneously.");
-        std::optional<std::size_t> eraseControl;
-        for (std::size_t i = 0; i < engine.controls().size(); ++i)
-        {
-            bool shouldErase = false;
-            drawRuntimeControlRule(engine, shaderFramebuffer, engine.controls()[i], shouldErase);
-            if (shouldErase) eraseControl = i;
-        }
-        if (eraseControl) engine.eraseControl(*eraseControl);
-        if (engine.controls().empty()) ImGui::TextDisabled("No control rules yet.");
     }
 
     static void drawQRPCInspectorPage(RuntimeTelemetry& telemetry)
@@ -9260,12 +12364,13 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             ImGui::TreePop();
         }
 
+        if (ImGui::Button("Refresh shader library")) { refreshShaderLibrary(); settings.ShaderPresetIndex = shaderPresetIndexById(settings.ShaderId); }
+        ImGui::SameLine(); ImGui::TextDisabled("%zu shaders | %s", ShaderPresets.size(), shaderLibraryPath().string().c_str());
         const char* presetPreview = settings.ShaderPresetIndex == 0 ? "Custom / current" : ShaderPresets[settings.ShaderPresetIndex - 1].Name.c_str();
         ImGui::SetNextItemWidth(230.0f);
         if (ImGui::BeginCombo("Preset", presetPreview))
         {
-            if (ImGui::Selectable("Custom / current", settings.ShaderPresetIndex == 0))
-                settings.ShaderPresetIndex = 0;
+            if (ImGui::Selectable("Custom / current", settings.ShaderPresetIndex == 0)) { settings.ShaderPresetIndex = 0; settings.ShaderId.clear(); }
             for (std::size_t i = 0; i < ShaderPresets.size(); ++i)
             {
                 const bool selected = settings.ShaderPresetIndex == static_cast<int>(i + 1);
@@ -9310,21 +12415,23 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 310.0f);
                 ImGui::InputText("##FragmentLoadPathIDE", fragmentLoadPath.data(), fragmentLoadPath.size());
                 ImGui::SameLine();
-                if (ImGui::Button("Load from file##fragment"))
+                if (ImGui::Button("Load / import##fragment"))
                 {
                     if (loadTextFile(fragmentLoadPath.data(), fragmentShaderSource))
                     {
-                        settings.ShaderPresetIndex = 0;
+                        std::string importedId, importError;
+                        if (importShaderToLibrary(fragmentLoadPath.data(), importedId, importError)) { settings.ShaderId = importedId; settings.ShaderPresetIndex = shaderPresetIndexById(importedId); }
+                        else { settings.ShaderPresetIndex = 0; settings.ShaderId.clear(); }
                         shaderEditor.Fragment.SetText(fragmentShaderSource.data());
                         saveTextFile(fragmentShaderPath(), fragmentShaderSource);
-                        if (settings.ShaderRecompileOnChange)
-                            compileShaders(shaderFramebuffer, shaderEditor, vertexShaderSource, fragmentShaderSource);
+                        if (settings.ShaderRecompileOnChange) compileShaders(shaderFramebuffer, shaderEditor, vertexShaderSource, fragmentShaderSource);
                     }
                 }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Annotated files are copied into the persistent shader library. Example: // @shader id=\"terraria.eye.phase1\" label=\"Eye of Cthulhu - Phase 1\"");
                 ImGui::SameLine();
                 if (ImGui::Button("Default##fragment"))
                 {
-                    settings.ShaderPresetIndex = 1;
+                    settings.ShaderPresetIndex = 1; settings.ShaderId = ShaderPresets.front().Id;
                     setShaderSource(fragmentShaderSource, ShaderPresets.front().FragmentSource);
                     shaderEditor.Fragment.SetText(fragmentShaderSource.data());
                     compileShaders(shaderFramebuffer, shaderEditor, vertexShaderSource, fragmentShaderSource);
@@ -9337,7 +12444,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                 ImGui::TextDisabled("Fragment  |  Ln %zu, Col %zu  |  %zu lines  |  GLSL", fragmentCursor.line + 1, fragmentCursor.index + 1, shaderEditor.Fragment.GetLineCount());
                 if (changed)
                 {
-                    settings.ShaderPresetIndex = 0;
+                    settings.ShaderPresetIndex = 0; settings.ShaderId.clear();
                     setShaderSource(fragmentShaderSource, shaderEditor.Fragment.GetText());
                     saveTextFile(fragmentShaderPath(), fragmentShaderSource);
                     if (settings.ShaderRecompileOnChange)
@@ -9426,9 +12533,11 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         constexpr ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
         ImGui::Begin("Quartz K552X Visualizer", nullptr, windowFlags);
         drawPermanentHeader(usb);
+        ImGui::BeginChild("MainScrollableBody", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_HorizontalScrollbar);
         if (page == ViewPage::ShaderEditor)
         {
             drawShaderEditorPage(usb, deviceState, keyboardInput, shaderFramebuffer, shaderTransition, shaderEditor, page, vertexShaderSource, fragmentShaderSource, vertexLoadPath, fragmentLoadPath, settings, framebuffer, appCpuUsage, scrollLockActive, capsLockActive);
+            ImGui::EndChild();
             ImGui::End();
             return;
         }
@@ -9471,7 +12580,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
         ImGui::TextDisabled("Settings: %s", configPath.c_str());
         ImGui::TextDisabled("%s", g_SettingsStatus.c_str());
 
-        if (ImGui::BeginTabBar("MainTabs"))
+        if (ImGui::BeginTabBar("MainTabs", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_FittingPolicyResizeDown | ImGuiTabBarFlags_TabListPopupButton))
         {
             if (ImGui::BeginTabItem("Visualizer"))
             {
@@ -9596,8 +12705,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                     const char* presetPreview = settings.ShaderPresetIndex == 0 ? "Custom / current" : ShaderPresets[settings.ShaderPresetIndex - 1].Name.c_str();
                     if (ImGui::BeginCombo("Shader preset", presetPreview))
                     {
-                        if (ImGui::Selectable("Custom / current", settings.ShaderPresetIndex == 0))
-                            settings.ShaderPresetIndex = 0;
+                        if (ImGui::Selectable("Custom / current", settings.ShaderPresetIndex == 0)) { settings.ShaderPresetIndex = 0; settings.ShaderId.clear(); }
                         for (std::size_t i = 0; i < ShaderPresets.size(); ++i)
                         {
                             const bool selected = settings.ShaderPresetIndex == static_cast<int>(i + 1);
@@ -9627,7 +12735,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
                     ImGui::SameLine();
                     if (ImGui::Button("Default shaders"))
                     {
-                        settings.ShaderPresetIndex = 1;
+                        settings.ShaderPresetIndex = 1; settings.ShaderId = ShaderPresets.front().Id;
                         setShaderSource(vertexShaderSource, DefaultVertexShaderSource);
                         setShaderSource(fragmentShaderSource, ShaderPresets.front().FragmentSource);
                         if (shaderEditor.Initialized) { shaderEditor.Vertex.SetText(vertexShaderSource.data()); shaderEditor.Fragment.SetText(fragmentShaderSource.data()); }
@@ -9890,6 +12998,7 @@ uniform float uCornerD; // @ui min=0.0 max=1.0 step=0.001 default=0.90 label="Bo
             }
             ImGui::EndTabBar();
         }
+        ImGui::EndChild();
         ImGui::End();
     }
 }
@@ -9973,6 +13082,7 @@ int main(int argc, char* argv[])
     std::array<char, ShaderSourceCapacity> fragmentShaderSource{};
     std::array<char, ShaderPathCapacity> vertexLoadPath{};
     std::array<char, ShaderPathCapacity> fragmentLoadPath{};
+    refreshShaderLibrary();
     loadShaderSources(vertexShaderSource, fragmentShaderSource);
     if (migrateObsoleteShaderSource(fragmentShaderSource))
         saveTextFile(fragmentShaderPath(), fragmentShaderSource);
@@ -9986,6 +13096,7 @@ int main(int argc, char* argv[])
         saveTextFile(fragmentShaderPath(), fragmentShaderSource);
     }
     settings.ShaderPresetIndex = detectShaderPreset(fragmentShaderSource.data());
+    if (settings.ShaderPresetIndex > 0) settings.ShaderId = shaderPresetIdByIndex(settings.ShaderPresetIndex);
     initializeShaderEditors(shaderEditor, vertexShaderSource.data(), fragmentShaderSource.data());
     SharedDeviceState deviceState;
     std::array<float, FFTSize> analysisBands{};
@@ -10089,6 +13200,7 @@ int main(int argc, char* argv[])
         appCpuUsage = appCpuMeter.update(currentFrame);
         runtimeBindings.updateRates(usb.stats(), currentFrame);
         glfwPollEvents();
+        runtimeBindings.pollProfileHotkeys(window);
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -10194,6 +13306,7 @@ int main(int argc, char* argv[])
             runtimeContext.MediaColor = visualizerColor;
             runtimeContext.MediaAmount = mediaColorAmount;
             runtimeContext.MediaPlaying = mediaColor.playing();
+            runtimeContext.MediaTitle = mediaColor.mediaTitle();
             runtimeContext.Keys = reactiveKeys;
             runtimeContext.Performance = runtimePerformance;
             runtimeContext.HasPerformance = runtimeHasPerformance;
@@ -10204,12 +13317,25 @@ int main(int argc, char* argv[])
             runtimeContext.Framebuffer = &framebuffer;
             runtimeContext.EffectiveGain = autoGain.EffectiveGain;
             runtimeContext.GainCorrection = autoGain.Correction;
+            runtimeContext.CurrentShaderPreset = settings.ShaderPresetIndex;
+            runtimeContext.CurrentShaderId = settings.ShaderId;
+            runtimeContext.PreviousShaderId = runtimeBindings.previousShaderId();
+            runtimeContext.ShaderTransitionActive = shaderTransition.Active;
+            runtimeContext.ShaderTransitionProgress = shaderTransition.Active ? std::clamp(static_cast<float>((currentFrame - shaderTransition.StartedAt) / std::max(shaderTransition.Duration, 0.0001f)), 0.0f, 1.0f) : 1.0f;
+            runtimeContext.BaseColorMode = settings.BaseColorMode;
+            runtimeContext.GlobalBrightness = settings.GlobalBrightness;
+            runtimeContext.SendFramebuffer = settings.SendFramebuffer;
+            runtimeContext.ShaderFramebufferWidth = settings.ShaderFramebufferWidth;
+            runtimeContext.ShaderFramebufferHeight = settings.ShaderFramebufferHeight;
             runtimeBindings.update(runtimeContext, shaderFramebuffer);
             const RuntimeControlOutput controlOutput = runtimeBindings.evaluateControls(shaderFramebuffer);
-            if (controlOutput.ShaderPresetIndex && *controlOutput.ShaderPresetIndex != settings.ShaderPresetIndex)
+            if (controlOutput.ShaderId && *controlOutput.ShaderId != settings.ShaderId)
             {
-                if (switchShaderPreset(shaderFramebuffer, shaderTransition, shaderEditor, vertexShaderSource, fragmentShaderSource, settings, *controlOutput.ShaderPresetIndex, currentFrame, controlOutput.ShaderTransitionSeconds, false))
-                    runtimeBindings.applyMaterialValues(shaderFramebuffer);
+                if (switchShaderId(shaderFramebuffer, shaderTransition, shaderEditor, vertexShaderSource, fragmentShaderSource, settings, *controlOutput.ShaderId, currentFrame, controlOutput.ShaderTransitionSeconds, false)) runtimeBindings.applyMaterialValues(shaderFramebuffer);
+            }
+            else if (controlOutput.ShaderPresetIndex && *controlOutput.ShaderPresetIndex != settings.ShaderPresetIndex)
+            {
+                if (switchShaderPreset(shaderFramebuffer, shaderTransition, shaderEditor, vertexShaderSource, fragmentShaderSource, settings, *controlOutput.ShaderPresetIndex, currentFrame, controlOutput.ShaderTransitionSeconds, false)) runtimeBindings.applyMaterialValues(shaderFramebuffer);
             }
 
             const int effectiveBaseColorMode = controlOutput.BaseColorMode.value_or(settings.BaseColorMode);

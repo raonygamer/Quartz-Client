@@ -19,7 +19,7 @@ add_subdirectory(protocol)
 add_subdirectory(vendor/glad)
 add_subdirectory(vendor/glfw)
 add_subdirectory(vendor/libusb)
-add_subdirectory(vendor/imgui)
+add_subdirectory(vendor/zydis)
 
 file(GLOB_RECURSE QUARTZ_CLIENT_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
@@ -33,6 +33,12 @@ add_executable(QuartzClient
         ${QUARTZ_CLIENT_SOURCES}
         vendor/ImGuiColorTextEdit/TextDiff.cpp
         vendor/ImGuiColorTextEdit/TextEditor.cpp
+        vendor/imgui/imgui.cpp
+        vendor/imgui/imgui_draw.cpp
+        vendor/imgui/imgui_tables.cpp
+        vendor/imgui/imgui_widgets.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui/backends/imgui_impl_glfw.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui/backends/imgui_impl_opengl3.cpp
         ${QUARTZ_CLIENT_HEADERS}
 )
 
@@ -44,6 +50,8 @@ target_include_directories(QuartzClient PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/ImGuiColorTextEdit
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui/backends
 )
 
 target_link_libraries(QuartzClient PRIVATE
@@ -51,7 +59,7 @@ target_link_libraries(QuartzClient PRIVATE
         glad
         glfw
         usb-1.0
-        imgui
+        Zydis
 )
 
 target_compile_features(QuartzClient PRIVATE cxx_std_20)
