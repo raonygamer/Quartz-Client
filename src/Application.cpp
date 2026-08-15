@@ -1,5 +1,6 @@
 #include "quartz/client/Application.hpp"
 #include "quartz/client/Model.hpp"
+#include "quartz/client/ui/PageManager.hpp"
 
 namespace quartz::client
 {
@@ -77,7 +78,7 @@ int Application::run(int argc, char* argv[])
     ShaderFramebuffer shaderFramebuffer;
     ShaderTransitionState shaderTransition;
     ShaderEditorState shaderEditor;
-    ViewPage page = ViewPage::Main;
+    ui::PageManager pageManager = ui::createDefaultPageManager();
     std::array<char, ShaderSourceCapacity> vertexShaderSource{};
     std::array<char, ShaderSourceCapacity> fragmentShaderSource{};
     std::array<char, ShaderPathCapacity> vertexLoadPath{};
@@ -378,7 +379,7 @@ int Application::run(int argc, char* argv[])
             nextStatisticsRequest = currentFrame + std::max(0.05f, settings.StatisticsInterval);
         }
 
-        drawUi(usb, audio, mediaColor, keyboardInput, shaderFramebuffer, shaderTransition, shaderEditor, page, vertexShaderSource, fragmentShaderSource, vertexLoadPath, fragmentLoadPath, settings, analysisBands, mappedBands, smoothedBands, framebuffer, deviceState, runtimeBindings, runtimeTelemetry, autoGain, audioLevel, reactiveKeys, inputAnalytics, rgbAnalytics, sentFrames, droppedFrames, appCpuUsage, scrollLockActive, capsLockActive);
+        drawUi(usb, audio, mediaColor, keyboardInput, shaderFramebuffer, shaderTransition, shaderEditor, pageManager, vertexShaderSource, fragmentShaderSource, vertexLoadPath, fragmentLoadPath, settings, analysisBands, mappedBands, smoothedBands, framebuffer, deviceState, runtimeBindings, runtimeTelemetry, autoGain, audioLevel, reactiveKeys, inputAnalytics, rgbAnalytics, sentFrames, droppedFrames, appCpuUsage, scrollLockActive, capsLockActive);
         if (currentFrame >= nextSettingsSave)
         {
             const std::string currentSettings = serializeSettings(settings);

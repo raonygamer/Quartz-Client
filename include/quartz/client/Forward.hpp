@@ -3,6 +3,7 @@
 
 namespace quartz::client
 {
+    namespace ui { class PageManager; }
     struct ShaderPreset;
     struct PerformanceSnapshot;
     struct SharedDeviceState;
