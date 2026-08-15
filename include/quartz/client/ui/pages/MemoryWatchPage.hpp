@@ -11,6 +11,12 @@ namespace quartz::client::ui
         [[nodiscard]] std::string_view title() const noexcept override { return "Memory Watch"; }
         [[nodiscard]] PageSection section() const noexcept override { return PageSection::Runtime; }
         void render(PageContext& context, PageManager& manager) override;
+        void setTarget(const pid_t pid, const std::uintptr_t address, const std::size_t width) noexcept
+        {
+            _pid = pid;
+            std::snprintf(_address.data(), _address.size(), "0x%llX", static_cast<unsigned long long>(address));
+            _size = width <= 1 ? 0 : width <= 2 ? 1 : width <= 4 ? 2 : 3;
+        }
     private:
         MemoryWatch _watch;
         std::vector<RuntimeProcessInfo> _processes;
