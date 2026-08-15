@@ -1,17 +1,16 @@
-name: Apply JavaScript workspace migration
+name: Finalize JavaScript workspace
 
 on:
   push:
     branches: [feature/quickjs-bindings]
     paths:
-      - tools/apply_javascript_workspace.py
       - .github/workflows/javascript-workspace-migration.yml
 
 permissions:
   contents: write
 
 jobs:
-  migrate:
+  finalize:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,37 +23,37 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev libudev-dev
 
-      - name: Fix staging typo
+      - name: Respect hot reload controls and finish hotkey UI
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          path = Path('tools/apply_javascript_workspace.py')
-          lines = path.read_text().splitlines(keepends=True)
-          for index, line in enumerate(lines):
-              if 'runtimeInstallTerrariaAstrofluxMigration' not in line or 'replace_once' not in line:
-                  continue
-              assert line.rstrip().endswith(')')
-              newline = '\n' if line.endswith('\n') else ''
-              lines[index] = line.rstrip('\n')[:-1] + ', "quickjs workspace public api")' + newline
-              break
-          else:
-              raise RuntimeError('staging typo target not found')
-          path.write_text(''.join(lines))
-          PY
 
-      - name: Apply JavaScript workspace migration
-        run: python3 tools/apply_javascript_workspace.py
+          path = Path('src/runtime/QuickJSWorkspace.cpp')
+          text = path.read_text()
+          old = 'auto&w=workspace();auto existing=w.Instances.find(script.Id);if(existing!=w.Instances.end()&&engine.scriptSettings().ExternalHotReload&&script.HotReload&&dependenciesChanged(*existing->second)){w.Instances.erase(existing);++script.ReloadCount;}'
+          new = 'auto&w=workspace();const bool watchExternal=engine.scriptSettings().ExternalHotReload&&script.HotReload;auto existing=w.Instances.find(script.Id);if(existing!=w.Instances.end()&&watchExternal&&dependenciesChanged(*existing->second)){w.Instances.erase(existing);++script.ReloadCount;}'
+          if text.count(old) != 1:
+              raise RuntimeError(f'hot reload guard: expected one match, got {text.count(old)}')
+          text = text.replace(old, new, 1)
 
-      - name: Adapt editor change detection
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
+          old = 'std::string source;std::filesystem::path filename;if(script.External){filename=script.Path;if(filename.is_relative())filename=runtimeQuickJSScriptDirectory()/filename;if(!loadFile(filename,source)){script.Status="could not read external script: "+filename.string();return false;}}else source=script.Source;'
+          new = 'bool reuseExternal=false;std::string source;std::filesystem::path filename;if(script.External){filename=script.Path;if(filename.is_relative())filename=runtimeQuickJSScriptDirectory()/filename;existing=w.Instances.find(script.Id);reuseExternal=existing!=w.Instances.end()&&!watchExternal&&JS_IsFunction(existing->second->Context,existing->second->Function);if(!reuseExternal&&!loadFile(filename,source)){script.Status="could not read external script: "+filename.string();return false;}}else source=script.Source;'
+          if text.count(old) != 1:
+              raise RuntimeError(f'external reuse path: expected one match, got {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = 'std::string error;if(!compile(*instance,script,source,filename,error)){script.Status=std::move(error);return false;}'
+          new = 'std::string error;if(!reuseExternal&&!compile(*instance,script,source,filename,error)){script.Status=std::move(error);return false;}'
+          if text.count(old) != 1:
+              raise RuntimeError(f'external compile guard: expected one match, got {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+
           path = Path('src/ui/pages/JavaScriptPage.cpp')
           text = path.read_text()
-          old = 'if(e.Editor.IsTextChanged()){script.Source=e.Editor.GetText();'
-          new = 'const std::string edited=e.Editor.GetText();if(edited!=e.Synced){script.Source=edited;'
+          old = '{"V",GLFW_KEY_V},{"W",GLFW_KEY_W},{"X",GLFW_KEY_X},{"Y",GLFW_KEY_Y},{"Z",GLFW_KEY_Z}};'
+          new = '{"V",GLFW_KEY_V},{"W",GLFW_KEY_W},{"X",GLFW_KEY_X},{"Y",GLFW_KEY_Y},{"Z",GLFW_KEY_Z},{"0",GLFW_KEY_0},{"1",GLFW_KEY_1},{"2",GLFW_KEY_2},{"3",GLFW_KEY_3},{"4",GLFW_KEY_4},{"5",GLFW_KEY_5},{"6",GLFW_KEY_6},{"7",GLFW_KEY_7},{"8",GLFW_KEY_8},{"9",GLFW_KEY_9}};'
           if text.count(old) != 1:
-              raise RuntimeError(f'expected one editor change-detection site, got {text.count(old)}')
+              raise RuntimeError(f'reload hotkey digits: expected one match, got {text.count(old)}')
           path.write_text(text.replace(old, new, 1))
           PY
 
@@ -64,10 +63,10 @@ jobs:
       - name: Build
         run: cmake --build build -j2
 
-      - name: Commit generated changes
+      - name: Commit fixes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md include/quartz/client/runtime/Profile.hpp include/quartz/client/runtime/RuntimeTypes.hpp include/quartz/client/runtime/QuickJS.hpp include/quartz/client/runtime/RuntimeBindingEngine.hpp include/quartz/client/ui/pages/JavaScriptPage.hpp src/runtime/QuickJSInternal.hpp src/runtime/QuickJSApi.cpp src/runtime/QuickJSGraphApi.cpp src/runtime/QuickJSWorkspace.cpp src/runtime/QuickJSPresets.cpp src/ui/pages/JavaScriptPage.cpp src/ui/PageManager.cpp src/ui/RuntimeUI.cpp src/Application.cpp
-          git commit -m "feat: add first-class JavaScript runtime workspace"
+          git add src/runtime/QuickJSWorkspace.cpp src/ui/pages/JavaScriptPage.cpp
+          git commit -m "fix: respect JavaScript hot reload controls"
           git push
