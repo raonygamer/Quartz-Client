@@ -153,6 +153,7 @@ int Application::run(int argc, char* argv[])
         runtimeBindings.updateRates(usb.stats(), currentFrame);
         window.pollEvents();
         runtimeBindings.pollProfileHotkeys(window.handle(), keyboardInput);
+        runtimeBindings.pollScriptReloadHotkey(window.handle(), keyboardInput);
         imgui.beginFrame();
 
         reactiveKeys = keyboardInput.snapshot();
@@ -278,7 +279,14 @@ int Application::run(int argc, char* argv[])
             runtimeContext.ShaderFramebufferWidth = settings.ShaderFramebufferWidth;
             runtimeContext.ShaderFramebufferHeight = settings.ShaderFramebufferHeight;
             runtimeBindings.update(runtimeContext, shaderFramebuffer);
-            const RuntimeControlOutput controlOutput = runtimeBindings.evaluateControls(shaderFramebuffer);
+            RuntimeControlOutput controlOutput = runtimeBindings.evaluateControls(shaderFramebuffer);
+            const RuntimeControlOutput scriptOutput = runtimeEvaluateWorkspaceScripts(runtimeBindings, runtimeContext, shaderFramebuffer);
+            if (scriptOutput.ShaderPresetIndex) controlOutput.ShaderPresetIndex = scriptOutput.ShaderPresetIndex;
+            if (scriptOutput.ShaderId) controlOutput.ShaderId = scriptOutput.ShaderId;
+            if (scriptOutput.GlobalBrightness) controlOutput.GlobalBrightness = scriptOutput.GlobalBrightness;
+            if (scriptOutput.SendFramebuffer) controlOutput.SendFramebuffer = scriptOutput.SendFramebuffer;
+            if (scriptOutput.BaseColorMode) controlOutput.BaseColorMode = scriptOutput.BaseColorMode;
+            if (scriptOutput.ShaderPresetIndex || scriptOutput.ShaderId) controlOutput.ShaderTransitionSeconds = scriptOutput.ShaderTransitionSeconds;
             if (controlOutput.ShaderId && *controlOutput.ShaderId != settings.ShaderId)
             {
                 if (switchShaderId(shaderFramebuffer, shaderTransition, shaderEditor, vertexShaderSource, fragmentShaderSource, settings, *controlOutput.ShaderId, currentFrame, controlOutput.ShaderTransitionSeconds, false)) runtimeBindings.applyMaterialValues(shaderFramebuffer);

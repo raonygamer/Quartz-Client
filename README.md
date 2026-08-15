@@ -615,3 +615,5 @@ Linux is the primary development platform. Some functionality is inherently Linu
 ## Disclaimer
 
 Quartz Client is made by **Raony Reis** and is not affiliated with Redragon. The reverse-engineering tools are included because they are useful while developing and experimenting with my own software/hardware environment; they are not intended as a supported general-purpose debugger product.
+
+- First-class QuickJS JavaScript workspace with external hot reload/imports and full runtime graph control.

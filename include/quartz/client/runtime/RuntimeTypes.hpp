@@ -298,6 +298,40 @@ namespace quartz::client
         std::vector<std::string> Provenance;
     };
 
+    struct RuntimeScript
+    {
+        std::uint64_t Id = 0;
+        bool Enabled = true;
+        int Order = 0;
+        char Group[64]{};
+        char Name[64] = "JavaScript";
+        bool External = false;
+        std::string Path;
+        std::string Source = "// Quartz runtime script\n";
+        bool HotReload = true;
+        float UpdateHz = 60.0f;
+        float TimeoutMs = 4.0f;
+        double NextUpdate = 0.0;
+        double LastMilliseconds = 0.0;
+        std::uint64_t RunCount = 0;
+        std::uint64_t CompileCount = 0;
+        std::uint64_t ReloadCount = 0;
+        std::uint64_t TimeoutCount = 0;
+        std::string LastLog;
+        std::string Status;
+        std::vector<std::string> Dependencies;
+    };
+
+    struct RuntimeScriptSettings
+    {
+        bool ExternalHotReload = true;
+        bool ReloadHotkeyCtrl = false;
+        bool ReloadHotkeyAlt = false;
+        bool ReloadHotkeyShift = false;
+        int ReloadHotkeyKey = 0;
+        bool ReloadHotkeyDown = false;
+    };
+
     struct RuntimeBinding
     {
         std::uint64_t Id = 0;

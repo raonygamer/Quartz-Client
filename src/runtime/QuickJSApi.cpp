@@ -304,6 +304,36 @@ interface QuartzReverseEngineeringAPI {
     loop(start: QuartzAddress | number, count: number, stride: number | bigint, callback: (address: QuartzAddress, index: number) => void | boolean): number;
 }
 
+interface QuartzBindingConfig { [key: string]: any; }
+interface QuartzControlConfig { [key: string]: any; }
+interface QuartzGraphAPI {
+    ensureBinding(name: string, config?: QuartzBindingConfig): bigint;
+    ensureControl(name: string, config?: QuartzControlConfig): bigint;
+    ensureBank(name: string, config?: Record<string, any>): bigint;
+    setBank(idOrName: QuartzId, value: number | bigint | boolean | string): boolean;
+    ensureObject(name: string, config?: Record<string, any>): bigint;
+    ensurePointer(name: string, config?: Record<string, any>): bigint;
+    ensureProfile(name: string, config?: { enabled?: boolean; exclusive?: boolean; ctrl?: boolean; alt?: boolean; shift?: boolean; key?: number; bindings?: QuartzId[]; controls?: QuartzId[]; scripts?: QuartzId[] }): bigint;
+    applyProfile(idOrName: QuartzId): boolean;
+    activeProfile(): string | undefined;
+    bindingOperation(idOrName: QuartzId, operation: "Refresh" | "ForceUpdate" | "Invalidate" | "ResetState" | "RetryRegisterCapture" | "RescanPattern" | "RebindProcess" | "ClearError"): boolean;
+    setBindingEnabled(idOrName: QuartzId, enabled: boolean): boolean;
+    setControlEnabled(idOrName: QuartzId, enabled: boolean): boolean;
+    setScriptEnabled(idOrName: QuartzId, enabled: boolean): boolean;
+    removeBinding(idOrName: QuartzId): boolean; removeControl(idOrName: QuartzId): boolean; removeBank(idOrName: QuartzId): boolean; removeProfile(idOrName: QuartzId): boolean; removePointer(idOrName: QuartzId): boolean; removeObject(idOrName: QuartzId): boolean;
+    save(): boolean;
+}
+interface QuartzRuntimeOutputAPI {
+    shader(id: string, transitionSeconds?: number): boolean;
+    shaderPreset(index: number, transitionSeconds?: number): boolean;
+    brightness(value: number): boolean;
+    sendFramebuffer(enabled: boolean): boolean;
+    baseColorMode(mode: number): boolean;
+    material(id: string, component: number, value: number): boolean;
+    currentShader(): string | undefined;
+    previousShader(): string | undefined;
+}
+
 interface QuartzBindingAPI {
     binding(idOrName: QuartzId): number | undefined;
     raw(idOrName: QuartzId): number | undefined;
@@ -316,6 +346,10 @@ interface QuartzBindingAPI {
     /** Bounded native loop helper. Return false from callback to stop. */
     loop(count: number, callback: (index: number) => void | boolean): number;
     readonly re: QuartzReverseEngineeringAPI;
+    /** CommonJS-like local .js/.mjs import. Relative paths resolve beside the current script/import. */
+    import(path: string): any;
+    readonly graph: QuartzGraphAPI;
+    readonly runtime: QuartzRuntimeOutputAPI;
     readonly time: number;
     readonly deltaTime: number;
     readonly previous: number;

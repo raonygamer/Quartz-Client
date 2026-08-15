@@ -1958,7 +1958,7 @@ namespace quartz::client
     void drawRuntimeProfiles(RuntimeBindingEngine& engine)
     {
         ImGui::TextUnformatted("Binding profiles"); ImGui::SameLine(); if (ImGui::Button("+ Add profile")) engine.addProfile();
-        ImGui::SameLine(); ImGui::TextDisabled("Profiles mass-enable/disable graph nodes and can be activated with a key combination while Quartz has keyboard focus.");
+        ImGui::SameLine(); ImGui::TextDisabled("Profiles mass-enable/disable bindings, controls and JavaScript workspace scripts. Hotkeys use evdev globally when available.");
         if (!engine.profiles().empty())
         {
             const RuntimeBindingProfile* active = engine.findProfile(engine.activeProfileId());
@@ -1979,7 +1979,7 @@ namespace quartz::client
             if (ImGui::CollapsingHeader(header.c_str()))
             {
                 bool changed = false; changed |= ImGui::Checkbox("Enabled", &profile.Enabled); ImGui::SameLine(); ImGui::SetNextItemWidth(220.0f); changed |= ImGui::InputText("Name", profile.Name, sizeof(profile.Name));
-                changed |= ImGui::Checkbox("Exclusive activation", &profile.Exclusive); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Exclusive profiles disable every binding/control first, then enable their selected members.");
+                changed |= ImGui::Checkbox("Exclusive activation", &profile.Exclusive); if (ImGui::IsItemHovered()) ImGui::SetTooltip("Exclusive profiles disable every binding/control/script first, then enable their selected members.");
                 if (ImGui::Button("Activate")) engine.applyProfile(profile); ImGui::SameLine(); if (ImGui::Button("Enable members")) engine.setProfileMembersEnabled(profile, true); ImGui::SameLine(); if (ImGui::Button("Disable members")) engine.setProfileMembersEnabled(profile, false); ImGui::SameLine(); if (ImGui::Button("Remove profile")) erase = i;
                 ImGui::SeparatorText("Hotkey"); changed |= drawProfileHotkey(profile);
                 ImGui::SeparatorText("Bindings");
@@ -1994,6 +1994,13 @@ namespace quartz::client
                 {
                     ImGui::TableSetupColumn("Member", ImGuiTableColumnFlags_WidthFixed, 65.0f); ImGui::TableSetupColumn("Control"); ImGui::TableSetupColumn("Current", ImGuiTableColumnFlags_WidthFixed, 80.0f); ImGui::TableHeadersRow();
                     for (const auto& control : engine.controls()) { ImGui::TableNextRow(); ImGui::TableNextColumn(); bool member = std::find(profile.ControlIds.begin(), profile.ControlIds.end(), control.Id) != profile.ControlIds.end(); if (ImGui::Checkbox(("##pc" + std::to_string(control.Id)).c_str(), &member)) { if (member) profile.ControlIds.push_back(control.Id); else std::erase(profile.ControlIds, control.Id); changed = true; } ImGui::TableNextColumn(); ImGui::TextUnformatted(control.Name); ImGui::TableNextColumn(); ImGui::TextColored(control.Enabled ? ImVec4(0.2f,0.8f,0.3f,1) : ImVec4(0.8f,0.25f,0.25f,1), "%s", control.Enabled ? "enabled" : "disabled"); }
+                    ImGui::EndTable();
+                }
+                ImGui::SeparatorText("JavaScript scripts");
+                if (ImGui::BeginTable("ProfileScripts", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable))
+                {
+                    ImGui::TableSetupColumn("Member", ImGuiTableColumnFlags_WidthFixed, 65.0f); ImGui::TableSetupColumn("Script"); ImGui::TableSetupColumn("Current", ImGuiTableColumnFlags_WidthFixed, 80.0f); ImGui::TableHeadersRow();
+                    for (const auto& script : engine.scripts()) { ImGui::TableNextRow(); ImGui::TableNextColumn(); bool member = std::find(profile.ScriptIds.begin(), profile.ScriptIds.end(), script.Id) != profile.ScriptIds.end(); if (ImGui::Checkbox(("##ps" + std::to_string(script.Id)).c_str(), &member)) { if (member) profile.ScriptIds.push_back(script.Id); else std::erase(profile.ScriptIds, script.Id); changed = true; } ImGui::TableNextColumn(); ImGui::TextUnformatted(script.Name); ImGui::TableNextColumn(); ImGui::TextColored(script.Enabled ? ImVec4(0.2f,0.8f,0.3f,1) : ImVec4(0.8f,0.25f,0.25f,1), "%s", script.Enabled ? "enabled" : "disabled"); }
                     ImGui::EndTable();
                 }
                 if (changed) engine.markChanged();

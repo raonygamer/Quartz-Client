@@ -6,7 +6,10 @@ namespace quartz::client
 {
     class RuntimeBindingEngine;
     struct RuntimeBinding;
+    struct RuntimeScript;
     struct RuntimeSignalContext;
+    struct RuntimeControlOutput;
+    class ShaderFramebuffer;
 
     struct RuntimeQuickJSDeadline
     {
@@ -19,8 +22,12 @@ namespace quartz::client
     {
         RuntimeBindingEngine* Engine = nullptr;
         RuntimeBinding* Binding = nullptr;
+        RuntimeScript* Script = nullptr;
         const RuntimeSignalContext* SignalContext = nullptr;
         RuntimeQuickJSDeadline* Execution = nullptr;
+        ShaderFramebuffer* Shader = nullptr;
+        RuntimeControlOutput* Output = nullptr;
+        bool AllowGraphMutation = false;
     };
 
     inline bool runtimeQuickJSDeadlineExpired(RuntimeQuickJSContext& context) noexcept
@@ -31,4 +38,5 @@ namespace quartz::client
     }
 
     void runtimeInstallQuickJSLowLevelApi(JSContext* ctx, JSValueConst api);
+    void runtimeInstallQuickJSGraphApi(JSContext* ctx, JSValueConst api);
 }

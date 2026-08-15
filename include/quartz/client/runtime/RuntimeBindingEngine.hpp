@@ -9,7 +9,7 @@ namespace quartz::client
     {
     public:
         RuntimeBindingEngine() { load(); }
-        ~RuntimeBindingEngine() { for (const auto& binding : _bindings) if (binding.Source == RuntimeSourceKind::Script) runtimeResetScriptBinding(binding.Id); save(); }
+        ~RuntimeBindingEngine() { for (const auto& binding : _bindings) if (binding.Source == RuntimeSourceKind::Script) runtimeResetScriptBinding(binding.Id); for (const auto& script : _scripts) runtimeResetWorkspaceScript(script.Id); save(); }
 
         std::vector<RuntimeBinding>& bindings() noexcept { return _bindings; }
         const std::vector<RuntimeBinding>& bindings() const noexcept { return _bindings; }
@@ -23,6 +23,10 @@ namespace quartz::client
         const std::vector<RuntimeValueBankEntry>& bank() const noexcept { return _bank; }
         std::vector<RuntimeBindingProfile>& profiles() noexcept { return _profiles; }
         const std::vector<RuntimeBindingProfile>& profiles() const noexcept { return _profiles; }
+        std::vector<RuntimeScript>& scripts() noexcept { return _scripts; }
+        const std::vector<RuntimeScript>& scripts() const noexcept { return _scripts; }
+        RuntimeScriptSettings& scriptSettings() noexcept { return _scriptSettings; }
+        const RuntimeScriptSettings& scriptSettings() const noexcept { return _scriptSettings; }
         std::uint64_t activeProfileId() const noexcept { return _activeProfileId; }
         void clearActiveProfile() noexcept { if (_activeProfileId != 0) { _activeProfileId = 0; ++_revision; } }
         const RuntimeUSBRates& usbRates() const noexcept { return _usbRates; }
@@ -64,6 +68,32 @@ namespace quartz::client
             return value;
         }
 
+        RuntimeScript& addScript()
+        {
+            _scripts.emplace_back();
+            auto& script = _scripts.back();
+            script.Id = _nextScriptId++;
+            script.Order = static_cast<int>(_scripts.size() - 1);
+            std::snprintf(script.Name, sizeof(script.Name), "JavaScript %zu", _scripts.size());
+            ++_revision;
+            return script;
+        }
+
+        void eraseScript(const std::size_t index)
+        {
+            if (index >= _scripts.size()) return;
+            const std::uint64_t id = _scripts[index].Id;
+            runtimeResetWorkspaceScript(id);
+            _scripts.erase(_scripts.begin() + static_cast<std::ptrdiff_t>(index));
+            for (auto& profile : _profiles) std::erase(profile.ScriptIds, id);
+            ++_revision;
+        }
+
+        RuntimeScript* findScript(const std::uint64_t id) noexcept { ensureRuntimeCaches(); const auto it = _scriptLookup.find(id); return it == _scriptLookup.end() ? nullptr : &_scripts[it->second]; }
+        const RuntimeScript* findScript(const std::uint64_t id) const noexcept { ensureRuntimeCaches(); const auto it = _scriptLookup.find(id); return it == _scriptLookup.end() ? nullptr : &_scripts[it->second]; }
+        RuntimeScript* findScriptByName(const std::string_view name) noexcept { ensureRuntimeCaches(); const auto it = _scriptNameLookup.find(name); return it == _scriptNameLookup.end() ? nullptr : &_scripts[it->second]; }
+        const RuntimeScript* findScriptByName(const std::string_view name) const noexcept { ensureRuntimeCaches(); const auto it = _scriptNameLookup.find(name); return it == _scriptNameLookup.end() ? nullptr : &_scripts[it->second]; }
+
         RuntimeBindingProfile& addProfile()
         {
             _profiles.emplace_back();
@@ -88,6 +118,7 @@ namespace quartz::client
         {
             for (const auto id : profile.BindingIds) if (auto* binding = findBinding(id)) binding->Enabled = enabled;
             for (const auto id : profile.ControlIds) if (auto* control = findControl(id)) control->Enabled = enabled;
+            for (const auto id : profile.ScriptIds) if (auto* script = findScript(id)) script->Enabled = enabled;
             ++_revision;
         }
 
@@ -97,6 +128,7 @@ namespace quartz::client
             {
                 for (auto& binding : _bindings) binding.Enabled = false;
                 for (auto& control : _controls) control.Enabled = false;
+                for (auto& script : _scripts) script.Enabled = false;
             }
             setProfileMembersEnabled(profile, true);
             _activeProfileId = profile.Id;
@@ -117,6 +149,7 @@ namespace quartz::client
                 case GLFW_KEY_H: return KEY_H; case GLFW_KEY_I: return KEY_I; case GLFW_KEY_J: return KEY_J; case GLFW_KEY_K: return KEY_K; case GLFW_KEY_L: return KEY_L; case GLFW_KEY_M: return KEY_M; case GLFW_KEY_N: return KEY_N;
                 case GLFW_KEY_O: return KEY_O; case GLFW_KEY_P: return KEY_P; case GLFW_KEY_Q: return KEY_Q; case GLFW_KEY_R: return KEY_R; case GLFW_KEY_S: return KEY_S; case GLFW_KEY_T: return KEY_T; case GLFW_KEY_U: return KEY_U;
                 case GLFW_KEY_V: return KEY_V; case GLFW_KEY_W: return KEY_W; case GLFW_KEY_X: return KEY_X; case GLFW_KEY_Y: return KEY_Y; case GLFW_KEY_Z: return KEY_Z;
+                case GLFW_KEY_0: return KEY_0; case GLFW_KEY_1: return KEY_1; case GLFW_KEY_2: return KEY_2; case GLFW_KEY_3: return KEY_3; case GLFW_KEY_4: return KEY_4; case GLFW_KEY_5: return KEY_5; case GLFW_KEY_6: return KEY_6; case GLFW_KEY_7: return KEY_7; case GLFW_KEY_8: return KEY_8; case GLFW_KEY_9: return KEY_9;
                 default: return 0;
                 }
             };
@@ -138,6 +171,38 @@ namespace quartz::client
                 if (down && !profile.HotkeyDown) applyProfile(profile);
                 profile.HotkeyDown = down;
             }
+        }
+
+        void pollScriptReloadHotkey(GLFWwindow* window, const EvdevKeyboard& keyboard)
+        {
+            auto& settings = _scriptSettings;
+            if (settings.ReloadHotkeyKey <= 0) { settings.ReloadHotkeyDown = false; return; }
+            const auto evdevKey = [](const int key) -> std::uint16_t
+            {
+                switch (key)
+                {
+                case GLFW_KEY_F1: return KEY_F1; case GLFW_KEY_F2: return KEY_F2; case GLFW_KEY_F3: return KEY_F3; case GLFW_KEY_F4: return KEY_F4; case GLFW_KEY_F5: return KEY_F5; case GLFW_KEY_F6: return KEY_F6;
+                case GLFW_KEY_F7: return KEY_F7; case GLFW_KEY_F8: return KEY_F8; case GLFW_KEY_F9: return KEY_F9; case GLFW_KEY_F10: return KEY_F10; case GLFW_KEY_F11: return KEY_F11; case GLFW_KEY_F12: return KEY_F12;
+                case GLFW_KEY_A: return KEY_A; case GLFW_KEY_B: return KEY_B; case GLFW_KEY_C: return KEY_C; case GLFW_KEY_D: return KEY_D; case GLFW_KEY_E: return KEY_E; case GLFW_KEY_F: return KEY_F; case GLFW_KEY_G: return KEY_G; case GLFW_KEY_H: return KEY_H; case GLFW_KEY_I: return KEY_I; case GLFW_KEY_J: return KEY_J;
+                case GLFW_KEY_K: return KEY_K; case GLFW_KEY_L: return KEY_L; case GLFW_KEY_M: return KEY_M; case GLFW_KEY_N: return KEY_N; case GLFW_KEY_O: return KEY_O; case GLFW_KEY_P: return KEY_P; case GLFW_KEY_Q: return KEY_Q; case GLFW_KEY_R: return KEY_R; case GLFW_KEY_S: return KEY_S; case GLFW_KEY_T: return KEY_T; case GLFW_KEY_U: return KEY_U; case GLFW_KEY_V: return KEY_V; case GLFW_KEY_W: return KEY_W; case GLFW_KEY_X: return KEY_X; case GLFW_KEY_Y: return KEY_Y; case GLFW_KEY_Z: return KEY_Z;
+                case GLFW_KEY_0: return KEY_0; case GLFW_KEY_1: return KEY_1; case GLFW_KEY_2: return KEY_2; case GLFW_KEY_3: return KEY_3; case GLFW_KEY_4: return KEY_4; case GLFW_KEY_5: return KEY_5; case GLFW_KEY_6: return KEY_6; case GLFW_KEY_7: return KEY_7; case GLFW_KEY_8: return KEY_8; case GLFW_KEY_9: return KEY_9;
+                default: return 0;
+                }
+            };
+            bool down = false;
+            if (keyboard.connected())
+            {
+                const std::uint16_t key = evdevKey(settings.ReloadHotkeyKey); down = key != 0 && keyboard.shortcutDown(key, settings.ReloadHotkeyCtrl, settings.ReloadHotkeyAlt, settings.ReloadHotkeyShift);
+            }
+            else if (window)
+            {
+                const bool ctrl = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+                const bool alt = glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
+                const bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+                down = (!settings.ReloadHotkeyCtrl || ctrl) && (!settings.ReloadHotkeyAlt || alt) && (!settings.ReloadHotkeyShift || shift) && glfwGetKey(window, settings.ReloadHotkeyKey) == GLFW_PRESS;
+            }
+            if (down && !settings.ReloadHotkeyDown) runtimeReloadAllWorkspaceScripts();
+            settings.ReloadHotkeyDown = down;
         }
 
         RuntimeObjectPointer& addPointer()
@@ -291,6 +356,7 @@ namespace quartz::client
         }
 
         void markChanged() noexcept { ++_revision; }
+        bool operateBinding(RuntimeBinding& binding, const RuntimeBindingOperation operation) { applyBindingOperation(binding, operation); ++_revision; return true; }
 
         RuntimeBinding* findBinding(const std::uint64_t id) noexcept { ensureRuntimeCaches(); const auto it = _bindingLookup.find(id); return it == _bindingLookup.end() ? nullptr : &_bindings[it->second]; }
         const RuntimeBinding* findBinding(const std::uint64_t id) const noexcept { ensureRuntimeCaches(); const auto it = _bindingLookup.find(id); return it == _bindingLookup.end() ? nullptr : &_bindings[it->second]; }
@@ -538,7 +604,7 @@ namespace quartz::client
             const auto temporary = std::filesystem::path(_path.string() + ".tmp");
             std::ofstream file(temporary, std::ios::trunc);
             if (!file) return false;
-            file << "# Quartz runtime material bindings v11\n";
+            file << "# Quartz runtime material bindings v12\n";
             for (const auto& b : _bindings)
             {
                 file << "B\t" << b.Enabled << '\t' << static_cast<int>(b.Source) << '\t' << b.Signal << '\t' << b.Constant << '\t'
@@ -574,10 +640,13 @@ namespace quartz::client
                 file << "V\t" << value.Enabled << '\t' << value.Id << '\t' << runtimeEscape(value.Name) << '\t' << runtimeEscape(value.Description) << '\t'
                      << static_cast<int>(value.Type) << '\t' << value.Number << '\t' << value.Integer << '\t' << value.Boolean << '\t' << runtimeEscape(value.String) << '\t'
                      << static_cast<unsigned long long>(value.Address) << '\t' << value.HasValue << '\n';
+            file << "J\t" << _scriptSettings.ExternalHotReload << '\t' << _scriptSettings.ReloadHotkeyCtrl << '\t' << _scriptSettings.ReloadHotkeyAlt << '\t' << _scriptSettings.ReloadHotkeyShift << '\t' << _scriptSettings.ReloadHotkeyKey << '\n';
+            for (const auto& script : _scripts)
+                file << "S\t" << script.Enabled << '\t' << script.Id << '\t' << runtimeEscape(script.Name) << '\t' << script.External << '\t' << runtimeEscape(script.Path) << '\t' << script.HotReload << '\t' << script.UpdateHz << '\t' << script.TimeoutMs << '\t' << script.Order << '\t' << runtimeEscape(script.Group) << '\t' << runtimeEscape(script.Source) << '\n';
             for (const auto& profile : _profiles)
                 file << "P\t" << profile.Enabled << '\t' << profile.Id << '\t' << runtimeEscape(profile.Name) << '\t' << profile.Exclusive << '\t'
                      << profile.HotkeyCtrl << '\t' << profile.HotkeyAlt << '\t' << profile.HotkeyShift << '\t' << profile.HotkeyKey << '\t'
-                     << serializeIdList(profile.BindingIds) << '\t' << serializeIdList(profile.ControlIds) << '\n';
+                     << serializeIdList(profile.BindingIds) << '\t' << serializeIdList(profile.ControlIds) << '\t' << serializeIdList(profile.ScriptIds) << '\n';
             for (const auto& pointer : _pointers)
                 file << "Q\t" << pointer.Enabled << '\t' << pointer.Id << '\t' << runtimeEscape(pointer.Name) << '\t' << pointer.DescriptorId << '\t' << pointer.BaseBindingId << '\t' << pointer.ProcessBindingId << '\t' << pointer.BaseOffset << '\t' << pointer.Order << '\t' << runtimeEscape(pointer.Group) << '\n';
             for (const auto& object : _objects)
@@ -616,8 +685,8 @@ namespace quartz::client
         void ensureRuntimeCaches() const
         {
             if (_runtimeCacheRevision == _revision) return;
-            _bindingLookup.clear(); _controlLookup.clear(); _bankLookup.clear(); _profileLookup.clear(); _objectLookup.clear(); _pointerLookup.clear();
-            _bindingNameLookup.clear(); _controlNameLookup.clear(); _bankNameLookup.clear();
+            _bindingLookup.clear(); _controlLookup.clear(); _bankLookup.clear(); _profileLookup.clear(); _objectLookup.clear(); _pointerLookup.clear(); _scriptLookup.clear();
+            _bindingNameLookup.clear(); _controlNameLookup.clear(); _bankNameLookup.clear(); _scriptNameLookup.clear();
             _bindingEvaluationOrder.clear(); _controlEvaluationOrder.clear();
             _bindingLookup.reserve(_bindings.size()); _bindingNameLookup.reserve(_bindings.size()); _bindingEvaluationOrder.reserve(_bindings.size());
             for (std::size_t i = 0; i < _bindings.size(); ++i) { _bindingLookup.emplace(_bindings[i].Id, i); if (_bindings[i].Name[0]) _bindingNameLookup.try_emplace(_bindings[i].Name, i); _bindingEvaluationOrder.push_back(i); }
@@ -625,6 +694,7 @@ namespace quartz::client
             for (std::size_t i = 0; i < _controls.size(); ++i) { _controlLookup.emplace(_controls[i].Id, i); if (_controls[i].Name[0]) _controlNameLookup.try_emplace(_controls[i].Name, i); _controlEvaluationOrder.push_back(i); }
             _bankLookup.reserve(_bank.size()); _bankNameLookup.reserve(_bank.size()); for (std::size_t i = 0; i < _bank.size(); ++i) { _bankLookup.emplace(_bank[i].Id, i); if (_bank[i].Name[0]) _bankNameLookup.try_emplace(_bank[i].Name, i); }
             _profileLookup.reserve(_profiles.size()); for (std::size_t i = 0; i < _profiles.size(); ++i) _profileLookup.emplace(_profiles[i].Id, i);
+            _scriptLookup.reserve(_scripts.size()); _scriptNameLookup.reserve(_scripts.size()); for (std::size_t i = 0; i < _scripts.size(); ++i) { _scriptLookup.emplace(_scripts[i].Id, i); if (_scripts[i].Name[0]) _scriptNameLookup.try_emplace(_scripts[i].Name, i); }
             _objectLookup.reserve(_objects.size()); for (std::size_t i = 0; i < _objects.size(); ++i) _objectLookup.emplace(_objects[i].Id, i);
             _pointerLookup.reserve(_pointers.size()); for (std::size_t i = 0; i < _pointers.size(); ++i) _pointerLookup.emplace(_pointers[i].Id, i);
             std::ranges::sort(_bindingEvaluationOrder, [&](const std::size_t a, const std::size_t b) { if (_bindings[a].Priority != _bindings[b].Priority) return _bindings[a].Priority < _bindings[b].Priority; return _bindings[a].Id < _bindings[b].Id; });
@@ -807,6 +877,16 @@ namespace quartz::client
                     if (value.Id == 0) value.Id = _nextBankValueId++; else _nextBankValueId = std::max(_nextBankValueId, value.Id + 1);
                     _bank.emplace_back(std::move(value));
                 }
+                else if (line.starts_with("J\t"))
+                {
+                    std::vector<std::string> fields; std::size_t start = 2; for (;;) { const std::size_t tab = line.find('\t', start); fields.emplace_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start)); if (tab == std::string::npos) break; start = tab + 1; }
+                    if (!fields.empty()) parseBool(fields[0], _scriptSettings.ExternalHotReload); if (fields.size() > 1) parseBool(fields[1], _scriptSettings.ReloadHotkeyCtrl); if (fields.size() > 2) parseBool(fields[2], _scriptSettings.ReloadHotkeyAlt); if (fields.size() > 3) parseBool(fields[3], _scriptSettings.ReloadHotkeyShift); if (fields.size() > 4) parseNumber(fields[4], _scriptSettings.ReloadHotkeyKey);
+                }
+                else if (line.starts_with("S\t"))
+                {
+                    std::vector<std::string> fields; std::size_t start = 2; for (;;) { const std::size_t tab = line.find('\t', start); fields.emplace_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start)); if (tab == std::string::npos) break; start = tab + 1; }
+                    if (fields.size() < 10) continue; RuntimeScript script; parseBool(fields[0], script.Enabled); parseNumber(fields[1], script.Id); copyField(script.Name, runtimeUnescape(fields[2])); parseBool(fields[3], script.External); script.Path = runtimeUnescape(fields[4]); parseBool(fields[5], script.HotReload); parseNumber(fields[6], script.UpdateHz); parseNumber(fields[7], script.TimeoutMs); parseNumber(fields[8], script.Order); copyField(script.Group, runtimeUnescape(fields[9])); if (fields.size() > 10) script.Source = runtimeUnescape(fields[10]); script.UpdateHz = std::clamp(script.UpdateHz, 0.5f, 500.0f); script.TimeoutMs = std::clamp(script.TimeoutMs, 0.1f, 100.0f); if (script.Id == 0) script.Id = _nextScriptId++; else _nextScriptId = std::max(_nextScriptId, script.Id + 1); _scripts.emplace_back(std::move(script));
+                }
                 else if (line.starts_with("P\t"))
                 {
                     std::vector<std::string> fields; std::size_t start = 2;
@@ -815,7 +895,7 @@ namespace quartz::client
                     RuntimeBindingProfile profile;
                     if (!parseBool(fields[0], profile.Enabled) || !parseNumber(fields[1], profile.Id)) continue;
                     copyField(profile.Name, runtimeUnescape(fields[2])); parseBool(fields[3], profile.Exclusive); parseBool(fields[4], profile.HotkeyCtrl); parseBool(fields[5], profile.HotkeyAlt); parseBool(fields[6], profile.HotkeyShift); parseNumber(fields[7], profile.HotkeyKey);
-                    parseIdList(fields[8], profile.BindingIds); parseIdList(fields[9], profile.ControlIds);
+                    parseIdList(fields[8], profile.BindingIds); parseIdList(fields[9], profile.ControlIds); if (fields.size() > 10) parseIdList(fields[10], profile.ScriptIds);
                     if (profile.Id == 0) profile.Id = _nextProfileId++; else _nextProfileId = std::max(_nextProfileId, profile.Id + 1);
                     _profiles.emplace_back(std::move(profile));
                 }
@@ -1989,10 +2069,13 @@ namespace quartz::client
         std::vector<RuntimeObjectPointer> _pointers;
         std::vector<RuntimeValueBankEntry> _bank;
         std::vector<RuntimeBindingProfile> _profiles;
+        std::vector<RuntimeScript> _scripts;
+        RuntimeScriptSettings _scriptSettings{};
         std::uint64_t _nextBindingId = 1;
         std::uint64_t _nextControlId = 1;
         std::uint64_t _nextBankValueId = 1;
         std::uint64_t _nextProfileId = 1;
+        std::uint64_t _nextScriptId = 1;
         std::uint64_t _activeProfileId = 0;
         std::uint64_t _nextObjectId = 1;
         std::uint64_t _nextObjectFieldId = 1;
@@ -2008,8 +2091,8 @@ namespace quartz::client
         int _previousShaderPreset = 0;
         std::string _observedShaderId;
         std::string _previousShaderId;
-        mutable std::unordered_map<std::uint64_t, std::size_t> _bindingLookup, _controlLookup, _bankLookup, _profileLookup, _objectLookup, _pointerLookup;
-        mutable StringLookup _bindingNameLookup, _controlNameLookup, _bankNameLookup;
+        mutable std::unordered_map<std::uint64_t, std::size_t> _bindingLookup, _controlLookup, _bankLookup, _profileLookup, _objectLookup, _pointerLookup, _scriptLookup;
+        mutable StringLookup _bindingNameLookup, _controlNameLookup, _bankNameLookup, _scriptNameLookup;
         mutable std::vector<std::size_t> _bindingEvaluationOrder, _controlEvaluationOrder;
         mutable std::uint64_t _runtimeCacheRevision = std::numeric_limits<std::uint64_t>::max();
         double _rateTime = 0.0;

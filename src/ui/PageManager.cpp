@@ -6,6 +6,7 @@
 #include "quartz/client/ui/pages/RGBPage.hpp"
 #include "quartz/client/ui/pages/ShadersPage.hpp"
 #include "quartz/client/ui/pages/BindingsPage.hpp"
+#include "quartz/client/ui/pages/JavaScriptPage.hpp"
 #include "quartz/client/ui/pages/ControlsPage.hpp"
 #include "quartz/client/ui/pages/ObjectsPage.hpp"
 #include "quartz/client/ui/pages/NativePage.hpp"
@@ -111,6 +112,7 @@ namespace quartz::client::ui
         manager.add<AudioPage>();
         manager.add<RGBPage>();
         manager.add<ShadersPage>();
+        manager.add<JavaScriptPage>();
         manager.add<BindingsPage>();
         manager.add<ControlsPage>();
         manager.add<ObjectsPage>();

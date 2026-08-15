@@ -11,6 +11,7 @@ namespace quartz::client
         bool Exclusive = true;
         std::vector<std::uint64_t> BindingIds;
         std::vector<std::uint64_t> ControlIds;
+        std::vector<std::uint64_t> ScriptIds;
         bool HotkeyCtrl = false;
         bool HotkeyAlt = false;
         bool HotkeyShift = false;
