@@ -1,6 +1,7 @@
 #pragma once
 #include "quartz/client/ui/Page.hpp"
 #include "quartz/client/native/MemoryScanner.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <optional>
 #include <unordered_map>
