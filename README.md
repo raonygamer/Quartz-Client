@@ -53,8 +53,10 @@ Quartz exposes host/device/application state through a runtime binding graph rat
 - Device/RPC/USB telemetry
 - Keyboard and audio state
 - Controls with conditions, actions and nested grouping
-- Profiles and profile hotkeys
+- Profiles and global profile hotkeys through the Quartz evdev stream (GLFW fallback)
 - Runtime status/error feedback and rescan/rebind operations
+- Embedded QuickJS scripted bindings with persistent per-binding state, execution deadlines and generated TypeScript declarations
+- Script-side `q.re` process/memory/signature/disassembly APIs and bounded loop helpers
 - QuickJS scripted bindings with persistent per-binding state, binding/control/value-bank lookup helpers and execution timeouts
 
 #### QuickJS scripted bindings

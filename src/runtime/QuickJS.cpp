@@ -1,4 +1,5 @@
 #include "quartz/client/runtime/QuickJS.hpp"
+#include "QuickJSInternal.hpp"
 #include "quartz/client/runtime/RuntimeBindingEngine.hpp"
 #include <quickjs.h>
 #include <charconv>
@@ -28,12 +29,8 @@ namespace quartz::client
         }
 
         struct QuickJSRuntime;
-        struct ScriptInstance
+        struct ScriptInstance : RuntimeQuickJSContext
         {
-            QuickJSRuntime* Owner = nullptr;
-            RuntimeBindingEngine* Engine = nullptr;
-            RuntimeBinding* Binding = nullptr;
-            const RuntimeSignalContext* SignalContext = nullptr;
             JSContext* Context = nullptr;
             JSValue Function = JS_UNDEFINED;
             JSValue Api = JS_UNDEFINED;
@@ -47,7 +44,7 @@ namespace quartz::client
 
         const RuntimeBinding* resolveBinding(JSContext* ctx, JSValueConst value)
         {
-            auto* instance = static_cast<ScriptInstance*>(JS_GetContextOpaque(ctx));
+            auto* instance = static_cast<RuntimeQuickJSContext*>(JS_GetContextOpaque(ctx));
             if (!instance || !instance->Engine) return nullptr;
             if (JS_IsNumber(value) || JS_IsBigInt(ctx, value))
             {
@@ -62,7 +59,7 @@ namespace quartz::client
 
         const RuntimeControlRule* resolveControl(JSContext* ctx, JSValueConst value)
         {
-            auto* instance = static_cast<ScriptInstance*>(JS_GetContextOpaque(ctx));
+            auto* instance = static_cast<RuntimeQuickJSContext*>(JS_GetContextOpaque(ctx));
             if (!instance || !instance->Engine) return nullptr;
             if (JS_IsNumber(value) || JS_IsBigInt(ctx, value))
             {
@@ -77,7 +74,7 @@ namespace quartz::client
 
         const RuntimeValueBankEntry* resolveBank(JSContext* ctx, JSValueConst value)
         {
-            auto* instance = static_cast<ScriptInstance*>(JS_GetContextOpaque(ctx));
+            auto* instance = static_cast<RuntimeQuickJSContext*>(JS_GetContextOpaque(ctx));
             if (!instance || !instance->Engine) return nullptr;
             if (JS_IsNumber(value) || JS_IsBigInt(ctx, value))
             {
@@ -144,7 +141,7 @@ namespace quartz::client
 
         JSValue jsLog(JSContext* ctx, JSValueConst, const int argc, JSValueConst* argv)
         {
-            auto* instance = static_cast<ScriptInstance*>(JS_GetContextOpaque(ctx));
+            auto* instance = static_cast<RuntimeQuickJSContext*>(JS_GetContextOpaque(ctx));
             if (!instance || !instance->Binding) return JS_UNDEFINED;
             std::string text;
             for (int i = 0; i < argc; ++i)
@@ -199,7 +196,7 @@ namespace quartz::client
 
         bool applyScriptResult(JSContext* ctx, JSValueConst value, RuntimeBinding& binding, float& output, std::string& error)
         {
-            binding.HasAddress = false; binding.AddressValue = 0; binding.AddressProvenance.clear();
+            binding.HasString = false; binding.StringValue.clear(); binding.HasAddress = false; binding.AddressValue = 0; binding.AddressProvenance.clear();
             if (valueToNumber(ctx, value, output)) return true;
             if (JS_IsString(value))
             {
@@ -247,9 +244,7 @@ namespace quartz::client
         {
             JSRuntime* Runtime = nullptr;
             std::unordered_map<std::uint64_t, std::unique_ptr<ScriptInstance>> Instances;
-            std::chrono::steady_clock::time_point Deadline{};
-            bool DeadlineActive = false;
-            bool Interrupted = false;
+            RuntimeQuickJSDeadline Execution;
             std::string Error;
 
             QuickJSRuntime()
@@ -263,24 +258,24 @@ namespace quartz::client
             static int interrupt(JSRuntime*, void* opaque)
             {
                 auto* self = static_cast<QuickJSRuntime*>(opaque);
-                if (!self || !self->DeadlineActive || std::chrono::steady_clock::now() < self->Deadline) return 0;
-                self->Interrupted = true; return 1;
+                if (!self || !self->Execution.Active || std::chrono::steady_clock::now() < self->Execution.Deadline) return 0;
+                self->Execution.Interrupted = true; return 1;
             }
 
             void beginDeadline(const float milliseconds)
             {
-                Interrupted = false; DeadlineActive = true; Deadline = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double, std::milli>(std::clamp(milliseconds, 0.1f, 100.0f)));
+                Execution.Interrupted = false; Execution.Active = true; Execution.Deadline = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double, std::milli>(std::clamp(milliseconds, 0.1f, 100.0f)));
             }
-            void endDeadline() noexcept { DeadlineActive = false; }
+            void endDeadline() noexcept { Execution.Active = false; }
 
             ScriptInstance* instance(RuntimeBinding& binding)
             {
                 if (!Runtime) return nullptr;
                 auto [it, inserted] = Instances.try_emplace(binding.Id);
                 if (!inserted) return it->second.get();
-                auto created = std::make_unique<ScriptInstance>(); created->Owner = this; created->Context = JS_NewContext(Runtime);
+                auto created = std::make_unique<ScriptInstance>(); created->Execution = &Execution; created->Context = JS_NewContext(Runtime);
                 if (!created->Context) { Error = "could not create QuickJS context"; Instances.erase(it); return nullptr; }
-                JS_SetContextOpaque(created->Context, created.get()); created->Api = JS_NewObject(created->Context);
+                JS_SetContextOpaque(created->Context, static_cast<RuntimeQuickJSContext*>(created.get())); created->Api = JS_NewObject(created->Context);
                 if (JS_IsException(created->Api)) { Error = exceptionText(created->Context); Instances.erase(it); return nullptr; }
                 JS_SetPropertyStr(created->Context, created->Api, "binding", JS_NewCFunction(created->Context, jsBinding, "binding", 1));
                 JS_SetPropertyStr(created->Context, created->Api, "raw", JS_NewCFunction(created->Context, jsRaw, "raw", 1));
@@ -290,6 +285,7 @@ namespace quartz::client
                 JS_SetPropertyStr(created->Context, created->Api, "control", JS_NewCFunction(created->Context, jsControl, "control", 1));
                 JS_SetPropertyStr(created->Context, created->Api, "triggered", JS_NewCFunction(created->Context, jsTriggered, "triggered", 1));
                 JS_SetPropertyStr(created->Context, created->Api, "log", JS_NewCFunction(created->Context, jsLog, "log", 1));
+                runtimeInstallQuickJSLowLevelApi(created->Context, created->Api);
                 JS_DefinePropertyValueStr(created->Context, created->Api, "state", JS_NewObject(created->Context), JS_PROP_ENUMERABLE);
                 auto* result = created.get(); it->second = std::move(created); return result;
             }
@@ -299,10 +295,10 @@ namespace quartz::client
                 const std::string_view body(binding.Script); const std::uint64_t hash = hashScript(body);
                 if (instance.SourceHash == hash && JS_IsFunction(instance.Context, instance.Function)) return true;
                 JS_FreeValue(instance.Context, instance.Function); instance.Function = JS_UNDEFINED; instance.SourceHash = hash;
-                std::string source = "(function(q){\\n\\\"use strict\\\";\\n"; source.append(body); source += "\\n})";
+                std::string source = "(function(q){\n\"use strict\";\n"; source.append(body); source += "\n})";
                 const std::string filename = "quartz-binding-" + std::to_string(binding.Id) + ".js";
                 beginDeadline(binding.ScriptTimeoutMs); JSValue function = JS_Eval(instance.Context, source.c_str(), source.size(), filename.c_str(), JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_STRICT); endDeadline();
-                if (JS_IsException(function)) { if (Interrupted) { JSValue exception = JS_GetException(instance.Context); JS_FreeValue(instance.Context, exception); ++binding.ScriptTimeoutCount; error = "QuickJS compile timed out"; } else error = exceptionText(instance.Context); return false; }
+                if (JS_IsException(function)) { if (Execution.Interrupted) { JSValue exception = JS_GetException(instance.Context); JS_FreeValue(instance.Context, exception); ++binding.ScriptTimeoutCount; error = "QuickJS compile timed out"; } else error = exceptionText(instance.Context); return false; }
                 if (!JS_IsFunction(instance.Context, function)) { JS_FreeValue(instance.Context, function); error = "QuickJS source did not compile to a function"; return false; }
                 instance.Function = function; ++binding.ScriptCompileCount; return true;
             }
@@ -323,7 +319,7 @@ namespace quartz::client
                 JSValue argument = JS_DupValue(script->Context, script->Api);
                 const auto started = std::chrono::steady_clock::now(); beginDeadline(binding.ScriptTimeoutMs); JSValue result = JS_Call(script->Context, script->Function, JS_UNDEFINED, 1, &argument); endDeadline();
                 binding.ScriptLastMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count(); ++binding.ScriptRunCount; JS_FreeValue(script->Context, argument);
-                if (JS_IsException(result)) { if (Interrupted) { JSValue exception = JS_GetException(script->Context); JS_FreeValue(script->Context, exception); ++binding.ScriptTimeoutCount; binding.Error = "QuickJS execution timed out after " + std::to_string(binding.ScriptTimeoutMs) + " ms"; } else binding.Error = exceptionText(script->Context); return false; }
+                if (JS_IsException(result)) { if (Execution.Interrupted) { JSValue exception = JS_GetException(script->Context); JS_FreeValue(script->Context, exception); ++binding.ScriptTimeoutCount; binding.Error = "QuickJS execution timed out after " + std::to_string(binding.ScriptTimeoutMs) + " ms"; } else binding.Error = exceptionText(script->Context); return false; }
                 const bool success = applyScriptResult(script->Context, result, binding, output, error); JS_FreeValue(script->Context, result);
                 if (!success) { binding.Error = std::move(error); return false; }
                 binding.Error.clear(); return true;

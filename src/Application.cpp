@@ -152,7 +152,7 @@ int Application::run(int argc, char* argv[])
         appCpuUsage = appCpuMeter.update(currentFrame);
         runtimeBindings.updateRates(usb.stats(), currentFrame);
         window.pollEvents();
-        runtimeBindings.pollProfileHotkeys(window.handle());
+        runtimeBindings.pollProfileHotkeys(window.handle(), keyboardInput);
         imgui.beginFrame();
 
         reactiveKeys = keyboardInput.snapshot();

@@ -1,8 +1,52 @@
 #include "quartz/client/Model.hpp"
 #include "quartz/client/runtime/QuickJS.hpp"
+#include <memory>
+#include <unordered_map>
 
 namespace quartz::client
 {
+    namespace
+    {
+        const TextEditor::Language* runtimeQuickJSLanguage()
+        {
+            static const TextEditor::Language language = []
+            {
+                TextEditor::Language value; value.name = "JavaScript"; value.singleLineComment = "//"; value.commentStart = "/*"; value.commentEnd = "*/"; value.hasSingleQuotedStrings = true; value.hasDoubleQuotedStrings = true; value.otherStringStart = "`"; value.otherStringEnd = "`"; value.stringEscape = '\\';
+                value.keywords = {"async","await","break","case","catch","class","const","continue","debugger","default","delete","do","else","export","extends","finally","for","from","function","get","if","import","in","instanceof","let","new","of","return","set","static","super","switch","this","throw","try","typeof","var","void","while","with","yield"};
+                value.declarations = {"true","false","null","undefined"}; value.identifiers = {"q","Math","JSON","BigInt","Number","String","Boolean","Array","Object","Map","Set","Date","RegExp","NaN","Infinity"};
+                value.isPunctuation = [](const ImWchar c) { return std::string_view("[]{}().,;:+-*/%<>=!&|^~?").find(static_cast<char>(c)) != std::string_view::npos; };
+                value.getIdentifier = [](TextEditor::Iterator start, const TextEditor::Iterator end)
+                {
+                    if (start == end || !(TextEditor::CodePoint::isXidStart(*start) || *start == '_' || *start == '$')) return start; auto current = start; ++current; while (current != end && (TextEditor::CodePoint::isXidContinue(*current) || *current == '$')) ++current; return current;
+                };
+                value.getNumber = [](TextEditor::Iterator start, const TextEditor::Iterator end)
+                {
+                    if (start == end) return start; auto current = start; auto next = current; ++next;
+                    const auto digit = [](const ImWchar c) { return c >= '0' && c <= '9'; }; const auto hex = [&](const ImWchar c) { return digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); };
+                    if (*current == '.' && (next == end || !digit(*next))) return start;
+                    if (*current == '0' && next != end && (*next == 'x' || *next == 'X' || *next == 'b' || *next == 'B' || *next == 'o' || *next == 'O'))
+                    {
+                        const ImWchar prefix = *next; current = next; ++current; while (current != end && (*current == '_' || (prefix == 'x' || prefix == 'X' ? hex(*current) : prefix == 'b' || prefix == 'B' ? (*current == '0' || *current == '1') : (*current >= '0' && *current <= '7')))) ++current; if (current != end && *current == 'n') ++current; return current;
+                    }
+                    bool dot = false; if (*current == '.') { dot = true; ++current; } while (current != end && (digit(*current) || *current == '_')) ++current; if (!dot && current != end && *current == '.') { ++current; while (current != end && (digit(*current) || *current == '_')) ++current; }
+                    if (current != end && (*current == 'e' || *current == 'E')) { auto exponent = current; ++exponent; if (exponent != end && (*exponent == '+' || *exponent == '-')) ++exponent; bool any = false; while (exponent != end && (digit(*exponent) || *exponent == '_')) { any |= digit(*exponent); ++exponent; } if (any) current = exponent; }
+                    if (current != end && *current == 'n') ++current; return current;
+                };
+                return value;
+            }();
+            return &language;
+        }
+
+        struct RuntimeScriptEditorState { TextEditor Editor; std::string Synced; bool Initialized = false; };
+        RuntimeScriptEditorState& runtimeScriptEditor(const RuntimeBinding& binding)
+        {
+            static std::unordered_map<std::uint64_t, std::unique_ptr<RuntimeScriptEditorState>> editors; auto [it, inserted] = editors.try_emplace(binding.Id); if (inserted) it->second = std::make_unique<RuntimeScriptEditorState>(); auto& state = *it->second;
+            if (!state.Initialized) { state.Editor.SetLanguage(runtimeQuickJSLanguage()); state.Editor.SetPalette(shaderEditorPalette()); state.Editor.SetTabSize(4); state.Editor.SetInsertSpacesOnTabs(true); state.Editor.SetAutoIndentEnabled(true); state.Editor.SetShowLineNumbersEnabled(true); state.Editor.SetShowMatchingBrackets(true); state.Editor.SetText(binding.Script); state.Synced = binding.Script; state.Initialized = true; }
+            else if (state.Synced != binding.Script) { state.Editor.SetText(binding.Script); state.Synced = binding.Script; }
+            return state;
+        }
+    }
+
     void drawIndeterminateProgressBar(ImVec2 size)
     {
         if (size.x <= 0.0f) size.x = ImGui::GetContentRegionAvail().x;
@@ -995,26 +1039,35 @@ namespace quartz::client
         else if (binding.Source == RuntimeSourceKind::Script)
         {
             ImGui::SeparatorText("QuickJS script");
-            ImGui::TextWrapped("The text below is a JavaScript function body. Return a number/bool/string/BigInt address, or { value, string, address }. Scripts are synchronous, sandboxed from filesystem/network APIs, compiled once, and run at this binding's update rate.");
-            const bool scriptChanged = ImGui::InputTextMultiline("Script", binding.Script, sizeof(binding.Script), ImVec2(-1.0f, 180.0f), ImGuiInputTextFlags_AllowTabInput);
-            if (scriptChanged) { binding.NextUpdate = 0.0; changed = true; }
+            ImGui::TextWrapped("The editor is a JavaScript function body. Return a number/bool/string/BigInt address, or { value, string, address }. Scripts are synchronous, compiled once, and run at this binding's update rate; low-level q.re calls share the same execution deadline.");
+            auto& editor = runtimeScriptEditor(binding);
+            if (editor.Editor.Render("##QuickJSScriptEditor", ImVec2(-1.0f, 240.0f)))
+            {
+                const std::string source = editor.Editor.GetText();
+                if (source.size() < sizeof(binding.Script)) { std::memcpy(binding.Script, source.c_str(), source.size() + 1); editor.Synced = source; binding.NextUpdate = 0.0; changed = true; }
+                else binding.Error = "QuickJS editor text exceeds the 8191-byte binding script limit";
+            }
             ImGui::SetNextItemWidth(180.0f);
             if (ImGui::DragFloat("Execution timeout", &binding.ScriptTimeoutMs, 0.1f, 0.1f, 100.0f, "%.1f ms")) { binding.ScriptTimeoutMs = std::clamp(binding.ScriptTimeoutMs, 0.1f, 100.0f); changed = true; }
             if (ImGui::Button("Run now")) binding.NextUpdate = 0.0;
+            ImGui::SameLine(); if (ImGui::Button("Reset script state")) { runtimeResetScriptBinding(binding.Id); binding.NextUpdate = 0.0; binding.ScriptLastLog.clear(); }
             ImGui::SameLine();
-            if (ImGui::Button("Reset script state")) { runtimeResetScriptBinding(binding.Id); binding.NextUpdate = 0.0; binding.ScriptLastLog.clear(); }
+            static std::string typeStatus;
+            if (ImGui::Button("Save .d.ts")) { std::string error; typeStatus = runtimeSaveQuickJSTypeDeclarations(error) ? "saved " + runtimeQuickJSTypeDeclarationsPath().string() : error; }
             ImGui::SameLine(); ImGui::TextDisabled("runs %llu | compiles %llu | timeouts %llu | last %.3f ms", static_cast<unsigned long long>(binding.ScriptRunCount), static_cast<unsigned long long>(binding.ScriptCompileCount), static_cast<unsigned long long>(binding.ScriptTimeoutCount), binding.ScriptLastMilliseconds);
+            if (!typeStatus.empty()) ImGui::TextDisabled("%s", typeStatus.c_str());
             if (!binding.ScriptLastLog.empty()) ImGui::TextDisabled("log: %s", binding.ScriptLastLog.c_str());
             if (ImGui::TreeNode("QuickJS API"))
             {
-                ImGui::BulletText("q.binding(idOrName) / q.raw(idOrName) - current transformed/raw numeric binding value");
-                ImGui::BulletText("q.text(idOrName) / q.address(idOrName) - string or exact address (address is a BigInt)");
-                ImGui::BulletText("q.bank(idOrName) - typed value-bank value");
-                ImGui::BulletText("q.control(idOrName) / q.triggered(idOrName) - control state");
-                ImGui::BulletText("q.time / q.deltaTime / q.previous / q.previousRaw - current runtime context");
-                ImGui::BulletText("q.state - persistent per-binding JS object; Reset script state recreates it");
-                ImGui::BulletText("q.log(...) - stores a short message in the binding status UI");
-                ImGui::TextDisabled("Bindings execute by priority. Reading another binding returns its latest already-produced value; use priority to order scripted dependencies.");
+                ImGui::BulletText("q.binding/raw/text/address(idOrName), q.bank(idOrName), q.control/triggered(idOrName)");
+                ImGui::BulletText("q.loop(count, callback) - bounded helper; return false from callback to stop early");
+                ImGui::BulletText("q.re.processes/modules/regions/processAlive - native process discovery");
+                ImGui::BulletText("q.re.read/write + readBytes/writeBytes - typed/raw process memory access");
+                ImGui::BulletText("q.re.signature - synchronous first-match libhat hex-pattern search under the script deadline");
+                ImGui::BulletText("q.re.disassemble - architecture-aware x86/x64 Zydis disassembly");
+                ImGui::BulletText("q.re.loop(start, count, stride, callback) - bounded address iteration with BigInt addresses");
+                ImGui::BulletText("q.time / q.deltaTime / q.previous / q.previousRaw / q.state / q.log(...)");
+                ImGui::TextDisabled("Save .d.ts writes quartz-bindings.d.ts beside the bindings config for external editor completion. RE writes are immediate process writes; there is intentionally no UI confirmation inside a script.");
                 ImGui::TreePop();
             }
         }
@@ -1865,6 +1918,7 @@ namespace quartz::client
             for (const auto& key : Keys) { const bool selected = key.Key == profile.HotkeyKey; if (ImGui::Selectable(key.Name, selected)) { profile.HotkeyKey = key.Key; changed = true; } if (selected) ImGui::SetItemDefaultFocus(); }
             ImGui::EndCombo();
         }
+        ImGui::TextDisabled("Uses the Quartz evdev stream globally when available, so the window does not need focus. GLFW is the fallback.");
         return changed;
     }
 

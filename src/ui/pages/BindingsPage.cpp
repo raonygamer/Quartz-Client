@@ -36,9 +36,10 @@ namespace quartz::client::ui
         void drawBindingStateOverlay(const ImVec2 legacyOrigin, const ImVec4 color)
         {
             constexpr float LegacySize = 11.0f;
-            const float size = ImGui::GetFrameHeight();
+            const float lineHeight = ImGui::GetFrameHeight();
+            const float size = lineHeight;
             const float growth = std::max(size - LegacySize, 0.0f);
-            const ImVec2 min{legacyOrigin.x - growth * 0.5f, legacyOrigin.y - growth * 0.5f};
+            const ImVec2 min{legacyOrigin.x - growth * 0.5f, legacyOrigin.y + (lineHeight - size) * 0.5f};
             const ImVec2 max{min.x + size, min.y + size};
             ImGui::GetWindowDrawList()->AddRectFilled(min, max, ImGui::GetColorU32(color), ImGui::GetStyle().FrameRounding);
         }

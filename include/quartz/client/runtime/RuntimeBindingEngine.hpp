@@ -103,17 +103,38 @@ namespace quartz::client
             ++_revision;
         }
 
-        void pollProfileHotkeys(GLFWwindow* window)
+        void pollProfileHotkeys(GLFWwindow* window, const EvdevKeyboard& keyboard)
         {
-            if (!window) return;
-            const bool ctrl = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
-            const bool alt = glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
-            const bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+            const bool useEvdev = keyboard.connected();
+            if (!useEvdev && !window) return;
+            const auto evdevKey = [](const int key) -> std::uint16_t
+            {
+                switch (key)
+                {
+                case GLFW_KEY_F1: return KEY_F1; case GLFW_KEY_F2: return KEY_F2; case GLFW_KEY_F3: return KEY_F3; case GLFW_KEY_F4: return KEY_F4; case GLFW_KEY_F5: return KEY_F5; case GLFW_KEY_F6: return KEY_F6;
+                case GLFW_KEY_F7: return KEY_F7; case GLFW_KEY_F8: return KEY_F8; case GLFW_KEY_F9: return KEY_F9; case GLFW_KEY_F10: return KEY_F10; case GLFW_KEY_F11: return KEY_F11; case GLFW_KEY_F12: return KEY_F12;
+                case GLFW_KEY_A: return KEY_A; case GLFW_KEY_B: return KEY_B; case GLFW_KEY_C: return KEY_C; case GLFW_KEY_D: return KEY_D; case GLFW_KEY_E: return KEY_E; case GLFW_KEY_F: return KEY_F; case GLFW_KEY_G: return KEY_G;
+                case GLFW_KEY_H: return KEY_H; case GLFW_KEY_I: return KEY_I; case GLFW_KEY_J: return KEY_J; case GLFW_KEY_K: return KEY_K; case GLFW_KEY_L: return KEY_L; case GLFW_KEY_M: return KEY_M; case GLFW_KEY_N: return KEY_N;
+                case GLFW_KEY_O: return KEY_O; case GLFW_KEY_P: return KEY_P; case GLFW_KEY_Q: return KEY_Q; case GLFW_KEY_R: return KEY_R; case GLFW_KEY_S: return KEY_S; case GLFW_KEY_T: return KEY_T; case GLFW_KEY_U: return KEY_U;
+                case GLFW_KEY_V: return KEY_V; case GLFW_KEY_W: return KEY_W; case GLFW_KEY_X: return KEY_X; case GLFW_KEY_Y: return KEY_Y; case GLFW_KEY_Z: return KEY_Z;
+                default: return 0;
+                }
+            };
+            const bool ctrl = !useEvdev && (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS);
+            const bool alt = !useEvdev && (glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS);
+            const bool shift = !useEvdev && (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
             for (auto& profile : _profiles)
             {
                 if (!profile.Enabled || profile.HotkeyKey <= 0) { profile.HotkeyDown = false; continue; }
-                const bool modifiers = (!profile.HotkeyCtrl || ctrl) && (!profile.HotkeyAlt || alt) && (!profile.HotkeyShift || shift);
-                const bool down = modifiers && glfwGetKey(window, profile.HotkeyKey) == GLFW_PRESS;
+                bool down = false;
+                if (useEvdev)
+                {
+                    const std::uint16_t key = evdevKey(profile.HotkeyKey); down = key != 0 && keyboard.shortcutDown(key, profile.HotkeyCtrl, profile.HotkeyAlt, profile.HotkeyShift);
+                }
+                else
+                {
+                    const bool modifiers = (!profile.HotkeyCtrl || ctrl) && (!profile.HotkeyAlt || alt) && (!profile.HotkeyShift || shift); down = modifiers && glfwGetKey(window, profile.HotkeyKey) == GLFW_PRESS;
+                }
                 if (down && !profile.HotkeyDown) applyProfile(profile);
                 profile.HotkeyDown = down;
             }

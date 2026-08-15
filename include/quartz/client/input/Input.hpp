@@ -77,6 +77,16 @@ namespace quartz::client
 
         bool consumeRestoreRequest() noexcept { return _restoreRequested.exchange(false); }
 
+        bool shortcutDown(const std::uint16_t key, const bool ctrl, const bool alt, const bool shift) const
+        {
+            if (key > KEY_MAX) return false;
+            std::lock_guard lock(_mutex);
+            const bool ctrlDown = _keyDown[KEY_LEFTCTRL] || _keyDown[KEY_RIGHTCTRL];
+            const bool altDown = _keyDown[KEY_LEFTALT] || _keyDown[KEY_RIGHTALT];
+            const bool shiftDown = _keyDown[KEY_LEFTSHIFT] || _keyDown[KEY_RIGHTSHIFT];
+            return (!ctrl || ctrlDown) && (!alt || altDown) && (!shift || shiftDown) && _keyDown[key];
+        }
+
     private:
         struct Device
         {
@@ -110,8 +120,8 @@ namespace quartz::client
 
         void resetKeyState()
         {
-            _keyDown.fill(false);
             std::lock_guard lock(_mutex);
+            _keyDown.fill(false);
             _state.Down.fill(0.0f);
         }
 
@@ -241,14 +251,13 @@ namespace quartz::client
         void handleKey(const input_event& event)
         {
             if (event.code > KEY_MAX) return;
+            const auto* binding = findReactiveKeyBinding(event.code);
+            std::lock_guard lock(_mutex);
             const bool wasDown = _keyDown[event.code];
             _keyDown[event.code] = event.value != 0;
             if (event.value == 1 && !wasDown && restoreShortcutDown()) _restoreRequested.store(true);
-
-            const auto* binding = findReactiveKeyBinding(event.code);
             if (!binding) return;
             const std::size_t index = static_cast<std::size_t>(binding->Row) * Columns + binding->Column;
-            std::lock_guard lock(_mutex);
             _state.Down[index] = event.value == 0 ? 0.0f : 1.0f;
             if (event.value == 1 && !wasDown)
             {
