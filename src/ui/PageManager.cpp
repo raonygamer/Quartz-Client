@@ -71,7 +71,7 @@ namespace quartz::client::ui
         if (!active) return;
 
         const ImVec2 available = ImGui::GetContentRegionAvail();
-        constexpr float NavigationWidth = 158.0f;
+        constexpr float NavigationWidth = 178.0f;
         if (ImGui::BeginChild("PageNavigation", ImVec2(NavigationWidth, available.y), ImGuiChildFlags_Borders))
         {
             for (const PageSection section : Sections)
@@ -84,7 +84,8 @@ namespace quartz::client::ui
                 {
                     if (page->presentation() != PagePresentation::Tab || page->section() != section) continue;
                     const bool selected = page->id() == _activePageId;
-                    if (ImGui::Selectable(page->title().data(), selected, ImGuiSelectableFlags_None, ImVec2(-1.0f, 0.0f))) _activePageId.assign(page->id());
+                    const float selectableWidth = ImGui::GetContentRegionAvail().x;
+                    if (ImGui::Selectable(page->title().data(), selected, ImGuiSelectableFlags_None, ImVec2(selectableWidth, 0.0f))) _activePageId.assign(page->id());
                 }
                 ImGui::Spacing();
             }
