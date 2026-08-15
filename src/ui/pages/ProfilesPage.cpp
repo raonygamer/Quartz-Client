@@ -7,7 +7,7 @@ namespace quartz::client::ui
     void ProfilesPage::render(PageContext& context, PageManager& manager)
     {
         (void)manager;
-        ImGui::TextWrapped("Profiles are runtime graph presets: enable/disable coherent sets of bindings and controls without hunting through individual nodes.");
-        drawRuntimeProfiles(context.runtimeBindings);
+        ImGui::TextWrapped("Profiles can still group legacy bindings/controls, and now explicitly select which first-class JavaScript scripts are active. JavaScript script membership is treated as the profile's exact active script set.");
+        drawRuntimeProfiles(context.runtimeBindings, context.javascript);
     }
 }
