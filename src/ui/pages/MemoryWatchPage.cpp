@@ -43,7 +43,14 @@ namespace quartz::client::ui
         if (_processes.empty()) _processes = enumerateRuntimeProcesses();
         ImGui::TextWrapped("%s", i18n::tr("re.watchDescription"));
         drawProcessPicker("MemoryWatchProcess", _processes, _pid, _processSearch.data(), _processSearch.size(), 520.0f);
-        drawAddressInput(i18n::tr("re.address"), _address.data(), _address.size(), _pid, 310.0f); ImGui::SameLine(); ImGui::SetNextItemWidth(110.0f); static constexpr const char* Sizes[] = {"1 byte", "2 bytes", "4 bytes", "8 bytes"}; ImGui::Combo(i18n::tr("re.size"), &_size, Sizes, 4); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); const std::string accessItems=std::string(i18n::tr("re.writeAccess"))+"\0"+i18n::tr("re.readWriteAccess")+"\0"; ImGui::Combo(i18n::tr("re.access"), &_access, accessItems.c_str());
+        drawAddressInput(i18n::tr("re.address"), _address.data(), _address.size(), _pid, 310.0f); ImGui::SameLine(); ImGui::SetNextItemWidth(110.0f); static constexpr const char* Sizes[] = {"1 byte", "2 bytes", "4 bytes", "8 bytes"}; ImGui::Combo(i18n::tr("re.size"), &_size, Sizes, 4); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f);
+        const char* accessPreview = _access == static_cast<int>(MemoryWatchAccess::ReadWrite) ? i18n::tr("re.readWriteAccess") : i18n::tr("re.writeAccess");
+        if (ImGui::BeginCombo(i18n::tr("re.access"), accessPreview))
+        {
+            const bool writeSelected = _access == static_cast<int>(MemoryWatchAccess::Write); if (ImGui::Selectable(i18n::tr("re.writeAccess"), writeSelected)) _access = static_cast<int>(MemoryWatchAccess::Write); if (writeSelected) ImGui::SetItemDefaultFocus();
+            const bool readWriteSelected = _access == static_cast<int>(MemoryWatchAccess::ReadWrite); if (ImGui::Selectable(i18n::tr("re.readWriteAccess"), readWriteSelected)) _access = static_cast<int>(MemoryWatchAccess::ReadWrite); if (readWriteSelected) ImGui::SetItemDefaultFocus();
+            ImGui::EndCombo();
+        }
         ImGui::SetNextItemWidth(120.0f); ImGui::InputInt(i18n::tr("re.hitLimit"), &_maxHits); ImGui::SameLine(); ImGui::TextDisabled(i18n::tr("re.watchAddressHint"), runtimeX86ModeName(runtimeProcessX86Mode(_pid)));
         const bool watchRunning = _watch.running();
         ImGui::BeginDisabled(watchRunning);
