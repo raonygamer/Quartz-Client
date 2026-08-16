@@ -12,12 +12,14 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iomanip>
 #include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace quartz::client::ui
@@ -184,9 +186,11 @@ return Struct.define({
             {
                 bytes.resize(row.Width); row.Readable = row.Width != 0 && readProcessMemoryBlock(pid, address, bytes, error); row.Value = row.Readable ? scalarText(field.Kind, bytes) : "<unreadable>";
             }
-            row.Raw = row.Readable ? runtimeFormatHexBytes(bytes) : std::move(error); rows.emplace_back(std::move(row));
-            if (field.Kind == StructExperimentFieldKind::Pointer && field.Nested && rows.back().Readable && rows.back().PointerValue != 0)
-                for (const auto& nested : field.Nested->Fields) appendFieldRows(pid, mode, nested, rows.back().PointerValue, name + "->" + nested.Name, rows, depth + 1);
+            row.Raw = row.Readable ? runtimeFormatHexBytes(bytes) : std::move(error);
+            const bool followPointer = field.Kind == StructExperimentFieldKind::Pointer && field.Nested && row.Readable && row.PointerValue != 0;
+            const std::uintptr_t pointedAddress = row.PointerValue;
+            rows.emplace_back(std::move(row));
+            if (followPointer) for (const auto& nested : field.Nested->Fields) appendFieldRows(pid, mode, nested, pointedAddress, name + "->" + nested.Name, rows, depth + 1);
         }
 
         void refreshRows(ObjectExperimentState& state)
