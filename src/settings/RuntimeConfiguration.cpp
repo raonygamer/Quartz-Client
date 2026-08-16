@@ -1,6 +1,7 @@
 #include "quartz/client/settings/RuntimeConfiguration.hpp"
 #include "quartz/client/Functions.hpp"
 #include "quartz/client/native/SignatureScanner.hpp"
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
@@ -13,6 +14,10 @@ namespace quartz::client
 {
     namespace
     {
+        constexpr std::size_t MinimumFunctionAnalysisWindow = 16ULL * 1024ULL;
+        constexpr std::size_t MaximumFunctionAnalysisWindow = 2ULL * 1024ULL * 1024ULL;
+        constexpr std::size_t FunctionAnalysisAlignment = 4096;
+
         std::filesystem::path configurationPath() { return settingsPath().parent_path() / "configuration.ini"; }
 
         bool parseBoolValue(const std::string_view value, bool& output) noexcept
@@ -29,11 +34,25 @@ namespace quartz::client
             output = parsed; return true;
         }
 
+        bool parseSizeValue(const std::string_view value, std::size_t& output) noexcept
+        {
+            std::size_t parsed = 0; const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (ec != std::errc{} || ptr != value.data() + value.size()) return false;
+            output = parsed; return true;
+        }
+
+        std::size_t normalizeFunctionAnalysisWindow(std::size_t value) noexcept
+        {
+            value = std::clamp(value, MinimumFunctionAnalysisWindow, MaximumFunctionAnalysisWindow);
+            return (value + FunctionAnalysisAlignment - 1) & ~(FunctionAnalysisAlignment - 1);
+        }
+
         void apply(RuntimeConfiguration& configuration) noexcept
         {
             configuration.SignatureScanChunkBytes = normalizeSignatureScanChunkBytes(configuration.SignatureScanChunkBytes);
             configuration.DisassemblyRefreshHz = std::clamp(configuration.DisassemblyRefreshHz, 0.0f, 30.0f);
             configuration.RawBytesRefreshHz = std::clamp(configuration.RawBytesRefreshHz, 0.0f, 30.0f);
+            configuration.FunctionAnalysisWindowBytes = normalizeFunctionAnalysisWindow(configuration.FunctionAnalysisWindowBytes);
             setSignatureScanChunkBytes(configuration.SignatureScanChunkBytes);
         }
     }
@@ -49,18 +68,16 @@ namespace quartz::client
         auto& configuration = runtimeConfiguration();
         try
         {
-            std::ifstream file(configurationPath());
-            std::string line;
+            std::ifstream file(configurationPath()); std::string line;
             while (std::getline(file, line))
             {
                 const std::string_view text(line); const auto separator = text.find('='); if (separator == std::string_view::npos) continue;
                 const std::string_view key = text.substr(0, separator), value = text.substr(separator + 1);
-                if (key == "SignatureScanChunkBytes")
-                {
-                    std::size_t parsed = 0; const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), parsed); if (ec == std::errc{} && ptr == value.data() + value.size()) configuration.SignatureScanChunkBytes = parsed;
-                }
+                if (key == "SignatureScanChunkBytes") parseSizeValue(value, configuration.SignatureScanChunkBytes);
                 else if (key == "DisassemblyRefreshHz") parseFloatValue(value, configuration.DisassemblyRefreshHz);
                 else if (key == "RawBytesRefreshHz") parseFloatValue(value, configuration.RawBytesRefreshHz);
+                else if (key == "FunctionHeuristics") parseBoolValue(value, configuration.FunctionHeuristics);
+                else if (key == "FunctionAnalysisWindowBytes") parseSizeValue(value, configuration.FunctionAnalysisWindowBytes);
                 else if (key == "AssemblerFillNops") parseBoolValue(value, configuration.AssemblerFillNops);
                 else if (key == "AssemblerWholeInstructions") parseBoolValue(value, configuration.AssemblerWholeInstructions);
                 else if (key == "AssemblerConsumeFollowing") parseBoolValue(value, configuration.AssemblerConsumeFollowing);
@@ -86,6 +103,8 @@ namespace quartz::client
                 file << "SignatureScanChunkBytes=" << configuration.SignatureScanChunkBytes << '\n';
                 file << "DisassemblyRefreshHz=" << configuration.DisassemblyRefreshHz << '\n';
                 file << "RawBytesRefreshHz=" << configuration.RawBytesRefreshHz << '\n';
+                file << "FunctionHeuristics=" << configuration.FunctionHeuristics << '\n';
+                file << "FunctionAnalysisWindowBytes=" << configuration.FunctionAnalysisWindowBytes << '\n';
                 file << "AssemblerFillNops=" << configuration.AssemblerFillNops << '\n';
                 file << "AssemblerWholeInstructions=" << configuration.AssemblerWholeInstructions << '\n';
                 file << "AssemblerConsumeFollowing=" << configuration.AssemblerConsumeFollowing << '\n';
