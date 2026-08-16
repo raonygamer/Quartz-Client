@@ -1,5 +1,6 @@
 #include "quartz/client/ui/ReverseEngineeringTools.hpp"
 #include "quartz/client/ui/AddressInput.hpp"
+#include "quartz/client/ui/I18n.hpp"
 #include "quartz/client/ui/ObjectExperiments.hpp"
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
@@ -82,21 +83,21 @@ namespace quartz::client::ui
     void drawManualMemoryWatch(PageContext&, PageManager& manager)
     {
         static ManualWatchState state;
-        ImGui::TextWrapped("Pin an arbitrary process address directly into the scanner watch list without running a value scan first.");
+        ImGui::TextWrapped("%s", i18n::tr("re.manualWatchDescription"));
         drawProcessPicker("ManualWatchProcess", state.Processes, state.Pid, state.Search.data(), state.Search.size(), 520.0f);
-        drawAddressInput("Address", state.Address.data(), state.Address.size(), state.Pid, 300.0f); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f);
-        if (ImGui::BeginCombo("Type", memoryScanValueTypeName(static_cast<MemoryScanValueType>(state.Type))))
+        drawAddressInput(i18n::tr("re.address"), state.Address.data(), state.Address.size(), state.Pid, 300.0f); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f);
+        if (ImGui::BeginCombo(i18n::tr("re.type"), memoryScanValueTypeName(static_cast<MemoryScanValueType>(state.Type))))
         {
             for (int i = 0; i <= static_cast<int>(MemoryScanValueType::ByteArray); ++i) if (ImGui::Selectable(memoryScanValueTypeName(static_cast<MemoryScanValueType>(i)), i == state.Type)) { state.Type = i; if (const auto width = fixedWatchWidth(static_cast<MemoryScanValueType>(i)); width != 0) state.Width = static_cast<int>(width); }
             ImGui::EndCombo();
         }
-        if (fixedWatchWidth(static_cast<MemoryScanValueType>(state.Type)) == 0) { ImGui::SameLine(); ImGui::SetNextItemWidth(100.0f); ImGui::InputInt("Width", &state.Width); state.Width = std::max(state.Width, 1); }
-        if (ImGui::Button("Add to watch list"))
+        if (fixedWatchWidth(static_cast<MemoryScanValueType>(state.Type)) == 0) { ImGui::SameLine(); ImGui::SetNextItemWidth(100.0f); ImGui::InputInt(i18n::tr("re.width"), &state.Width); state.Width = std::max(state.Width, 1); }
+        if (ImGui::Button(i18n::tr("re.addWatch")))
         {
             std::uintptr_t address = 0; std::string error;
-            if (state.Pid <= 0) state.Status = "select a process";
+            if (state.Pid <= 0) state.Status = i18n::tr("common.selectProcess");
             else if (!evaluateAddressExpression(state.Pid, state.Address.data(), address, error) || address == 0) state.Status = error.empty() ? "invalid address" : error;
-            else state.Status = addWatch(manager, state.Pid, address, static_cast<MemoryScanValueType>(state.Type), static_cast<std::size_t>(state.Width)) ? "watch added" : "watch already exists or scanner page is unavailable";
+            else state.Status = addWatch(manager, state.Pid, address, static_cast<MemoryScanValueType>(state.Type), static_cast<std::size_t>(state.Width)) ? i18n::tr("re.watchAdded") : i18n::tr("re.watchExists");
         }
         if (!state.Status.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", state.Status.c_str()); }
     }
@@ -106,58 +107,58 @@ namespace quartz::client::ui
         static QuickSignatureState state;
         if (state.Scan)
         {
-            SignatureScanResult result; if (tryGetSignatureScanResult(state.Scan, result)) { state.Result = std::move(result); state.HasResult = state.Result.Found; state.Status = state.Result.Cancelled ? "cancelled" : state.Result.Found ? "match found" : state.Result.Error.empty() ? "pattern not found" : state.Result.Error; state.Scan.reset(); }
+            SignatureScanResult result; if (tryGetSignatureScanResult(state.Scan, result)) { state.Result = std::move(result); state.HasResult = state.Result.Found; state.Status = state.Result.Cancelled ? i18n::tr("re.cancelled") : state.Result.Found ? i18n::tr("re.matchFound") : state.Result.Error.empty() ? i18n::tr("re.patternNotFound") : state.Result.Error; state.Scan.reset(); }
         }
-        ImGui::TextWrapped("Fast first-match hexadecimal signature search using the shared asynchronous libhat scanner. Results can immediately feed the inspector, watch list, hardware watcher or runtime bindings.");
+        ImGui::TextWrapped("%s", i18n::tr("re.quickSignatureDescription"));
         drawProcessPicker("QuickSignatureProcess", state.Processes, state.Pid, state.Search.data(), state.Search.size(), 520.0f);
-        ImGui::InputTextMultiline("Pattern", state.Pattern.data(), state.Pattern.size(), ImVec2(-1.0f, 70.0f));
-        ImGui::Checkbox("Executable mappings only", &state.ExecutableOnly);
+        ImGui::InputTextMultiline(i18n::tr("re.pattern"), state.Pattern.data(), state.Pattern.size(), ImVec2(-1.0f, 70.0f));
+        ImGui::Checkbox(i18n::tr("re.executableOnly"), &state.ExecutableOnly);
         const bool running = static_cast<bool>(state.Scan);
         ImGui::BeginDisabled(running);
-        if (ImGui::Button("Search signature"))
+        if (ImGui::Button(i18n::tr("re.searchSignature")))
         {
             std::vector<std::uint8_t> bytes, masks; std::string error;
-            if (state.Pid <= 0) state.Status = "select a process";
+            if (state.Pid <= 0) state.Status = i18n::tr("common.selectProcess");
             else if (!parseRuntimeHexPattern(state.Pattern.data(), bytes, masks, error)) state.Status = std::move(error);
             else
             {
                 auto regions = enumerateRuntimeRegions(state.Pid); std::erase_if(regions, [&](const RuntimeProcessRegion& region) { return !region.Readable || (state.ExecutableOnly && !region.Executable); });
-                if (regions.empty()) state.Status = "no readable mappings matched the selected filter";
-                else { state.Result = {}; state.HasResult = false; state.Status = "scanning"; state.Scan = startSignatureScan(state.Pid, std::move(regions), std::move(bytes), std::move(masks), state.ExecutableOnly, ++state.Generation); }
+                if (regions.empty()) state.Status = i18n::tr("re.noReadableMappings");
+                else { state.Result = {}; state.HasResult = false; state.Status = i18n::tr("re.scanning"); state.Scan = startSignatureScan(state.Pid, std::move(regions), std::move(bytes), std::move(masks), state.ExecutableOnly, ++state.Generation); }
             }
         }
         ImGui::EndDisabled();
         if (running)
         {
-            ImGui::SameLine(); if (ImGui::Button("Cancel")) cancelSignatureScan(state.Scan); const double speed = signatureScanAverageMiBs(state.Scan); const auto scanned = state.Scan->ScannedBytes.load(std::memory_order_relaxed); const auto total = state.Scan->TotalBytes; if (total != 0) ImGui::ProgressBar(static_cast<float>(static_cast<double>(scanned) / static_cast<double>(total)), ImVec2(360.0f, 0.0f)); else drawIndeterminateProgressBar(ImVec2(360.0f, 0.0f)); if (speed > 0.0) ImGui::TextDisabled("%.1f MiB/s | %.1f / %.1f MiB", speed, scanned / 1048576.0, total / 1048576.0);
+            ImGui::SameLine(); if (ImGui::Button(i18n::tr("common.cancel"))) cancelSignatureScan(state.Scan); const double speed = signatureScanAverageMiBs(state.Scan); const auto scanned = state.Scan->ScannedBytes.load(std::memory_order_relaxed); const auto total = state.Scan->TotalBytes; if (total != 0) ImGui::ProgressBar(static_cast<float>(static_cast<double>(scanned) / static_cast<double>(total)), ImVec2(360.0f, 0.0f)); else drawIndeterminateProgressBar(ImVec2(360.0f, 0.0f)); if (speed > 0.0) ImGui::TextDisabled("%.1f MiB/s | %.1f / %.1f MiB", speed, scanned / 1048576.0, total / 1048576.0);
         }
         if (!state.Status.empty()) ImGui::TextDisabled("%s", state.Status.c_str());
         if (!state.HasResult) return;
 
         const auto address = state.Result.MatchAddress; const RuntimeProcessInfo* process = findProcess(state.Processes, state.Pid);
-        ImGui::SeparatorText("Match"); ImGui::Selectable(runtimeHexAddress(address).c_str(), false); if (ImGui::BeginPopupContextItem("QuickSignatureResultContext"))
+        ImGui::SeparatorText(i18n::tr("re.match")); const std::string symbolicAddress = runtimeFormatProcessAddress(state.Pid, address); ImGui::Selectable(symbolicAddress.c_str(), false); if (ImGui::BeginPopupContextItem("QuickSignatureResultContext"))
         {
-            if (ImGui::MenuItem("Inspect memory")) openInspector(manager, state.Pid, address);
-            if (ImGui::MenuItem("Disassemble")) openInspector(manager, state.Pid, address);
-            if (ImGui::MenuItem("Add to watch list")) addWatch(manager, state.Pid, address, static_cast<MemoryScanValueType>(state.WatchType), static_cast<std::size_t>(state.WatchWidth));
-            if (ImGui::MenuItem("Watch accesses")) openAccessWatch(manager, state.Pid, address, static_cast<std::size_t>(std::max(state.WatchWidth, 1)));
-            if (ImGui::MenuItem("Copy address")) { const std::string text = runtimeHexAddress(address); ImGui::SetClipboardText(text.c_str()); }
+            if (ImGui::MenuItem(i18n::tr("re.inspectMemory"))) openInspector(manager, state.Pid, address);
+            if (ImGui::MenuItem(i18n::tr("re.disassemble"))) openInspector(manager, state.Pid, address);
+            if (ImGui::MenuItem(i18n::tr("re.addWatchList"))) addWatch(manager, state.Pid, address, static_cast<MemoryScanValueType>(state.WatchType), static_cast<std::size_t>(state.WatchWidth));
+            if (ImGui::MenuItem(i18n::tr("re.watchAccesses"))) openAccessWatch(manager, state.Pid, address, static_cast<std::size_t>(std::max(state.WatchWidth, 1)));
+            if (ImGui::MenuItem(i18n::tr("re.copyAddress"))) ImGui::SetClipboardText(symbolicAddress.c_str());
             ImGui::EndPopup();
         }
-        ImGui::SameLine(); ImGui::TextDisabled("%.3f s, %.1f MiB scanned", state.Result.DurationSeconds, state.Result.ScannedBytes / 1048576.0);
+        ImGui::SameLine(); ImGui::TextDisabled("%.3f s, %.1f MiB", state.Result.DurationSeconds, state.Result.ScannedBytes / 1048576.0);
         ImGui::SetNextItemWidth(140.0f);
-        if (ImGui::BeginCombo("Watch as", memoryScanValueTypeName(static_cast<MemoryScanValueType>(state.WatchType))))
+        if (ImGui::BeginCombo(i18n::tr("re.watchAs"), memoryScanValueTypeName(static_cast<MemoryScanValueType>(state.WatchType))))
         {
             for (int i = 0; i <= static_cast<int>(MemoryScanValueType::ByteArray); ++i) if (ImGui::Selectable(memoryScanValueTypeName(static_cast<MemoryScanValueType>(i)), i == state.WatchType)) { state.WatchType = i; if (const auto width = fixedWatchWidth(static_cast<MemoryScanValueType>(i)); width != 0) state.WatchWidth = static_cast<int>(width); }
             ImGui::EndCombo();
         }
-        if (fixedWatchWidth(static_cast<MemoryScanValueType>(state.WatchType)) == 0) { ImGui::SameLine(); ImGui::SetNextItemWidth(100.0f); ImGui::InputInt("Width", &state.WatchWidth); state.WatchWidth = std::max(state.WatchWidth, 1); }
-        if (ImGui::Button("Inspect")) openInspector(manager, state.Pid, address); ImGui::SameLine(); if (ImGui::Button("Disassemble")) openInspector(manager, state.Pid, address); ImGui::SameLine(); if (ImGui::Button("Add to watch list")) addWatch(manager, state.Pid, address, static_cast<MemoryScanValueType>(state.WatchType), static_cast<std::size_t>(state.WatchWidth)); ImGui::SameLine(); if (ImGui::Button("Watch accesses")) openAccessWatch(manager, state.Pid, address, static_cast<std::size_t>(std::max(state.WatchWidth, 1)));
-        if (ImGui::Button("Create signature address binding"))
+        if (fixedWatchWidth(static_cast<MemoryScanValueType>(state.WatchType)) == 0) { ImGui::SameLine(); ImGui::SetNextItemWidth(100.0f); ImGui::InputInt(i18n::tr("re.width"), &state.WatchWidth); state.WatchWidth = std::max(state.WatchWidth, 1); }
+        if (ImGui::Button(i18n::tr("re.inspect"))) openInspector(manager, state.Pid, address); ImGui::SameLine(); if (ImGui::Button(i18n::tr("re.disassemble"))) openInspector(manager, state.Pid, address); ImGui::SameLine(); if (ImGui::Button(i18n::tr("re.addWatchList"))) addWatch(manager, state.Pid, address, static_cast<MemoryScanValueType>(state.WatchType), static_cast<std::size_t>(state.WatchWidth)); ImGui::SameLine(); if (ImGui::Button(i18n::tr("re.watchAccesses"))) openAccessWatch(manager, state.Pid, address, static_cast<std::size_t>(std::max(state.WatchWidth, 1)));
+        if (ImGui::Button(i18n::tr("re.createSignatureBinding")))
         {
-            auto& binding = context.runtimeBindings.add(); std::snprintf(binding.Name, sizeof(binding.Name), "Signature %llX", static_cast<unsigned long long>(address)); binding.Source = RuntimeSourceKind::NativeAddress; binding.ProcessId = static_cast<int>(state.Pid); if (process) std::snprintf(binding.ProcessName, sizeof(binding.ProcessName), "%s", process->Name.c_str()); binding.AddressMode = ProcessAddressMode::Signature; binding.SignaturePatternKind = RuntimeSignaturePatternKind::HexadecimalPattern; binding.SignatureExecutableOnly = state.ExecutableOnly; binding.SignatureResolve = SignatureResultMode::MatchAddress; std::snprintf(binding.Signature, sizeof(binding.Signature), "%s", state.Pattern.data()); binding.WriteMaterial = false; binding.Clamp = false; binding.SmoothingHz = 0.0f; binding.AutoReattach = false; state.Status = "created signature address binding";
+            auto& binding = context.runtimeBindings.add(); std::snprintf(binding.Name, sizeof(binding.Name), "Signature %llX", static_cast<unsigned long long>(address)); binding.Source = RuntimeSourceKind::NativeAddress; binding.ProcessId = static_cast<int>(state.Pid); if (process) std::snprintf(binding.ProcessName, sizeof(binding.ProcessName), "%s", process->Name.c_str()); binding.AddressMode = ProcessAddressMode::Signature; binding.SignaturePatternKind = RuntimeSignaturePatternKind::HexadecimalPattern; binding.SignatureExecutableOnly = state.ExecutableOnly; binding.SignatureResolve = SignatureResultMode::MatchAddress; std::snprintf(binding.Signature, sizeof(binding.Signature), "%s", state.Pattern.data()); binding.WriteMaterial = false; binding.Clamp = false; binding.SmoothingHz = 0.0f; binding.AutoReattach = false; state.Status = i18n::tr("re.signatureBindingCreated");
         }
-        ImGui::SameLine(); if (ImGui::Button("Copy address")) { const std::string text = runtimeHexAddress(address); ImGui::SetClipboardText(text.c_str()); }
+        ImGui::SameLine(); if (ImGui::Button(i18n::tr("re.copyAddress"))) ImGui::SetClipboardText(symbolicAddress.c_str());
     }
 
     void drawObjectModelDebugger(PageContext& context, PageManager& manager) { drawObjectExperiments(context, manager); }
