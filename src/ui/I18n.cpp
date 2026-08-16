@@ -42,6 +42,7 @@ namespace quartz::client::ui::i18n
             {"header.byline", "Made by Raony Reis, not affiliated with Redragon", "Feito por Raony Reis, sem afiliação com a Redragon"},
             {"header.keyboard", "Keyboard", "Teclado"},
             {"header.appearance", "Appearance", "Aparência"},
+            {"header.configuration", "Configuration", "Configuração"},
             {"header.theme", "Theme", "Tema"},
             {"header.terminate", "Terminate", "Encerrar"},
             {"header.terminateTooltip", "Exit Quartz completely. The normal window close button only hides the window.", "Fecha o Quartz completamente. O botão normal de fechar apenas oculta a janela."},
@@ -68,6 +69,14 @@ namespace quartz::client::ui::i18n
             {"appearance.previewInterpolationTooltip", "Preview-only spatial color mixing. It never changes framebuffer data sent over USB.", "Mistura espacial de cores apenas na prévia. Nunca altera o framebuffer enviado por USB."},
             {"appearance.reset", "Reset appearance", "Redefinir aparência"},
             {"keyboardPreview.title", "Keyboard Preview", "Prévia do Teclado"},
+
+            {"configuration.patternScanning", "Pattern scanning", "Escaneamento de padrões"},
+            {"configuration.signatureScanChunk", "Signature scan read chunk (bytes)", "Bloco de leitura do scan de assinatura (bytes)"},
+            {"configuration.signatureScanChunkTooltip", "Maximum target-process memory copied per libhat-backed signature scan chunk. Quartz clamps this to 64 KiB–64 MiB and aligns it to 8 bytes. Larger chunks reduce process-memory read overhead, but use more temporary memory and make cancellation less granular.", "Máximo de memória do processo alvo copiada por bloco de scan de assinatura usando libhat. O Quartz limita entre 64 KiB e 64 MiB e alinha o valor em 8 bytes. Blocos maiores reduzem o overhead das leituras de memória, mas usam mais memória temporária e deixam o cancelamento menos granular."},
+            {"configuration.signatureScanChunkValue", "Current: %.2f MiB (%zu bytes), aligned to %zu bytes", "Atual: %.2f MiB (%zu bytes), alinhado em %zu bytes"},
+            {"configuration.signatureScanChunkTradeoff", "4 MiB is the default. libhat scans the supplied span directly with its selected vectorized backend; the practical tradeoff here is target-memory read overhead versus temporary buffer size and cancellation latency, not a small-buffer limit inside libhat.", "4 MiB é o padrão. O libhat varre diretamente o intervalo fornecido usando o backend vetorizado selecionado; o compromisso prático aqui é overhead das leituras da memória alvo contra tamanho do buffer temporário e latência de cancelamento, não um limite de buffer pequeno dentro do libhat."},
+            {"configuration.newScansOnly", "Changes apply to newly started scans; running scans keep the chunk size they started with.", "As alterações se aplicam a novos scans; scans em andamento mantêm o tamanho de bloco com que foram iniciados."},
+            {"configuration.reset", "Reset configuration", "Redefinir configuração"},
 
             {"common.refresh", "Refresh", "Atualizar"},
             {"common.refreshProcesses", "Refresh processes", "Atualizar processos"},
