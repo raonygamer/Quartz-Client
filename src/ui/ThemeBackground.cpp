@@ -38,8 +38,18 @@ namespace quartz::client::ui
             bool Attempted = false;
         };
 
-        constexpr float SilhouetteAlpha = 0.115f;
         std::array<ThemeTexture, static_cast<std::size_t>(Theme::Count)> Textures{};
+
+        float silhouetteAlpha(const Theme theme) noexcept
+        {
+            switch (theme)
+            {
+            case Theme::KurosakiPink: return 0.128f;
+            case Theme::YamiGolden: return 0.105f;
+            case Theme::DevilukePink: case Theme::KirisakiPurple: return 0.115f;
+            default: return 0.0f;
+            }
+        }
 
         EmbeddedImage imageForTheme(const Theme theme) noexcept
         {
@@ -110,7 +120,7 @@ namespace quartz::client::ui
         const float bottomBleed = drawHeight * 0.025f;
         const ImVec2 imageMax{max.x + rightBleed, max.y + bottomBleed};
         const ImVec2 imageMin{imageMax.x - drawWidth, imageMax.y - drawHeight};
-        const ImU32 tint = IM_COL32(255, 255, 255, static_cast<int>(SilhouetteAlpha * 255.0f));
+        const ImU32 tint = IM_COL32(255, 255, 255, static_cast<int>(silhouetteAlpha(theme) * 255.0f));
         drawList->AddImage(ImTextureRef(static_cast<ImTextureID>(texture->Id)), imageMin, imageMax, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), tint);
     }
 
