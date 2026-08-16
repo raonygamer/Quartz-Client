@@ -25,7 +25,16 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
       - name: Build
-        run: cmake --build build -j2
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cmake --build build -j2 2>&1 | tee /tmp/quartz-build.log; then
+            echo '### Build diagnostics' >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 220 /tmp/quartz-build.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Commit validated reverse engineering refresh
         run: |
           git config user.name "github-actions[bot]"
