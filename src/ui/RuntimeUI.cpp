@@ -246,7 +246,7 @@ namespace quartz::client
         constexpr float LayoutHeight = 6.35f;
         const float availableWidth = ImGui::GetContentRegionAvail().x;
         const float previewWidth = std::min(availableWidth * widthFraction, maxWidth);
-        const float unit = std::clamp((previewWidth - 2.0f) / LayoutWidth, 7.0f, 28.0f);
+        const float unit = std::clamp((previewWidth - 2.0f) / LayoutWidth, 7.0f, 64.0f);
         const float gap = unit * 0.045f;
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         ImDrawList* drawList = ImGui::GetWindowDrawList();

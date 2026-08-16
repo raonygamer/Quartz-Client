@@ -358,8 +358,17 @@ namespace quartz::client
         {
             std::string title = std::string(ui::i18n::tr("keyboardPreview.title")) + "###QuartzKeyboardPreview";
             ImGui::SetNextWindowSize(ImVec2(560.0f, 270.0f), ImGuiCond_FirstUseEver);
-            if (ImGui::Begin(title.c_str(), &showKeyboardPreview, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize))
-                drawFramebufferPreview(framebuffer, 1.0f, 520.0f, settings.LiveOutputInterpolation);
+            ImGui::SetNextWindowSizeConstraints(ImVec2(300.0f, 150.0f), ImVec2(FLT_MAX, FLT_MAX));
+            if (ImGui::Begin(title.c_str(), &showKeyboardPreview, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
+            {
+                constexpr float PreviewAspect = 19.0f / 6.35f;
+                const ImVec2 available = ImGui::GetContentRegionAvail();
+                const float widthFromHeight = available.y > 1.0f ? available.y * PreviewAspect : available.x;
+                const float previewWidth = std::max(140.0f, std::min(available.x, widthFromHeight));
+                const float offset = std::max(0.0f, (available.x - previewWidth) * 0.5f);
+                if (offset > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+                drawFramebufferPreview(framebuffer, 1.0f, previewWidth, settings.LiveOutputInterpolation);
+            }
             ImGui::End();
         }
     }

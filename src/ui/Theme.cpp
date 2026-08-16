@@ -40,17 +40,17 @@ namespace quartz::client::ui
     {
         switch (theme)
         {
-        case Theme::QuartzCyan: return "Quartz Cyan";
-        case Theme::Graphite: return "Graphite";
-        case Theme::OceanBlue: return "Ocean Blue";
-        case Theme::Emerald: return "Emerald";
-        case Theme::DevilukePink: return "Deviluke Pink";
-        case Theme::KurosakiPink: return "Kurosaki Pink";
-        case Theme::YamiGolden: return "Yami Golden";
-        case Theme::KirisakiPurple: return "Kirisaki Purple";
+        case Theme::QuartzCyan: return i18n::tr("theme.quartzCyan");
+        case Theme::Graphite: return i18n::tr("theme.graphite");
+        case Theme::OceanBlue: return i18n::tr("theme.oceanBlue");
+        case Theme::Emerald: return i18n::tr("theme.emerald");
+        case Theme::DevilukePink: return i18n::tr("theme.devilukePink");
+        case Theme::KurosakiPink: return i18n::tr("theme.kurosakiPink");
+        case Theme::YamiGolden: return i18n::tr("theme.yamiGolden");
+        case Theme::KirisakiPurple: return i18n::tr("theme.kirisakiPurple");
         case Theme::Count: break;
         }
-        return "Quartz Cyan";
+        return i18n::tr("theme.quartzCyan");
     }
 
     bool suspiciousTheme(const Theme theme) noexcept { return theme >= Theme::DevilukePink && theme < Theme::Count; }
