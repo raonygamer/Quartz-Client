@@ -1,0 +1,260 @@
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Common.hpp:4,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Forward.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Globals.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Functions.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/runtime/QuickJSGraphApi.cpp:2:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In constructor ‘constexpr quartz::rpc::PacketHeader::PacketHeader(uint8_t, quartz::rpc::PacketType, quartz::rpc::PacketDirection, uint32_t, uint32_t)’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:56:39: warning: call to non-‘constexpr’ function ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ [-Winvalid-constexpr]
+   56 |             PacketId = getNextPacketId();
+      |                        ~~~~~~~~~~~~~~~^~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:139:30: note: ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ declared here
+  139 |         static std::uint32_t getNextPacketId() noexcept
+      |                              ^~~~~~~~~~~~~~~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In member function ‘constexpr bool quartz::rpc::PacketHeader::isValid() const’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:136:47: warning: call to non-‘constexpr’ function ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ [-Winvalid-constexpr]
+  136 |             return isValidHeader(std::as_bytes(std::span{ this, 1 }));
+      |                                  ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from /usr/include/c++/13/format:44,
+                 from /usr/include/c++/13/bits/chrono_io.h:39,
+                 from /usr/include/c++/13/chrono:3370,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/runtime/QuickJSInternal.hpp:3,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/runtime/QuickJSGraphApi.cpp:1:
+/usr/include/c++/13/span:464:5: note: ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ declared here
+  464 |     as_bytes(span<_Type, _Extent> __sp) noexcept
+      |     ^~~~~~~~
+[130/183] Building CXX object CMakeFiles/QuartzClient.dir/src/runtime/QuickJSWorkspace.cpp.o
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Common.hpp:4,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Forward.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Globals.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Functions.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/runtime/QuickJSWorkspace.cpp:2:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In constructor ‘constexpr quartz::rpc::PacketHeader::PacketHeader(uint8_t, quartz::rpc::PacketType, quartz::rpc::PacketDirection, uint32_t, uint32_t)’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:56:39: warning: call to non-‘constexpr’ function ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ [-Winvalid-constexpr]
+   56 |             PacketId = getNextPacketId();
+      |                        ~~~~~~~~~~~~~~~^~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:139:30: note: ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ declared here
+  139 |         static std::uint32_t getNextPacketId() noexcept
+      |                              ^~~~~~~~~~~~~~~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In member function ‘constexpr bool quartz::rpc::PacketHeader::isValid() const’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:136:47: warning: call to non-‘constexpr’ function ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ [-Winvalid-constexpr]
+  136 |             return isValidHeader(std::as_bytes(std::span{ this, 1 }));
+      |                                  ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from /usr/include/c++/13/format:44,
+                 from /usr/include/c++/13/bits/chrono_io.h:39,
+                 from /usr/include/c++/13/chrono:3370,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/runtime/QuickJSInternal.hpp:3,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/runtime/QuickJSWorkspace.cpp:1:
+/usr/include/c++/13/span:464:5: note: ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ declared here
+  464 |     as_bytes(span<_Type, _Extent> __sp) noexcept
+      |     ^~~~~~~~
+[131/183] Building CXX object CMakeFiles/QuartzClient.dir/src/runtime/Runtime.cpp.o
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Common.hpp:4,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Forward.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Globals.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Functions.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Model.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/runtime/Runtime.cpp:1:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In constructor ‘constexpr quartz::rpc::PacketHeader::PacketHeader(uint8_t, quartz::rpc::PacketType, quartz::rpc::PacketDirection, uint32_t, uint32_t)’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:56:39: warning: call to non-‘constexpr’ function ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ [-Winvalid-constexpr]
+   56 |             PacketId = getNextPacketId();
+      |                        ~~~~~~~~~~~~~~~^~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:139:30: note: ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ declared here
+  139 |         static std::uint32_t getNextPacketId() noexcept
+      |                              ^~~~~~~~~~~~~~~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In member function ‘constexpr bool quartz::rpc::PacketHeader::isValid() const’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:136:47: warning: call to non-‘constexpr’ function ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ [-Winvalid-constexpr]
+  136 |             return isValidHeader(std::as_bytes(std::span{ this, 1 }));
+      |                                  ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:3:
+/usr/include/c++/13/span:464:5: note: ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ declared here
+  464 |     as_bytes(span<_Type, _Extent> __sp) noexcept
+      |     ^~~~~~~~
+[132/183] Building CXX object CMakeFiles/QuartzClient.dir/src/runtime/RuntimeNative.cpp.o
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Common.hpp:4,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Forward.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Globals.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Functions.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Model.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/runtime/RuntimeNative.cpp:1:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In constructor ‘constexpr quartz::rpc::PacketHeader::PacketHeader(uint8_t, quartz::rpc::PacketType, quartz::rpc::PacketDirection, uint32_t, uint32_t)’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:56:39: warning: call to non-‘constexpr’ function ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ [-Winvalid-constexpr]
+   56 |             PacketId = getNextPacketId();
+      |                        ~~~~~~~~~~~~~~~^~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:139:30: note: ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ declared here
+  139 |         static std::uint32_t getNextPacketId() noexcept
+      |                              ^~~~~~~~~~~~~~~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In member function ‘constexpr bool quartz::rpc::PacketHeader::isValid() const’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:136:47: warning: call to non-‘constexpr’ function ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ [-Winvalid-constexpr]
+  136 |             return isValidHeader(std::as_bytes(std::span{ this, 1 }));
+      |                                  ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:3:
+/usr/include/c++/13/span:464:5: note: ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ declared here
+  464 |     as_bytes(span<_Type, _Extent> __sp) noexcept
+      |     ^~~~~~~~
+[133/183] Building CXX object CMakeFiles/QuartzClient.dir/src/shader/Shader.cpp.o
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Common.hpp:4,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Forward.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Globals.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Functions.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Model.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/shader/Shader.cpp:1:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In constructor ‘constexpr quartz::rpc::PacketHeader::PacketHeader(uint8_t, quartz::rpc::PacketType, quartz::rpc::PacketDirection, uint32_t, uint32_t)’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:56:39: warning: call to non-‘constexpr’ function ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ [-Winvalid-constexpr]
+   56 |             PacketId = getNextPacketId();
+      |                        ~~~~~~~~~~~~~~~^~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:139:30: note: ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ declared here
+  139 |         static std::uint32_t getNextPacketId() noexcept
+      |                              ^~~~~~~~~~~~~~~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In member function ‘constexpr bool quartz::rpc::PacketHeader::isValid() const’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:136:47: warning: call to non-‘constexpr’ function ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ [-Winvalid-constexpr]
+  136 |             return isValidHeader(std::as_bytes(std::span{ this, 1 }));
+      |                                  ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:3:
+/usr/include/c++/13/span:464:5: note: ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ declared here
+  464 |     as_bytes(span<_Type, _Extent> __sp) noexcept
+      |     ^~~~~~~~
+[134/183] Building CXX object CMakeFiles/QuartzClient.dir/src/shader/ShaderLibrary.cpp.o
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Common.hpp:4,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Forward.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Globals.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Functions.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Model.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/shader/ShaderLibrary.cpp:1:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In constructor ‘constexpr quartz::rpc::PacketHeader::PacketHeader(uint8_t, quartz::rpc::PacketType, quartz::rpc::PacketDirection, uint32_t, uint32_t)’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:56:39: warning: call to non-‘constexpr’ function ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ [-Winvalid-constexpr]
+   56 |             PacketId = getNextPacketId();
+      |                        ~~~~~~~~~~~~~~~^~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:139:30: note: ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ declared here
+  139 |         static std::uint32_t getNextPacketId() noexcept
+      |                              ^~~~~~~~~~~~~~~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In member function ‘constexpr bool quartz::rpc::PacketHeader::isValid() const’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:136:47: warning: call to non-‘constexpr’ function ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ [-Winvalid-constexpr]
+  136 |             return isValidHeader(std::as_bytes(std::span{ this, 1 }));
+      |                                  ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:3:
+/usr/include/c++/13/span:464:5: note: ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ declared here
+  464 |     as_bytes(span<_Type, _Extent> __sp) noexcept
+      |     ^~~~~~~~
+[135/183] Building CXX object CMakeFiles/QuartzClient.dir/src/shader/ShaderWorkspace.cpp.o
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Common.hpp:4,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Forward.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Globals.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Functions.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/shader/ShaderEditor.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/shader/ShaderWorkspace.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/shader/ShaderWorkspace.cpp:1:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In constructor ‘constexpr quartz::rpc::PacketHeader::PacketHeader(uint8_t, quartz::rpc::PacketType, quartz::rpc::PacketDirection, uint32_t, uint32_t)’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:56:39: warning: call to non-‘constexpr’ function ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ [-Winvalid-constexpr]
+   56 |             PacketId = getNextPacketId();
+      |                        ~~~~~~~~~~~~~~~^~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:139:30: note: ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ declared here
+  139 |         static std::uint32_t getNextPacketId() noexcept
+      |                              ^~~~~~~~~~~~~~~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In member function ‘constexpr bool quartz::rpc::PacketHeader::isValid() const’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:136:47: warning: call to non-‘constexpr’ function ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ [-Winvalid-constexpr]
+  136 |             return isValidHeader(std::as_bytes(std::span{ this, 1 }));
+      |                                  ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:3:
+/usr/include/c++/13/span:464:5: note: ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ declared here
+  464 |     as_bytes(span<_Type, _Extent> __sp) noexcept
+      |     ^~~~~~~~
+[136/183] Building CXX object CMakeFiles/QuartzClient.dir/src/ui/I18n.cpp.o
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Common.hpp:4,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Forward.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Globals.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Functions.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/ui/I18n.cpp:2:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In constructor ‘constexpr quartz::rpc::PacketHeader::PacketHeader(uint8_t, quartz::rpc::PacketType, quartz::rpc::PacketDirection, uint32_t, uint32_t)’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:56:39: warning: call to non-‘constexpr’ function ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ [-Winvalid-constexpr]
+   56 |             PacketId = getNextPacketId();
+      |                        ~~~~~~~~~~~~~~~^~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:139:30: note: ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ declared here
+  139 |         static std::uint32_t getNextPacketId() noexcept
+      |                              ^~~~~~~~~~~~~~~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In member function ‘constexpr bool quartz::rpc::PacketHeader::isValid() const’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:136:47: warning: call to non-‘constexpr’ function ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ [-Winvalid-constexpr]
+  136 |             return isValidHeader(std::as_bytes(std::span{ this, 1 }));
+      |                                  ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:3:
+/usr/include/c++/13/span:464:5: note: ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ declared here
+  464 |     as_bytes(span<_Type, _Extent> __sp) noexcept
+      |     ^~~~~~~~
+[137/183] Building CXX object CMakeFiles/QuartzClient.dir/src/ui/ImGuiRuntime.cpp.o
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Common.hpp:4,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/ui/ImGuiRuntime.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/ui/ImGuiRuntime.cpp:1:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In constructor ‘constexpr quartz::rpc::PacketHeader::PacketHeader(uint8_t, quartz::rpc::PacketType, quartz::rpc::PacketDirection, uint32_t, uint32_t)’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:56:39: warning: call to non-‘constexpr’ function ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ [-Winvalid-constexpr]
+   56 |             PacketId = getNextPacketId();
+      |                        ~~~~~~~~~~~~~~~^~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:139:30: note: ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ declared here
+  139 |         static std::uint32_t getNextPacketId() noexcept
+      |                              ^~~~~~~~~~~~~~~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In member function ‘constexpr bool quartz::rpc::PacketHeader::isValid() const’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:136:47: warning: call to non-‘constexpr’ function ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ [-Winvalid-constexpr]
+  136 |             return isValidHeader(std::as_bytes(std::span{ this, 1 }));
+      |                                  ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:3:
+/usr/include/c++/13/span:464:5: note: ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ declared here
+  464 |     as_bytes(span<_Type, _Extent> __sp) noexcept
+      |     ^~~~~~~~
+[138/183] Building CXX object CMakeFiles/QuartzClient.dir/src/ui/MemoryInspector.cpp.o
+FAILED: [code=1] CMakeFiles/QuartzClient.dir/src/ui/MemoryInspector.cpp.o 
+/usr/bin/c++ -DLIBHAT_FEATURE_AVX512 -DLIBHAT_FEATURE_SSE -DLIBHAT_HINT_AARCH64 -DLIBHAT_HINT_X86_64 -DZYCORE_STATIC_BUILD -DZYDIS_STATIC_BUILD -I/home/runner/work/Quartz-Client/Quartz-Client/include -I/home/runner/work/Quartz-Client/Quartz-Client/src -I/home/runner/work/Quartz-Client/Quartz-Client/vendor/ImGuiColorTextEdit -I/home/runner/work/Quartz-Client/Quartz-Client/vendor/imgui -I/home/runner/work/Quartz-Client/Quartz-Client/vendor/imgui/backends -I/home/runner/work/Quartz-Client/Quartz-Client/protocol/include -I/home/runner/work/Quartz-Client/Quartz-Client/vendor/glad/include -I/home/runner/work/Quartz-Client/Quartz-Client/vendor/glfw/include -I/home/runner/work/Quartz-Client/Quartz-Client/vendor/zydis/include -I/home/runner/work/Quartz-Client/Quartz-Client/build/vendor/zydis -I/home/runner/work/Quartz-Client/Quartz-Client/vendor/zydis/dependencies/zycore/include -I/home/runner/work/Quartz-Client/Quartz-Client/build/vendor/zydis/zycore -I/home/runner/work/Quartz-Client/Quartz-Client/vendor/libhat/include -I/home/runner/work/Quartz-Client/Quartz-Client/vendor/quickjs -isystem /home/runner/work/Quartz-Client/Quartz-Client/vendor/libusb/libusb/libusb -g -std=c++20 -MD -MT CMakeFiles/QuartzClient.dir/src/ui/MemoryInspector.cpp.o -MF CMakeFiles/QuartzClient.dir/src/ui/MemoryInspector.cpp.o.d -o CMakeFiles/QuartzClient.dir/src/ui/MemoryInspector.cpp.o -c /home/runner/work/Quartz-Client/Quartz-Client/src/ui/MemoryInspector.cpp
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Common.hpp:4,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Forward.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Globals.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Functions.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/runtime/RuntimeTypes.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/runtime/RuntimeBindingEngine.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/ui/UIState.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/ui/MemoryInspector.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/ui/MemoryInspector.cpp:1:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In constructor ‘constexpr quartz::rpc::PacketHeader::PacketHeader(uint8_t, quartz::rpc::PacketType, quartz::rpc::PacketDirection, uint32_t, uint32_t)’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:56:39: warning: call to non-‘constexpr’ function ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ [-Winvalid-constexpr]
+   56 |             PacketId = getNextPacketId();
+      |                        ~~~~~~~~~~~~~~~^~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:139:30: note: ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ declared here
+  139 |         static std::uint32_t getNextPacketId() noexcept
+      |                              ^~~~~~~~~~~~~~~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In member function ‘constexpr bool quartz::rpc::PacketHeader::isValid() const’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:136:47: warning: call to non-‘constexpr’ function ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ [-Winvalid-constexpr]
+  136 |             return isValidHeader(std::as_bytes(std::span{ this, 1 }));
+      |                                  ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:3:
+/usr/include/c++/13/span:464:5: note: ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ declared here
+  464 |     as_bytes(span<_Type, _Extent> __sp) noexcept
+      |     ^~~~~~~~
+/home/runner/work/Quartz-Client/Quartz-Client/src/ui/MemoryInspector.cpp: In lambda function:
+/home/runner/work/Quartz-Client/Quartz-Client/src/ui/MemoryInspector.cpp:274:21: error: ‘requestSignatureMaker’ was not declared in this scope; did you mean ‘quartz::client::ui::requestSignatureMaker’?
+  274 |                     requestSignatureMaker(state.Pid, ui.DisassemblyLines[firstLine], static_cast<int>(lastLine - firstLine + 1));
+      |                     ^~~~~~~~~~~~~~~~~~~~~
+      |                     quartz::client::ui::requestSignatureMaker
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/src/ui/MemoryInspector.cpp:2:
+/home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/ui/SignatureMaker.hpp:10:10: note: ‘quartz::client::ui::requestSignatureMaker’ declared here
+   10 |     void requestSignatureMaker(pid_t pid, std::uintptr_t address, int minimumInstructions = 1) noexcept;
+      |          ^~~~~~~~~~~~~~~~~~~~~
+[139/183] Building CXX object CMakeFiles/QuartzClient.dir/src/ui/PageManager.cpp.o
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Common.hpp:4,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Forward.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Globals.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Functions.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/Model.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/include/quartz/client/ui/PageContext.hpp:2,
+                 from /home/runner/work/Quartz-Client/Quartz-Client/src/ui/PageManager.cpp:2:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In constructor ‘constexpr quartz::rpc::PacketHeader::PacketHeader(uint8_t, quartz::rpc::PacketType, quartz::rpc::PacketDirection, uint32_t, uint32_t)’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:56:39: warning: call to non-‘constexpr’ function ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ [-Winvalid-constexpr]
+   56 |             PacketId = getNextPacketId();
+      |                        ~~~~~~~~~~~~~~~^~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:139:30: note: ‘static uint32_t quartz::rpc::PacketHeader::getNextPacketId()’ declared here
+  139 |         static std::uint32_t getNextPacketId() noexcept
+      |                              ^~~~~~~~~~~~~~~
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp: In member function ‘constexpr bool quartz::rpc::PacketHeader::isValid() const’:
+/home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:136:47: warning: call to non-‘constexpr’ function ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ [-Winvalid-constexpr]
+  136 |             return isValidHeader(std::as_bytes(std::span{ this, 1 }));
+      |                                  ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/runner/work/Quartz-Client/Quartz-Client/protocol/include/quartz/rpc/PacketHeader.hpp:3:
+/usr/include/c++/13/span:464:5: note: ‘std::span<const std::byte, ((_Extent != std::dynamic_extent) ? (_Extent * sizeof (_Type)) : ((long unsigned int)std::dynamic_extent))> std::as_bytes(span<_Tp, _Num>) [with _Type = const quartz::rpc::PacketHeader; long unsigned int _Extent = 18446744073709551615]’ declared here
+  464 |     as_bytes(span<_Type, _Extent> __sp) noexcept
+      |     ^~~~~~~~
+ninja: build stopped: subcommand failed.
