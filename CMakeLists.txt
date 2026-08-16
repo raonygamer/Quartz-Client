@@ -110,6 +110,19 @@ set_source_files_properties("${QUARTZ_THEME_ASSETS_SOURCE}" PROPERTIES OBJECT_DE
 #    priority over hover popups. Editors also claim wheel input while hovered so reaching a code-view edge
 #    cannot unexpectedly scroll the containing Quartz page. Read-only editors leave Ctrl+Click available
 #    to their host instead of treating it as a multi-caret gesture.
+# 4) Quartz overlays can query exact document screen positions using the same origin/glyph geometry that
+#    the editor itself uses, avoiding approximations that break under scrolling or DPI scaling.
+set(QUARTZ_TEXT_EDITOR_HEADER_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/TextEditor.h")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ImGuiColorTextEdit/TextEditor.h" QUARTZ_TEXT_EDITOR_HEADER_CONTENT)
+set(QUARTZ_EDITOR_SCREEN_API_OLD "\tinline float GetLineHeight() const { return glyphSize.y; }\n\tinline float GetGlyphWidth() const { return glyphSize.x; }")
+set(QUARTZ_EDITOR_SCREEN_API_NEW "\tinline float GetLineHeight() const { return glyphSize.y; }\n\tinline float GetGlyphWidth() const { return glyphSize.x; }\n\tinline ImVec2 GetDocPosScreenPos(DocPos pos) const { auto vis = docPos2VisPos(normalizePos(pos)); return ImVec2(cursorScreenPos.x + textLeftOffset + vis.column * glyphSize.x, cursorScreenPos.y + vis.row * glyphSize.y); }\n\tinline ImVec2 GetTextAreaScreenMin() const { return ImVec2(cursorScreenPos.x + textLeftOffset, cursorScreenPos.y); }\n\tinline ImVec2 GetTextAreaScreenMax() const { return ImVec2(cursorScreenPos.x + textRightOffset, cursorScreenPos.y + textSize.y); }")
+string(FIND "${QUARTZ_TEXT_EDITOR_HEADER_CONTENT}" "${QUARTZ_EDITOR_SCREEN_API_OLD}" QUARTZ_EDITOR_SCREEN_API_POS)
+if(QUARTZ_EDITOR_SCREEN_API_POS EQUAL -1)
+    message(FATAL_ERROR "ImGuiColorTextEdit screen-coordinate API patch no longer matches the vendored header")
+endif()
+string(REPLACE "${QUARTZ_EDITOR_SCREEN_API_OLD}" "${QUARTZ_EDITOR_SCREEN_API_NEW}" QUARTZ_TEXT_EDITOR_HEADER_CONTENT "${QUARTZ_TEXT_EDITOR_HEADER_CONTENT}")
+file(WRITE "${QUARTZ_TEXT_EDITOR_HEADER_SOURCE}" "${QUARTZ_TEXT_EDITOR_HEADER_CONTENT}")
+
 set(QUARTZ_TEXT_EDITOR_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/TextEditor.cpp")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ImGuiColorTextEdit/TextEditor.cpp" QUARTZ_TEXT_EDITOR_CONTENT)
 set(QUARTZ_AUTOCOMPLETE_SCROLL_OLD "if (selected) {\n\t\t\t\t\t\tImGui::SetScrollHereY(1.0f);\n\t\t\t\t\t}")
@@ -191,6 +204,7 @@ set_target_properties(QuartzClient PROPERTIES
 target_include_directories(QuartzClient PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/ImGuiColorTextEdit
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui/backends
