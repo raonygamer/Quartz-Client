@@ -167,6 +167,10 @@ declare module "@quartz/client" {
         Boolean(offset: Address | number): Field<boolean>;
         Pointer(offset: Address | number): Field<Address | undefined>;
         Pointer<TFields extends StructFields>(offset: Address | number, type: Struct<TFields>): Field<Pointer<Struct<TFields>> | undefined>;
+        /** Reads a pointer at offset and then a NUL-terminated UTF-8 C string. */
+        CString(offset: Address | number, maxLength?: number): Field<string | undefined>;
+        /** Reads a pointer at offset and then a NUL-terminated UTF-16 string. */
+        WString(offset: Address | number, maxLength?: number): Field<string | undefined>;
         Struct<TFields extends StructFields>(offset: Address | number, type: Struct<TFields>): Field<Pointer<Struct<TFields>>>;
         Array<T>(offset: Address | number, field: Field<T>, count: number): Field<readonly T[]>;
     }
