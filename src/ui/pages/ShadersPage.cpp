@@ -18,6 +18,7 @@ namespace quartz::client::ui
         }
 
         void setPath(std::array<char, ShaderPathCapacity>& buffer, const std::filesystem::path& path) { std::snprintf(buffer.data(), buffer.size(), "%s", path.string().c_str()); }
+        void syncEditorText(TextEditor& editor, const std::string_view text) { if (editor.GetText() != text) editor.SetText(text); }
     }
 
     void ShadersPage::render(PageContext& context, PageManager& manager)
@@ -57,7 +58,7 @@ namespace quartz::client::ui
         ImGui::SameLine(); if (ImGui::Button(i18n::tr("common.edit")))
         {
             initializeShaderEditors(editor, vertexSource.data(), fragmentSource.data());
-            editor.Vertex.SetText(vertexSource.data()); editor.Fragment.SetText(fragmentSource.data()); updateShaderDiagnostics(editor, framebuffer.status()); manager.open("shader-editor");
+            syncEditorText(editor.Vertex, vertexSource.data()); syncEditorText(editor.Fragment, fragmentSource.data()); updateShaderDiagnostics(editor, framebuffer.status()); manager.open("shader-editor");
         }
         if (ImGui::Button(i18n::tr("shaders.compileCurrent"))) compileShaders(framebuffer, editor, vertexSource, fragmentSource);
         ImGui::SameLine(); if (ImGui::Button(i18n::tr("shaders.saveDefaults"))) saveShaderSources(vertexSource, fragmentSource);
@@ -66,7 +67,7 @@ namespace quartz::client::ui
             clearExternalShaderFile(editor, false); clearExternalShaderFile(editor, true);
             settings.ShaderPresetIndex = 1; settings.ShaderId = ShaderPresets.front().Id;
             setShaderSource(vertexSource, DefaultVertexShaderSource); setShaderSource(fragmentSource, ShaderPresets.front().FragmentSource);
-            editor.Vertex.SetText(vertexSource.data()); editor.Fragment.SetText(fragmentSource.data()); compileShaders(framebuffer, editor, vertexSource, fragmentSource); saveShaderSources(vertexSource, fragmentSource);
+            syncEditorText(editor.Vertex, vertexSource.data()); syncEditorText(editor.Fragment, fragmentSource.data()); compileShaders(framebuffer, editor, vertexSource, fragmentSource); saveShaderSources(vertexSource, fragmentSource);
         }
         ImGui::SameLine(); ImGui::TextDisabled("%s", framebuffer.status().c_str());
 
