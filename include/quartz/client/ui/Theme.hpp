@@ -22,6 +22,8 @@ namespace quartz::client::ui
 
     [[nodiscard]] const char* themeName(Theme theme) noexcept;
     [[nodiscard]] bool suspiciousTheme(Theme theme) noexcept;
+    void loadThemePreferences(VisualizerSettings& settings) noexcept;
+    void saveThemePreferences(const VisualizerSettings& settings) noexcept;
     void applyTheme(Theme theme) noexcept;
     void applyTheme(int theme) noexcept;
     bool drawThemeSelector(VisualizerSettings& settings);
