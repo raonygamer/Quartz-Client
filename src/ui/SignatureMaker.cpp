@@ -1,4 +1,5 @@
 #include "quartz/client/ui/SignatureMaker.hpp"
+#include "quartz/client/ui/AddressInput.hpp"
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/ui/I18n.hpp"
@@ -51,7 +52,7 @@ namespace quartz::client::ui
         {
             pid_t Pid = 0;
             std::uintptr_t Address = 0;
-            std::array<char, 32> AddressText{};
+            std::array<char, 256> AddressText{};
             int MinimumInstructions = 1;
             int MaxInstructions = 32;
             bool FocusRequested = false;
@@ -241,8 +242,8 @@ namespace quartz::client::ui
 
         void startJob(SignatureMakerState& ui)
         {
-            std::uintptr_t address = 0;
-            if (ui.Pid <= 0 || !parseNumber<std::uintptr_t>(ui.AddressText.data(), address) || address == 0) return;
+            std::uintptr_t address = 0; std::string error;
+            if (ui.Pid <= 0 || !evaluateAddressExpression(ui.Pid, ui.AddressText.data(), address, error) || address == 0) return;
             ui.Address = address;
             ui.Job = std::make_unique<SignatureMakerJob>();
             SignatureMakerJob* job = ui.Job.get();
@@ -268,14 +269,16 @@ namespace quartz::client::ui
         auto& ui = state();
         ImGui::TextWrapped("%s", i18n::tr("re.signatureDescription"));
         int pid = static_cast<int>(ui.Pid); ImGui::SetNextItemWidth(110.0f); if (ImGui::InputInt("PID##SignatureMaker", &pid)) ui.Pid = static_cast<pid_t>(std::max(pid, 0)); ImGui::SameLine();
-        ImGui::SetNextItemWidth(220.0f); ImGui::InputText(i18n::tr("re.signatureAddress"), ui.AddressText.data(), ui.AddressText.size()); ImGui::SameLine();
+        drawAddressInput(i18n::tr("re.signatureAddress"), ui.AddressText.data(), ui.AddressText.size(), ui.Pid, 300.0f); ImGui::SameLine();
         ImGui::SetNextItemWidth(145.0f); ImGui::SliderInt(i18n::tr("re.signatureMinimumInstructions"), &ui.MinimumInstructions, 1, 64); ImGui::SameLine();
         ui.MaxInstructions = std::max(ui.MaxInstructions, ui.MinimumInstructions); ImGui::SetNextItemWidth(145.0f); ImGui::SliderInt(i18n::tr("re.signatureMaximumInstructions"), &ui.MaxInstructions, ui.MinimumInstructions, 64);
 
         const bool running = ui.Job && !ui.Job->Finished.load(std::memory_order_acquire);
-        ImGui::BeginDisabled(running || ui.Pid <= 0 || ui.AddressText[0] == '\0');
+        std::uintptr_t candidate = 0; std::string expressionError; const bool validAddress = ui.Pid > 0 && evaluateAddressExpression(ui.Pid, ui.AddressText.data(), candidate, expressionError) && candidate != 0;
+        ImGui::BeginDisabled(running || !validAddress);
         if (ImGui::Button(i18n::tr("re.makeSignature"))) startJob(ui);
         ImGui::EndDisabled();
+        if (!validAddress && ui.AddressText[0] != '\0') { ImGui::SameLine(); ImGui::TextDisabled("%s", expressionError.c_str()); }
         if (running)
         {
             ImGui::SameLine();
