@@ -12,7 +12,7 @@ namespace quartz::client
 {
     enum class StructExperimentFieldKind : std::uint8_t
     {
-        I8, U8, I16, U16, I32, U32, I64, U64, F32, F64, Bool, Pointer, Struct, Array
+        I8, U8, I16, U16, I32, U32, I64, U64, F32, F64, Bool, Pointer, CString, WString, Struct, Array
     };
 
     struct StructExperimentDefinition;
@@ -23,6 +23,7 @@ namespace quartz::client
         std::uintptr_t Offset = 0;
         std::size_t Size = 0;
         std::size_t Count = 0;
+        std::size_t MaxLength = 0;
         std::shared_ptr<StructExperimentDefinition> Nested;
         std::shared_ptr<StructExperimentField> Element;
     };
