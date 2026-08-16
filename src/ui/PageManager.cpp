@@ -1,6 +1,7 @@
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/I18n.hpp"
+#include "quartz/client/ui/ThemeBackground.hpp"
 #include "quartz/client/ui/pages/VisualizerPage.hpp"
 #include "quartz/client/ui/pages/SpectrumPage.hpp"
 #include "quartz/client/ui/pages/AudioPage.hpp"
@@ -65,6 +66,11 @@ namespace quartz::client::ui
 
     void PageManager::render(PageContext& context)
     {
+        const ImVec2 backgroundMin = ImGui::GetWindowPos();
+        const ImVec2 backgroundSize = ImGui::GetWindowSize();
+        const ImVec2 backgroundMax{backgroundMin.x + backgroundSize.x, backgroundMin.y + backgroundSize.y};
+        drawThemeBackground(context.settings.UiTheme, ImGui::GetWindowDrawList(), backgroundMin, backgroundMax);
+
         if (!_standaloneId.empty())
         {
             Page* page = find(_standaloneId);
@@ -115,11 +121,13 @@ namespace quartz::client::ui
         ImGui::EndChild();
         ImGui::PopStyleVar();
         ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         if (ImGui::BeginChild("PageContent", ImVec2(0.0f, available.y), ImGuiChildFlags_None))
         {
             if (Page* selected = find(_activePageId); selected && selected->presentation() == PagePresentation::Tab) selected->render(context, *this);
         }
         ImGui::EndChild();
+        ImGui::PopStyleColor();
     }
 
     PageManager createDefaultPageManager()

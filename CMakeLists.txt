@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(QuartzClient
     VERSION 0.1.0
-    LANGUAGES C CXX
+    LANGUAGES C CXX ASM
 )
 
 set(CMAKE_CXX_STANDARD 20)
@@ -53,8 +53,56 @@ file(GLOB_RECURSE QUARTZ_CLIENT_HEADERS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp"
 )
 
+set(QUARTZ_THEME_ASSETS_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/QuartzThemeAssets.S")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(GENERATE OUTPUT "${QUARTZ_THEME_ASSETS_SOURCE}" CONTENT
+".section .rodata.quartz_theme_deviluke,\"a\",@progbits
+.balign 16
+.global quartz_theme_deviluke_start
+.global quartz_theme_deviluke_end
+.hidden quartz_theme_deviluke_start
+.hidden quartz_theme_deviluke_end
+quartz_theme_deviluke_start:
+.incbin \"${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/deviluke.png\"
+quartz_theme_deviluke_end:
+
+.section .rodata.quartz_theme_kurosaki,\"a\",@progbits
+.balign 16
+.global quartz_theme_kurosaki_start
+.global quartz_theme_kurosaki_end
+.hidden quartz_theme_kurosaki_start
+.hidden quartz_theme_kurosaki_end
+quartz_theme_kurosaki_start:
+.incbin \"${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/kurosaki.png\"
+quartz_theme_kurosaki_end:
+
+.section .rodata.quartz_theme_yami,\"a\",@progbits
+.balign 16
+.global quartz_theme_yami_start
+.global quartz_theme_yami_end
+.hidden quartz_theme_yami_start
+.hidden quartz_theme_yami_end
+quartz_theme_yami_start:
+.incbin \"${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/yami.png\"
+quartz_theme_yami_end:
+
+.section .rodata.quartz_theme_kirisaki,\"a\",@progbits
+.balign 16
+.global quartz_theme_kirisaki_start
+.global quartz_theme_kirisaki_end
+.hidden quartz_theme_kirisaki_start
+.hidden quartz_theme_kirisaki_end
+quartz_theme_kirisaki_start:
+.incbin \"${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/kirisaki.png\"
+quartz_theme_kirisaki_end:
+
+.section .note.GNU-stack,\"\",@progbits
+")
+set_source_files_properties("${QUARTZ_THEME_ASSETS_SOURCE}" PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/deviluke.png;${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/kurosaki.png;${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/yami.png;${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/kirisaki.png")
+
 add_executable(QuartzClient
         ${QUARTZ_CLIENT_SOURCES}
+        ${QUARTZ_THEME_ASSETS_SOURCE}
         vendor/ImGuiColorTextEdit/TextDiff.cpp
         vendor/ImGuiColorTextEdit/TextEditor.cpp
         vendor/imgui/imgui.cpp
