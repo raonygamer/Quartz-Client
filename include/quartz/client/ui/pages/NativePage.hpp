@@ -7,8 +7,8 @@ namespace quartz::client::ui
     {
     public:
         [[nodiscard]] std::string_view id() const noexcept override { return "native"; }
-        [[nodiscard]] std::string_view title() const noexcept override { return "Reverse Engineering"; }
-        [[nodiscard]] PageSection section() const noexcept override { return PageSection::Runtime; }
+        [[nodiscard]] std::string_view title() const noexcept override { return "Workspace"; }
+        [[nodiscard]] PageSection section() const noexcept override { return PageSection::ReverseEngineering; }
         void render(PageContext& context, PageManager& manager) override;
     };
 }
