@@ -21,6 +21,7 @@ namespace quartz::client
         bool SuspiciousColorThemes = false;
         int UiTheme = 0;
         float UiCornerRounding = 5.0f;
+        float UiSilhouetteOpacity = 1.0f;
         int ShaderFramebufferWidth = DefaultShaderWidth;
         int ShaderFramebufferHeight = DefaultShaderHeight;
         int FrameRate = 240;
