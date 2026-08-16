@@ -3,41 +3,44 @@
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/ui/MemoryInspector.hpp"
 #include "quartz/client/ui/ReverseEngineeringTools.hpp"
+#include "quartz/client/ui/ReverseEngineeringNavigation.hpp"
+#include "quartz/client/ui/SignatureMaker.hpp"
 #include "quartz/client/native/OpcodePatternEditor.hpp"
 
 namespace quartz::client::ui
 {
     void NativePage::render(PageContext& context, PageManager& manager)
     {
-        auto& inspector = runtimeMemoryInspectorState(); auto& engine = context.runtimeBindings;
-        ImGui::TextWrapped("Reverse-engineering workspace for native-process memory, signatures, object models, bindings and the shared disassembly inspector. It started as RGB tooling and somehow ended up being a minified Cheat Engine by fun.");
+        auto& inspector = runtimeMemoryInspectorState();
+        const bool focusInspector = consumeMemoryInspectorFocus();
+        const bool focusSignature = signatureMakerWantsFocus();
+        ImGui::TextWrapped("Native reverse-engineering workspace. Memory, disassembly, watches and signatures share addresses directly so you can move through a process without copy/pasting hexadecimal values between unrelated tools.");
         if (ImGui::BeginTabBar("ReverseEngineeringWorkspace"))
         {
-            if (ImGui::BeginTabItem("Memory / disassembly"))
+            if (ImGui::BeginTabItem("Memory / disassembly", nullptr, focusInspector ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None))
             {
-                if (ImGui::Button("Memory Scanner...")) manager.open("memory-scanner"); ImGui::SameLine(); if (ImGui::Button("Memory Watch...")) manager.open("memory-watch");
-                ImGui::SeparatorText("Manual watch"); drawManualMemoryWatch(context, manager);
-                ImGui::SeparatorText("Native bindings");
-                bool any = false;
-                for (auto& binding : engine.bindings())
+                if (ImGui::Button("Memory Scanner...")) manager.open("memory-scanner");
+                ImGui::SameLine(); if (ImGui::Button("Memory Watch...")) manager.open("memory-watch");
+                if (inspector.Pid > 0 && inspector.Address != 0)
                 {
-                    if (binding.Source != RuntimeSourceKind::NativeProcess && binding.Source != RuntimeSourceKind::NativeAddress) continue; any = true; ImGui::PushID(static_cast<int>(binding.Id & 0x7fffffffULL));
-                    ImGui::Text("%s", binding.Name); ImGui::SameLine(); ImGui::TextDisabled("PID %d", binding.ProcessId);
-                    if (binding.AddressMode == ProcessAddressMode::Signature)
-                    {
-                        ImGui::SameLine(); if (binding.SignatureScanRunning) ImGui::TextDisabled("scanning"); else if (binding.SignatureResolvedAddress) ImGui::TextDisabled("resolved 0x%llX", static_cast<unsigned long long>(binding.SignatureResolvedAddress)); else if (!binding.SignatureStatus.empty()) ImGui::TextDisabled("%s", binding.SignatureStatus.c_str());
-                        if (binding.SignatureScanAverageMiBs > 0.0) { if (binding.SignatureScanAverageMiBs >= 1024.0) ImGui::TextDisabled("Average scan speed: %.2f GiB/s", binding.SignatureScanAverageMiBs / 1024.0); else ImGui::TextDisabled("Average scan speed: %.1f MiB/s", binding.SignatureScanAverageMiBs); if (binding.SignatureScanLastSeconds > 0.0) { ImGui::SameLine(); ImGui::TextDisabled("last %.1f MiB / %.3f s", binding.SignatureScanLastBytes / (1024.0 * 1024.0), binding.SignatureScanLastSeconds); } }
-                        if (ImGui::SmallButton("Rescan")) { resetRuntimeSignatureScan(binding); binding.SignatureConfigHash = 0; binding.NextUpdate = 0.0; }
-                        if (binding.SignaturePatternKind == RuntimeSignaturePatternKind::OpcodePattern) { ImGui::SameLine(); if (ImGui::SmallButton("Opcode editor...")) { openOpcodePatternEditor(binding); manager.open("opcode-editor"); } }
-                    }
-                    ImGui::Separator(); ImGui::PopID();
+                    ImGui::SameLine();
+                    if (ImGui::Button("Signature from address")) { requestSignatureMaker(inspector.Pid, inspector.Address); }
                 }
-                if (!any) ImGui::TextDisabled("No NativeProcess/NativeAddress bindings configured.");
+                ImGui::SeparatorText("Manual watch");
+                drawManualMemoryWatch(context, manager);
                 drawEnhancedRuntimeMemoryInspector(inspector);
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Quick signatures")) { drawQuickSignatureSearch(context, manager); ImGui::EndTabItem(); }
-            if (ImGui::BeginTabItem("Object model debugger")) { drawObjectModelDebugger(context, manager); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Signatures", nullptr, focusSignature ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None))
+            {
+                if (ImGui::BeginTabBar("SignatureWorkspace"))
+                {
+                    if (ImGui::BeginTabItem("Signature maker", nullptr, focusSignature ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None)) { drawSignatureMaker(context, manager); ImGui::EndTabItem(); }
+                    if (ImGui::BeginTabItem("Search")) { drawQuickSignatureSearch(context, manager); ImGui::EndTabItem(); }
+                    ImGui::EndTabBar();
+                }
+                ImGui::EndTabItem();
+            }
             ImGui::EndTabBar();
         }
     }
