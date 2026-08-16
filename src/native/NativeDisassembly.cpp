@@ -4,6 +4,7 @@
 #include <elf.h>
 #include <charconv>
 #include <fstream>
+#include <iomanip>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -122,6 +123,25 @@ namespace quartz::client
         if (pid<=0) return {}; const auto modules=cachedProcessModules(pid,metadataNow()); return modules?*modules:std::vector<RuntimeProcessModule>{};
     }
 
+    std::string runtimeFormatAbsoluteAddress(const RuntimeX86Mode mode, const std::uintptr_t address)
+    {
+        const unsigned width=mode==RuntimeX86Mode::X86?8U:16U; const std::uint64_t value=mode==RuntimeX86Mode::X86?static_cast<std::uint32_t>(address):static_cast<std::uint64_t>(address); std::ostringstream out; out << "0x" << std::hex << std::uppercase << std::setw(static_cast<int>(width)) << std::setfill('0') << value; return out.str();
+    }
+
+    std::string runtimeFormatProcessAddress(const RuntimeX86Mode mode, const std::span<const RuntimeProcessModule> modules, const std::uintptr_t address)
+    {
+        for (const auto& module : modules)
+        {
+            if (!module.contains(address)) continue;
+            std::string name = module.Name;
+            if (name.empty() && !module.Path.empty()) name = std::filesystem::path(module.Path).filename().string();
+            if (name.empty()) break;
+            const std::uintptr_t base=address>=module.Base?module.Base:module.MappingBase;
+            std::ostringstream out; out << name << "+0x" << std::hex << std::uppercase << static_cast<unsigned long long>(address - base); return out.str();
+        }
+        return runtimeFormatAbsoluteAddress(mode,address);
+    }
+
     std::string runtimeFormatProcessAddress(const std::span<const RuntimeProcessModule> modules, const std::uintptr_t address)
     {
         for (const auto& module : modules)
@@ -138,7 +158,7 @@ namespace quartz::client
 
     std::string runtimeFormatProcessAddress(const pid_t pid, const std::uintptr_t address)
     {
-        if (pid <= 0 || address == 0) return runtimeHexAddress(address); const auto modules = cachedProcessModules(pid, metadataNow()); return modules ? runtimeFormatProcessAddress(*modules, address) : runtimeHexAddress(address);
+        if (pid <= 0) return runtimeHexAddress(address); const RuntimeX86Mode mode=runtimeProcessX86Mode(pid); const auto modules = cachedProcessModules(pid, metadataNow()); return modules ? runtimeFormatProcessAddress(mode,*modules,address) : runtimeFormatAbsoluteAddress(mode,address);
     }
 
     bool runtimeDecodeProcessInstruction(const RuntimeX86Mode mode, const std::span<const std::uint8_t> bytes, const std::uintptr_t address, RuntimeDecodedInstruction& result)
@@ -155,7 +175,16 @@ namespace quartz::client
         else if (mnemonic == "ret" || mnemonic == "retf") result.Branch = RuntimeBranchKind::Return;
         if ((result.Branch == RuntimeBranchKind::Conditional || result.Branch == RuntimeBranchKind::Unconditional || result.Branch == RuntimeBranchKind::Call) && instruction.info.operand_count_visible)
         {
-            ZyanU64 target = 0; if (ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&instruction.info, &instruction.operands[0], address, &target)) && target <= std::numeric_limits<std::uintptr_t>::max()) result.Target = static_cast<std::uintptr_t>(target);
+            const auto& operand=instruction.operands[0]; ZyanU64 target=0; bool resolved=ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&instruction.info,&operand,address,&target));
+            if (!resolved && operand.type==ZYDIS_OPERAND_TYPE_IMMEDIATE && operand.imm.is_relative)
+            {
+                const std::int64_t displacement=operand.imm.value.s; target=static_cast<ZyanU64>(static_cast<std::int64_t>(address+instruction.info.length)+displacement); resolved=true;
+            }
+            if (resolved)
+            {
+                if (mode==RuntimeX86Mode::X86) target&=0xFFFFFFFFULL;
+                if (target<=std::numeric_limits<std::uintptr_t>::max()) result.Target=static_cast<std::uintptr_t>(target);
+            }
         }
         return result.Length != 0;
 #else
