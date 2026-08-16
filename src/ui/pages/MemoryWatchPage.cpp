@@ -1,6 +1,8 @@
 #include "quartz/client/ui/pages/MemoryWatchPage.hpp"
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
+#include "quartz/client/ui/AddressInput.hpp"
+#include "quartz/client/ui/ProcessPicker.hpp"
 #include "quartz/client/ui/ReverseEngineeringNavigation.hpp"
 #include "quartz/client/ui/SignatureMaker.hpp"
 #include "quartz/client/native/ExecutionProbe.hpp"
@@ -11,15 +13,6 @@ namespace quartz::client::ui
     namespace
     {
         struct RegisterValue { const char* Name; std::uint64_t Value; };
-
-        bool parseWatchAddress(const char* text, std::uintptr_t& value)
-        {
-            if (!text || !*text) return false;
-            std::string_view view(text); int base = 10;
-            if (view.starts_with("0x") || view.starts_with("0X")) { view.remove_prefix(2); base = 16; }
-            const auto [ptr, ec] = std::from_chars(view.data(), view.data() + view.size(), value, base); return ec == std::errc{} && ptr == view.data() + view.size();
-        }
-
         std::uintptr_t hitSite(const MemoryWatchHit& hit) noexcept { return hit.InstructionAddress ? hit.InstructionAddress : hit.Rip; }
 
         void openWatchInspector(PageManager& manager, const pid_t pid, const std::uintptr_t address)
@@ -48,14 +41,17 @@ namespace quartz::client::ui
         (void)context;
         if (_processes.empty()) _processes = enumerateRuntimeProcesses();
         ImGui::TextWrapped("Hardware data breakpoints answer the classic 'who writes/reads this address?' question. x86 provides write-only or read/write data traps (not read-only) and only four debug-address slots per thread; Quartz uses one slot and mirrors it onto newly created threads. Click a hit to inspect its latest register snapshot; right-click hits and register values for actions.");
-        if (ImGui::Button("Refresh processes")) _processes = enumerateRuntimeProcesses(); ImGui::SameLine(); ImGui::SetNextItemWidth(420.0f);
-        const RuntimeProcessInfo* selected = nullptr; for (const auto& process : _processes) if (process.Pid == _pid) { selected = &process; break; }
-        if (ImGui::BeginCombo("Process", selected ? runtimeProcessDisplayTitle(*selected).c_str() : "<select process>")) { for (const auto& process : _processes) { const bool active = process.Pid == _pid; const std::string label = runtimeProcessDisplayTitle(process) + "  [" + std::to_string(process.Pid) + "]"; if (ImGui::Selectable(label.c_str(), active)) { _pid = process.Pid; _selectedSite = 0; } if (active) ImGui::SetItemDefaultFocus(); } ImGui::EndCombo(); }
-        ImGui::SetNextItemWidth(210.0f); ImGui::InputText("Address", _address.data(), _address.size()); ImGui::SameLine(); ImGui::SetNextItemWidth(110.0f); static constexpr const char* Sizes[] = {"1 byte", "2 bytes", "4 bytes", "8 bytes"}; ImGui::Combo("Size", &_size, Sizes, 4); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); ImGui::Combo("Access", &_access, "Write\0Read / write\0");
-        ImGui::SetNextItemWidth(120.0f); ImGui::InputInt("Hit limit", &_maxHits); ImGui::SameLine(); ImGui::TextDisabled("0 = unlimited | address accepts decimal or 0x-prefixed hex | %s", runtimeX86ModeName(runtimeProcessX86Mode(_pid)));
+        drawProcessPicker("MemoryWatchProcess", _processes, _pid, _processSearch.data(), _processSearch.size(), 520.0f);
+        drawAddressInput("Address", _address.data(), _address.size(), _pid, 310.0f); ImGui::SameLine(); ImGui::SetNextItemWidth(110.0f); static constexpr const char* Sizes[] = {"1 byte", "2 bytes", "4 bytes", "8 bytes"}; ImGui::Combo("Size", &_size, Sizes, 4); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); ImGui::Combo("Access", &_access, "Write\0Read / write\0");
+        ImGui::SetNextItemWidth(120.0f); ImGui::InputInt("Hit limit", &_maxHits); ImGui::SameLine(); ImGui::TextDisabled("0 = unlimited | address expressions support module names and + - * / | %s", runtimeX86ModeName(runtimeProcessX86Mode(_pid)));
         const bool watchRunning = _watch.running();
         ImGui::BeginDisabled(watchRunning);
-        if (ImGui::Button("Start watch")) { std::uintptr_t address = 0; static constexpr std::size_t Widths[] = {1, 2, 4, 8}; if (!parseWatchAddress(_address.data(), address)) _status = "invalid address"; else { _selectedSite = 0; _watch.start(_pid, address, Widths[std::clamp(_size, 0, 3)], static_cast<MemoryWatchAccess>(_access), static_cast<std::size_t>(std::max(_maxHits, 0)), _status); } }
+        if (ImGui::Button("Start watch"))
+        {
+            std::uintptr_t address = 0; std::string error; static constexpr std::size_t Widths[] = {1, 2, 4, 8};
+            if (!evaluateAddressExpression(_pid, _address.data(), address, error) || address == 0) _status = error.empty() ? "invalid address" : error;
+            else { _selectedSite = 0; _watch.start(_pid, address, Widths[std::clamp(_size, 0, 3)], static_cast<MemoryWatchAccess>(_access), static_cast<std::size_t>(std::max(_maxHits, 0)), _status); }
+        }
         ImGui::EndDisabled(); ImGui::SameLine(); ImGui::BeginDisabled(!watchRunning); if (ImGui::Button("Stop")) _watch.stop(); ImGui::EndDisabled(); ImGui::SameLine(); if (ImGui::Button("Clear hits")) { _watch.clearHits(); _selectedSite = 0; }
         const std::string watchStatus = _watch.status(); if (!watchStatus.empty()) ImGui::TextWrapped("%s", watchStatus.c_str()); if (!_status.empty()) ImGui::TextDisabled("%s", _status.c_str());
 
