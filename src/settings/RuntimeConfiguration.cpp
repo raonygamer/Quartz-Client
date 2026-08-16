@@ -60,4 +60,10 @@ namespace quartz::client
     {
         runtimeConfiguration() = {}; saveRuntimeConfiguration();
     }
+
+    namespace
+    {
+        struct RuntimeConfigurationBootstrap { RuntimeConfigurationBootstrap() { loadRuntimeConfiguration(); } };
+        const RuntimeConfigurationBootstrap RuntimeConfigurationInitializer{};
+    }
 }
