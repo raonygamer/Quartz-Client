@@ -27,7 +27,7 @@ namespace quartz::client::ui
             {{0.22f, 0.72f, 0.48f, 1.0f}, {0.30f, 0.84f, 0.57f, 1.0f}, {0.15f, 0.57f, 0.37f, 1.0f}, {0.52f, 0.90f, 0.68f, 1.0f}, {0.038f, 0.055f, 0.047f, 1.0f}, {0.052f, 0.076f, 0.064f, 1.0f}},
             // Canonical suspicious accents: #cf6090, #852140, #eda83b, #684d7f.
             {{0.811765f, 0.376471f, 0.564706f, 1.0f}, {0.91f, 0.50f, 0.67f, 1.0f}, {0.68f, 0.26f, 0.45f, 1.0f}, {1.00f, 0.72f, 0.83f, 1.0f}, {0.071f, 0.040f, 0.055f, 1.0f}, {0.098f, 0.052f, 0.073f, 1.0f}},
-            {{0.521569f, 0.129412f, 0.250980f, 1.0f}, {0.66f, 0.22f, 0.36f, 1.0f}, {0.40f, 0.08f, 0.18f, 1.0f}, {0.85f, 0.44f, 0.57f, 1.0f}, {0.057f, 0.031f, 0.040f, 1.0f}, {0.081f, 0.039f, 0.052f, 1.0f}},
+            {{0.521569f, 0.129412f, 0.250980f, 1.0f}, {0.70f, 0.23f, 0.39f, 1.0f}, {0.43f, 0.07f, 0.19f, 1.0f}, {0.94f, 0.29f, 0.48f, 1.0f}, {0.057f, 0.031f, 0.040f, 1.0f}, {0.081f, 0.039f, 0.052f, 1.0f}},
             {{0.929412f, 0.658824f, 0.231373f, 1.0f}, {1.00f, 0.78f, 0.35f, 1.0f}, {0.76f, 0.51f, 0.13f, 1.0f}, {1.00f, 0.90f, 0.62f, 1.0f}, {0.057f, 0.049f, 0.030f, 1.0f}, {0.081f, 0.068f, 0.039f, 1.0f}},
             {{0.407843f, 0.301961f, 0.498039f, 1.0f}, {0.55f, 0.42f, 0.66f, 1.0f}, {0.31f, 0.21f, 0.40f, 1.0f}, {0.72f, 0.62f, 0.82f, 1.0f}, {0.048f, 0.038f, 0.058f, 1.0f}, {0.068f, 0.050f, 0.084f, 1.0f}}
         }};
@@ -72,10 +72,12 @@ namespace quartz::client::ui
                     if (key == "Theme") parseNumber(value, settings.UiTheme);
                     else if (key == "Suspicious") parseBool(value, settings.SuspiciousColorThemes);
                     else if (key == "Rounding") parseNumber(value, settings.UiCornerRounding);
+                    else if (key == "SilhouetteOpacity") parseNumber(value, settings.UiSilhouetteOpacity);
                 }
             }
             settings.UiTheme = std::clamp(settings.UiTheme, 0, static_cast<int>(Theme::Count) - 1);
             settings.UiCornerRounding = std::clamp(settings.UiCornerRounding, 0.0f, 12.0f);
+            settings.UiSilhouetteOpacity = std::clamp(settings.UiSilhouetteOpacity, 0.0f, 2.0f);
             if (suspiciousTheme(static_cast<Theme>(settings.UiTheme)) && !settings.SuspiciousColorThemes) settings.UiTheme = static_cast<int>(Theme::QuartzCyan);
             applyCornerRounding(settings.UiCornerRounding);
         }
@@ -92,6 +94,7 @@ namespace quartz::client::ui
             file << "Theme=" << settings.UiTheme << '\n';
             file << "Suspicious=" << (settings.SuspiciousColorThemes ? "true" : "false") << '\n';
             file << "Rounding=" << settings.UiCornerRounding << '\n';
+            file << "SilhouetteOpacity=" << settings.UiSilhouetteOpacity << '\n';
         }
         catch (...) {}
     }
@@ -147,7 +150,7 @@ namespace quartz::client::ui
         c[ImGuiCol_ScrollbarGrabActive] = alpha(p.Active, 0.72f);
         c[ImGuiCol_CheckMark] = p.Secondary;
         c[ImGuiCol_SliderGrab] = p.Accent;
-        c[ImGuiCol_SliderGrabActive] = p.Hover;
+        c[ImGuiCol_SliderGrabActive] = p.Secondary;
         c[ImGuiCol_Button] = alpha(p.Accent, 0.31f);
         c[ImGuiCol_ButtonHovered] = alpha(p.Hover, 0.58f);
         c[ImGuiCol_ButtonActive] = alpha(p.Active, 0.82f);
@@ -162,6 +165,11 @@ namespace quartz::client::ui
         c[ImGuiCol_ResizeGripActive] = alpha(p.Active, 0.82f);
         c[ImGuiCol_Tab] = alpha(p.Accent, 0.18f);
         c[ImGuiCol_TabHovered] = alpha(p.Hover, 0.52f);
+        c[ImGuiCol_TabSelected] = alpha(p.Accent, 0.46f);
+        c[ImGuiCol_TabSelectedOverline] = p.Secondary;
+        c[ImGuiCol_TabDimmed] = alpha(p.Accent, 0.10f);
+        c[ImGuiCol_TabDimmedSelected] = alpha(p.Accent, 0.30f);
+        c[ImGuiCol_TabDimmedSelectedOverline] = alpha(p.Secondary, 0.72f);
         c[ImGuiCol_PlotLines] = p.Secondary;
         c[ImGuiCol_PlotHistogram] = p.Accent;
         c[ImGuiCol_TableHeaderBg] = alpha(p.Accent, 0.18f);
