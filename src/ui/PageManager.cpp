@@ -69,7 +69,7 @@ namespace quartz::client::ui
         const ImVec2 backgroundMin = ImGui::GetWindowPos();
         const ImVec2 backgroundSize = ImGui::GetWindowSize();
         const ImVec2 backgroundMax{backgroundMin.x + backgroundSize.x, backgroundMin.y + backgroundSize.y};
-        drawThemeBackground(context.settings.UiTheme, ImGui::GetWindowDrawList(), backgroundMin, backgroundMax);
+        drawThemeBackground(context.settings.UiTheme, ImGui::GetWindowDrawList(), backgroundMin, backgroundMax, context.settings.UiSilhouetteOpacity);
 
         if (!_standaloneId.empty())
         {
