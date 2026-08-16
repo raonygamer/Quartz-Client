@@ -138,10 +138,10 @@ namespace quartz::client::ui
         AddressExpressionParser parser(pid, expression); return parser.parse(value, error);
     }
 
-    bool drawAddressInput(const char* label, char* buffer, const std::size_t bufferSize, const pid_t pid, const float width)
+    bool drawAddressInput(const char* label, char* buffer, const std::size_t bufferSize, const pid_t pid, const float width, const ImGuiInputTextFlags flags)
     {
         if (width != 0.0f) ImGui::SetNextItemWidth(width);
-        bool changed = ImGui::InputText(label, buffer, bufferSize);
+        bool changed = ImGui::InputText(label, buffer, bufferSize, flags);
         std::uintptr_t evaluated = 0; std::string error;
         const bool valid = evaluateAddressExpression(pid, buffer, evaluated, error);
         if (ImGui::IsItemFocused() && ImGui::GetIO().KeyCtrl && ImGui::GetIO().KeyShift && ImGui::IsKeyPressed(ImGuiKey_E, false) && valid) { std::snprintf(buffer, bufferSize, "0x%llX", static_cast<unsigned long long>(evaluated)); changed = true; }
