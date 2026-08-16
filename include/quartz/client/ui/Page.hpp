@@ -15,7 +15,8 @@ namespace quartz::client::ui
     enum class PageSection
     {
         Visual,
-        Runtime,
+        Scripting,
+        ReverseEngineering,
         Device,
         Diagnostics,
         Other
