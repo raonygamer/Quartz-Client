@@ -3,8 +3,10 @@
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/ui/AddressInput.hpp"
+#include "quartz/client/ui/I18n.hpp"
 #include "quartz/client/ui/ProcessPicker.hpp"
 #include "quartz/client/ui/ReverseEngineeringNavigation.hpp"
+#include "quartz/client/ui/ReverseEngineeringTools.hpp"
 #include "quartz/client/ui/SignatureMaker.hpp"
 #include <cerrno>
 #include <cmath>
@@ -240,6 +242,9 @@ namespace quartz::client::ui
         ImGui::TextWrapped("Cheat-Engine-style value scanning backed by process_vm_readv() and the shared Quartz worker pool. New Scan snapshots candidates; Next Scan filters the previous candidate bitmap without storing millions of uintptr_t values.");
         drawProcessPicker("MemoryScannerProcess", _processes, _pid, _processSearch.data(), _processSearch.size(), 520.0f);
         const RuntimeProcessInfo* selected = nullptr; for (const auto& process : _processes) if (process.Pid == _pid) { selected = &process; break; }
+
+        ImGui::SeparatorText(i18n::tr("re.manualWatch"));
+        drawManualMemoryWatch(context, manager);
 
         ImGui::SeparatorText("Scan");
         ImGui::SetNextItemWidth(180.0f);
