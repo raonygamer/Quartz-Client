@@ -1,5 +1,6 @@
 #include "quartz/client/ui/AddressInput.hpp"
 #include "quartz/client/Functions.hpp"
+#include "quartz/client/native/NativeTypes.hpp"
 #include <algorithm>
 #include <charconv>
 #include <cctype>
