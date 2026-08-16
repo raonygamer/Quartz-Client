@@ -70,8 +70,10 @@ namespace quartz::client::ui
                 const std::string_view value(line.data() + separator + 1, line.size() - separator - 1);
                 if (key == "Theme") parseNumber(value, settings.UiTheme);
                 else if (key == "Suspicious") parseBool(value, settings.SuspiciousColorThemes);
+                else if (key == "Rounding") parseNumber(value, settings.UiCornerRounding);
             }
             settings.UiTheme = std::clamp(settings.UiTheme, 0, static_cast<int>(Theme::Count) - 1);
+            settings.UiCornerRounding = std::clamp(settings.UiCornerRounding, 0.0f, 12.0f);
             if (suspiciousTheme(static_cast<Theme>(settings.UiTheme)) && !settings.SuspiciousColorThemes) settings.UiTheme = static_cast<int>(Theme::QuartzCyan);
         }
         catch (...) {}
@@ -86,8 +88,15 @@ namespace quartz::client::ui
             if (!file) return;
             file << "Theme=" << settings.UiTheme << '\n';
             file << "Suspicious=" << (settings.SuspiciousColorThemes ? "true" : "false") << '\n';
+            file << "Rounding=" << settings.UiCornerRounding << '\n';
         }
         catch (...) {}
+    }
+
+    void applyCornerRounding(const float rounding) noexcept
+    {
+        const float r = std::clamp(rounding, 0.0f, 12.0f); ImGuiStyle& style = ImGui::GetStyle();
+        style.WindowRounding = r * 1.4f; style.ChildRounding = r * 1.2f; style.FrameRounding = r; style.PopupRounding = r * 1.2f; style.ScrollbarRounding = r * 1.6f; style.GrabRounding = r * 0.8f; style.TabRounding = r;
     }
 
     void applyTheme(const Theme theme) noexcept
@@ -102,13 +111,7 @@ namespace quartz::client::ui
         style.ItemInnerSpacing = {6.0f, 5.0f};
         style.ScrollbarSize = 13.0f;
         style.GrabMinSize = 10.0f;
-        style.WindowRounding = 7.0f;
-        style.ChildRounding = 6.0f;
-        style.FrameRounding = 5.0f;
-        style.PopupRounding = 6.0f;
-        style.ScrollbarRounding = 8.0f;
-        style.GrabRounding = 4.0f;
-        style.TabRounding = 5.0f;
+        applyCornerRounding(5.0f);
         style.WindowBorderSize = 1.0f;
         style.ChildBorderSize = 1.0f;
         style.PopupBorderSize = 1.0f;
@@ -181,6 +184,9 @@ namespace quartz::client::ui
             ImGui::EndCombo();
         }
 
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::SliderFloat(i18n::tr("appearance.cornerRounding"), &settings.UiCornerRounding, 0.0f, 12.0f, "%.1f px", ImGuiSliderFlags_AlwaysClamp)) { applyCornerRounding(settings.UiCornerRounding); saveThemePreferences(settings); }
+
         bool suspicious = settings.SuspiciousColorThemes;
         if (ImGui::Checkbox(i18n::tr("appearance.suspicious"), &suspicious))
         {
@@ -204,7 +210,7 @@ namespace quartz::client::ui
             ImGui::EndPopup();
         }
 
-        if (changed) { applyTheme(settings.UiTheme); saveThemePreferences(settings); }
+        if (changed) { applyTheme(settings.UiTheme); applyCornerRounding(settings.UiCornerRounding); saveThemePreferences(settings); }
         return changed;
     }
 }
