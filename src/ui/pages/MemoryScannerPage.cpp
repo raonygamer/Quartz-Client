@@ -239,22 +239,22 @@ namespace quartz::client::ui
     {
         _scanner.poll();
         if (_processes.empty()) _processes = enumerateRuntimeProcesses();
-        ImGui::TextWrapped("Cheat-Engine-style value scanning backed by process_vm_readv() and the shared Quartz worker pool. New Scan snapshots candidates; Next Scan filters the previous candidate bitmap without storing millions of uintptr_t values.");
+        ImGui::TextWrapped("%s",i18n::tr("re.scannerDescription"));
         drawProcessPicker("MemoryScannerProcess", _processes, _pid, _processSearch.data(), _processSearch.size(), 520.0f);
         const RuntimeProcessInfo* selected = nullptr; for (const auto& process : _processes) if (process.Pid == _pid) { selected = &process; break; }
 
         ImGui::SeparatorText(i18n::tr("re.manualWatch"));
         drawManualMemoryWatch(context, manager);
 
-        ImGui::SeparatorText("Scan");
+        ImGui::SeparatorText(i18n::tr("re.scan"));
         ImGui::SetNextItemWidth(180.0f);
-        if (ImGui::BeginCombo("Value type", memoryScanValueTypeName(static_cast<MemoryScanValueType>(_type))))
+        if (ImGui::BeginCombo(i18n::tr("re.valueType"), memoryScanValueTypeName(static_cast<MemoryScanValueType>(_type))))
         {
             for (int i = 0; i <= static_cast<int>(MemoryScanValueType::ByteArray); ++i) if (ImGui::Selectable(memoryScanValueTypeName(static_cast<MemoryScanValueType>(i)), i == _type)) _type = i;
             ImGui::EndCombo();
         }
         ImGui::SameLine(); ImGui::SetNextItemWidth(220.0f);
-        if (ImGui::BeginCombo("Comparison", memoryScanComparisonName(static_cast<MemoryScanComparison>(_comparison))))
+        if (ImGui::BeginCombo(i18n::tr("re.comparison"), memoryScanComparisonName(static_cast<MemoryScanComparison>(_comparison))))
         {
             for (int i = 0; i <= static_cast<int>(MemoryScanComparison::ChangedFromTo); ++i) if (ImGui::Selectable(memoryScanComparisonName(static_cast<MemoryScanComparison>(i)), i == _comparison)) _comparison = i;
             ImGui::EndCombo();
@@ -262,34 +262,34 @@ namespace quartz::client::ui
         const auto comparison = static_cast<MemoryScanComparison>(_comparison);
         const bool needsA = comparison == MemoryScanComparison::Exact || comparison == MemoryScanComparison::NotEqual || comparison == MemoryScanComparison::IncreasedBy || comparison == MemoryScanComparison::DecreasedBy || comparison == MemoryScanComparison::Greater || comparison == MemoryScanComparison::Less || comparison == MemoryScanComparison::Between || comparison == MemoryScanComparison::ChangedFromTo;
         const bool needsB = comparison == MemoryScanComparison::Between || comparison == MemoryScanComparison::ChangedFromTo;
-        if (needsA) { ImGui::SetNextItemWidth(360.0f); ImGui::InputText(comparison == MemoryScanComparison::ChangedFromTo ? "From" : "Value", _valueA.data(), _valueA.size()); }
-        if (needsB) { ImGui::SetNextItemWidth(360.0f); ImGui::InputText(comparison == MemoryScanComparison::ChangedFromTo ? "To" : "Value B", _valueB.data(), _valueB.size()); }
-        if (integerValueType(static_cast<MemoryScanValueType>(_type))) ImGui::TextDisabled("Integer-like fields accept decimal or 0x-prefixed hexadecimal values.");
-        if (_type == static_cast<int>(MemoryScanValueType::ByteArray)) ImGui::TextDisabled("Byte arrays use Quartz hex syntax, including ?? and nibble wildcards A? / ?F.");
-        ImGui::Checkbox("Writable mappings only", &_writableOnly); ImGui::SameLine(); ImGui::Checkbox("Executable only", &_executableOnly); ImGui::SameLine(); ImGui::Checkbox("Aligned values", &_aligned);
-        if (_type == static_cast<int>(MemoryScanValueType::Utf8String) || _type == static_cast<int>(MemoryScanValueType::Utf16String)) { ImGui::SameLine(); ImGui::Checkbox("Case sensitive", &_caseSensitive); }
+        if (needsA) { ImGui::SetNextItemWidth(360.0f); ImGui::InputText(comparison == MemoryScanComparison::ChangedFromTo ? i18n::tr("re.from") : i18n::tr("re.value"), _valueA.data(), _valueA.size()); }
+        if (needsB) { ImGui::SetNextItemWidth(360.0f); ImGui::InputText(comparison == MemoryScanComparison::ChangedFromTo ? i18n::tr("re.to") : i18n::tr("re.valueB"), _valueB.data(), _valueB.size()); }
+        if (integerValueType(static_cast<MemoryScanValueType>(_type))) ImGui::TextDisabled("%s",i18n::tr("re.integerInputHint"));
+        if (_type == static_cast<int>(MemoryScanValueType::ByteArray)) ImGui::TextDisabled("%s",i18n::tr("re.byteArrayInputHint"));
+        ImGui::Checkbox(i18n::tr("re.writableOnly"), &_writableOnly); ImGui::SameLine(); ImGui::Checkbox(i18n::tr("re.executableOnly"), &_executableOnly); ImGui::SameLine(); ImGui::Checkbox(i18n::tr("re.alignedValues"), &_aligned);
+        if (_type == static_cast<int>(MemoryScanValueType::Utf8String) || _type == static_cast<int>(MemoryScanValueType::Utf16String)) { ImGui::SameLine(); ImGui::Checkbox(i18n::tr("re.caseSensitive"), &_caseSensitive); }
 
         const auto requestType = static_cast<MemoryScanValueType>(_type); const std::string requestA = normalizedScanInput(requestType, _valueA.data()), requestB = normalizedScanInput(requestType, _valueB.data());
         MemoryScanRequest request{_pid, requestType, comparison, requestA, requestB, _writableOnly, _executableOnly, _aligned, _caseSensitive};
         const bool scanRunning = _scanner.running();
         const bool hasSnapshot = _scanner.hasSnapshot();
         ImGui::BeginDisabled(scanRunning);
-        if (ImGui::Button("New Scan")) { _liveValues.clear(); _scanner.newScan(request, _status); }
+        if (ImGui::Button(i18n::tr("re.newScan"))) { _liveValues.clear(); _scanner.newScan(request, _status); }
         ImGui::SameLine();
         ImGui::BeginDisabled(!hasSnapshot);
-        if (ImGui::Button("Next Scan")) { _liveValues.clear(); _scanner.nextScan(request, _status); }
+        if (ImGui::Button(i18n::tr("re.nextScan"))) { _liveValues.clear(); _scanner.nextScan(request, _status); }
         ImGui::EndDisabled();
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::BeginDisabled(!scanRunning);
-        if (ImGui::Button("Cancel")) _scanner.cancel();
+        if (ImGui::Button(i18n::tr("common.cancel"))) _scanner.cancel();
         ImGui::EndDisabled();
 
         const auto stats = _scanner.stats();
         if (stats.Running) drawIndeterminateProgressBar(ImVec2(360.0f, 0.0f));
         if (stats.MiBs > 0.0) { if (stats.MiBs >= 1024.0) ImGui::Text("%.2f GiB/s", stats.MiBs / 1024.0); else ImGui::Text("%.1f MiB/s", stats.MiBs); ImGui::SameLine(); ImGui::TextDisabled("%.1f MiB in %.3f s", stats.Bytes / (1024.0 * 1024.0), stats.Seconds); }
-        ImGui::Text("Candidates: %llu", static_cast<unsigned long long>(stats.Candidates)); ImGui::SameLine(); ImGui::TextDisabled("%s%s", stats.Status.c_str(), _status.empty() ? "" : (" | " + _status).c_str());
-        ImGui::SetNextItemWidth(220.0f); ImGui::SliderFloat("Visible value refresh", &_refreshHz, 0.2f, 30.0f, "%.1f Hz", ImGuiSliderFlags_Logarithmic); ImGui::SameLine(); ImGui::TextDisabled("Only rows currently on screen are reread. Previous value always means the actual last scan snapshot.");
+        ImGui::Text(i18n::tr("re.candidates"), static_cast<unsigned long long>(stats.Candidates)); ImGui::SameLine(); ImGui::TextDisabled("%s%s", stats.Status.c_str(), _status.empty() ? "" : (" | " + _status).c_str());
+        ImGui::SetNextItemWidth(220.0f); ImGui::SliderFloat(i18n::tr("re.visibleValueRefresh"), &_refreshHz, 0.2f, 30.0f, "%.1f Hz", ImGuiSliderFlags_Logarithmic); ImGui::SameLine(); ImGui::TextDisabled("%s",i18n::tr("re.visibleValueRefreshHint"));
 
         const auto rows = _scanner.results(256);
         const auto scanType = _scanner.valueType();
@@ -300,12 +300,12 @@ namespace quartz::client::ui
             const std::size_t width = resultValueWidth(scanType, row.Value);
             if (width == 0) { _status = "cannot determine watched value width"; return; }
             for (const auto& watch : _watchList) if (watch.Pid == _scanner.pid() && watch.Address == row.Address && watch.Type == scanType) { _status = "value is already in the watch list"; return; }
-            WatchedValue watch; watch.Id = _nextWatchId++; watch.Pid = _scanner.pid(); watch.Address = row.Address; watch.Type = scanType; watch.Width = width; watch.Value = live && !live->Value.empty() ? live->Value : row.Value; watch.PreviousValue = row.Value; watch.Numeric = live ? live->Numeric : parseDisplayedNumeric(scanType, row.Value); watch.FrozenValue = watch.Value; std::snprintf(watch.AddressText.data(), watch.AddressText.size(), "0x%llX", static_cast<unsigned long long>(watch.Address)); std::snprintf(watch.ValueText.data(), watch.ValueText.size(), "%s", watch.Value.c_str()); _watchList.emplace_back(std::move(watch)); _status = "added value to watch list";
+            WatchedValue watch; watch.Id = _nextWatchId++; watch.Pid = _scanner.pid(); watch.Address = row.Address; watch.Type = scanType; watch.Width = width; watch.Value = live && !live->Value.empty() ? live->Value : row.Value; watch.PreviousValue = row.Value; watch.Numeric = live ? live->Numeric : parseDisplayedNumeric(scanType, row.Value); watch.FrozenValue = watch.Value; std::snprintf(watch.AddressText.data(), watch.AddressText.size(), "0x%llX", static_cast<unsigned long long>(watch.Address)); std::snprintf(watch.ValueText.data(), watch.ValueText.size(), "%s", watch.Value.c_str()); _watchList.emplace_back(std::move(watch)); _status = i18n::tr("re.watchAdded");
         };
 
         if (!rows.empty() && ImGui::BeginTable("MemoryScanResults", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable, ImVec2(0.0f, 300.0f)))
         {
-            ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 150.0f); ImGui::TableSetupColumn("Value"); ImGui::TableSetupColumn("Previous value"); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 125.0f); ImGui::TableHeadersRow();
+            ImGui::TableSetupColumn(i18n::tr("re.address"), ImGuiTableColumnFlags_WidthFixed, 190.0f); ImGui::TableSetupColumn(i18n::tr("re.value")); ImGui::TableSetupColumn(i18n::tr("re.previousValue")); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 125.0f); ImGui::TableHeadersRow();
             ImGuiListClipper clipper; clipper.Begin(static_cast<int>(rows.size()));
             while (clipper.Step()) for (int rowIndex = clipper.DisplayStart; rowIndex < clipper.DisplayEnd; ++rowIndex)
             {
@@ -327,38 +327,38 @@ namespace quartz::client::ui
                 if (ImGui::BeginPopupContextItem("ScanResultContext"))
                 {
                     if (ImGui::IsWindowAppearing() || _scanWriteAddress != row.Address) { _scanWriteAddress = row.Address; std::snprintf(_scanWriteValue.data(), _scanWriteValue.size(), "%s", currentValue.c_str()); }
-                    if (ImGui::MenuItem("Inspect memory")) openInspector(manager, _scanner.pid(), row.Address);
-                    if (ImGui::MenuItem("Disassemble")) openInspector(manager, _scanner.pid(), row.Address);
-                    if (ImGui::MenuItem("Create signature here")) { requestSignatureMaker(_scanner.pid(), row.Address); manager.open("native"); }
-                    if (ImGui::MenuItem("Watch accesses...")) openAccessWatch(manager, _scanner.pid(), row.Address, resultValueWidth(scanType, row.Value));
-                    if (ImGui::MenuItem("Add to watch list")) addWatch(row, &live);
+                    if (ImGui::MenuItem(i18n::tr("re.inspectMemory"))) openInspector(manager, _scanner.pid(), row.Address);
+                    if (ImGui::MenuItem(i18n::tr("re.disassemble"))) openInspector(manager, _scanner.pid(), row.Address);
+                    if (ImGui::MenuItem(i18n::tr("re.createSignatureHere"))) { requestSignatureMaker(_scanner.pid(), row.Address); manager.open("native"); }
+                    if (ImGui::MenuItem(i18n::tr("re.watchAccesses"))) openAccessWatch(manager, _scanner.pid(), row.Address, resultValueWidth(scanType, row.Value));
+                    if (ImGui::MenuItem(i18n::tr("re.addWatchList"))) addWatch(row, &live);
                     std::uintptr_t pointedAddress = 0; const bool hasPointedAddress = parseAddress(currentValue.c_str(), pointedAddress) && pointedAddress != 0;
-                    ImGui::BeginDisabled(!hasPointedAddress); if (ImGui::MenuItem("Inspect current value as address")) openInspector(manager, _scanner.pid(), pointedAddress); ImGui::EndDisabled();
+                    ImGui::BeginDisabled(!hasPointedAddress); if (ImGui::MenuItem(i18n::tr("re.inspectCurrentAddress"))) openInspector(manager, _scanner.pid(), pointedAddress); ImGui::EndDisabled();
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Copy address")) { const std::string text = runtimeHexAddress(row.Address); ImGui::SetClipboardText(text.c_str()); }
-                    if (ImGui::MenuItem("Copy current value")) ImGui::SetClipboardText(currentValue.c_str());
-                    if (ImGui::MenuItem("Copy previous value")) ImGui::SetClipboardText(row.Value.c_str());
-                    if (ImGui::MenuItem("Copy address + value")) { const std::string text = runtimeHexAddress(row.Address) + " = " + currentValue; ImGui::SetClipboardText(text.c_str()); }
-                    ImGui::SeparatorText("Change value");
+                    if (ImGui::MenuItem(i18n::tr("re.copyAddress"))) { const std::string text = runtimeFormatProcessAddress(_scanner.pid(),row.Address); ImGui::SetClipboardText(text.c_str()); }
+                    if (ImGui::MenuItem(i18n::tr("re.copyCurrentValue"))) ImGui::SetClipboardText(currentValue.c_str());
+                    if (ImGui::MenuItem(i18n::tr("re.copyPreviousValue"))) ImGui::SetClipboardText(row.Value.c_str());
+                    if (ImGui::MenuItem(i18n::tr("re.copyAddressValue"))) { const std::string text = runtimeFormatProcessAddress(_scanner.pid(),row.Address) + " = " + currentValue; ImGui::SetClipboardText(text.c_str()); }
+                    ImGui::SeparatorText(i18n::tr("re.changeValue"));
                     ImGui::SetNextItemWidth(220.0f); ImGui::InputText("##ScanWriteValue", _scanWriteValue.data(), _scanWriteValue.size());
-                    if (ImGui::Button("Write value")) { if (writeValueSample(_scanner.pid(), row.Address, scanType, resultValueWidth(scanType, row.Value), _scanWriteValue.data(), _status)) { live.LastRefresh = 0.0; _status = "value written"; } }
+                    if (ImGui::Button(i18n::tr("re.writeValue"))) { if (writeValueSample(_scanner.pid(), row.Address, scanType, resultValueWidth(scanType, row.Value), _scanWriteValue.data(), _status)) { live.LastRefresh = 0.0; _status = i18n::tr("re.valueWritten"); } }
                     ImGui::EndPopup();
                 }
-                ImGui::SameLine(); ImGui::Text("0x%llX", static_cast<unsigned long long>(row.Address)); ImGui::TableNextColumn(); ImGui::TextColored(valueColor, "%s", currentValue.c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(row.Value.c_str()); ImGui::TableNextColumn();
-                if (ImGui::SmallButton("Inspect")) openInspector(manager, _scanner.pid(), row.Address);
+                ImGui::SameLine(); ImGui::TextUnformatted(runtimeFormatProcessAddress(_scanner.pid(),row.Address).c_str()); ImGui::TableNextColumn(); ImGui::TextColored(valueColor, "%s", currentValue.c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(row.Value.c_str()); ImGui::TableNextColumn();
+                if (ImGui::SmallButton(i18n::tr("re.inspect"))) openInspector(manager, _scanner.pid(), row.Address);
                 ImGui::PopID();
             }
             ImGui::EndTable();
-            if (stats.Candidates > rows.size()) ImGui::TextDisabled("Showing first %zu of %llu candidates.", rows.size(), static_cast<unsigned long long>(stats.Candidates));
+            if (stats.Candidates > rows.size()) ImGui::TextDisabled(i18n::tr("re.showingCandidates"), rows.size(), static_cast<unsigned long long>(stats.Candidates));
         }
 
-        ImGui::SeparatorText("Watch list");
-        ImGui::SetNextItemWidth(180.0f); ImGui::SliderFloat("Freeze rate", &_freezeHz, 1.0f, 120.0f, "%.0f Hz", ImGuiSliderFlags_Logarithmic); ImGui::SameLine(); if (ImGui::Button("Clear watch list")) _watchList.clear();
-        ImGui::TextDisabled("Right-click anywhere on a watched row to change its address, type or value, inspect/disassemble it, send it to the signature maker, or open the hardware access watcher.");
+        ImGui::SeparatorText(i18n::tr("re.watchList"));
+        ImGui::SetNextItemWidth(180.0f); ImGui::SliderFloat(i18n::tr("re.freezeRate"), &_freezeHz, 1.0f, 120.0f, "%.0f Hz", ImGuiSliderFlags_Logarithmic); ImGui::SameLine(); if (ImGui::Button(i18n::tr("re.clearWatchList"))) _watchList.clear();
+        ImGui::TextDisabled("%s",i18n::tr("re.watchListHint"));
         std::optional<std::size_t> eraseWatch;
         if (ImGui::BeginTable("MemoryWatchList", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable, ImVec2(0.0f, 0.0f)))
         {
-            ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 150.0f); ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 100.0f); ImGui::TableSetupColumn("Value"); ImGui::TableSetupColumn("Previous"); ImGui::TableSetupColumn("Freeze", ImGuiTableColumnFlags_WidthFixed, 60.0f); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 65.0f); ImGui::TableHeadersRow();
+            ImGui::TableSetupColumn(i18n::tr("re.address"), ImGuiTableColumnFlags_WidthFixed, 190.0f); ImGui::TableSetupColumn(i18n::tr("re.type"), ImGuiTableColumnFlags_WidthFixed, 100.0f); ImGui::TableSetupColumn(i18n::tr("re.value")); ImGui::TableSetupColumn(i18n::tr("re.previous")); ImGui::TableSetupColumn(i18n::tr("re.freeze"), ImGuiTableColumnFlags_WidthFixed, 60.0f); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 65.0f); ImGui::TableHeadersRow();
             for (std::size_t i = 0; i < _watchList.size(); ++i)
             {
                 auto& watch = _watchList[i]; ImGui::PushID(static_cast<int>(watch.Id & 0x7fffffffULL));
@@ -376,9 +376,9 @@ namespace quartz::client::ui
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) openInspector(manager, watch.Pid, watch.Address);
                 if (ImGui::BeginPopupContextItem("WatchValueContext"))
                 {
-                    ImGui::SeparatorText("Change address"); drawAddressInput("##WatchAddress", watch.AddressText.data(), watch.AddressText.size(), watch.Pid, 260.0f);
-                    if (ImGui::Button("Apply address")) { std::uintptr_t address = 0; std::string error; if (!evaluateAddressExpression(watch.Pid, watch.AddressText.data(), address, error) || address == 0) _status = error.empty() ? "invalid watch address" : error; else { watch.Address = address; watch.LastRefresh = 0.0; watch.LastFreeze = 0.0; _status = "watch address changed"; } }
-                    ImGui::SeparatorText("Change type"); ImGui::SetNextItemWidth(180.0f);
+                    ImGui::SeparatorText(i18n::tr("re.changeAddress")); drawAddressInput("##WatchAddress", watch.AddressText.data(), watch.AddressText.size(), watch.Pid, 260.0f);
+                    if (ImGui::Button(i18n::tr("re.applyAddress"))) { std::uintptr_t address = 0; std::string error; if (!evaluateAddressExpression(watch.Pid, watch.AddressText.data(), address, error) || address == 0) _status = error.empty() ? "invalid watch address" : error; else { watch.Address = address; watch.LastRefresh = 0.0; watch.LastFreeze = 0.0; _status = i18n::tr("re.watchAddressChanged"); } }
+                    ImGui::SeparatorText(i18n::tr("re.changeType")); ImGui::SetNextItemWidth(180.0f);
                     if (ImGui::BeginCombo("##WatchType", memoryScanValueTypeName(watch.Type)))
                     {
                         for (int typeIndex = 0; typeIndex <= static_cast<int>(MemoryScanValueType::ByteArray); ++typeIndex)
@@ -389,34 +389,34 @@ namespace quartz::client::ui
                         }
                         ImGui::EndCombo();
                     }
-                    if (fixedValueWidth(watch.Type) == 0) { int width = static_cast<int>(watch.Width); ImGui::SetNextItemWidth(120.0f); if (ImGui::InputInt("Width", &width)) { watch.Width = static_cast<std::size_t>(std::max(width, 1)); watch.LastRefresh = 0.0; watch.Frozen = false; } }
-                    ImGui::SeparatorText("Change value"); ImGui::SetNextItemWidth(220.0f); ImGui::InputText("##WatchValue", watch.ValueText.data(), watch.ValueText.size());
-                    if (ImGui::Button("Write")) { if (writeValueSample(watch.Pid, watch.Address, watch.Type, watch.Width, watch.ValueText.data(), _status)) { watch.LastRefresh = 0.0; if (watch.Frozen) watch.FrozenValue = watch.ValueText.data(); _status = "watch value written"; } }
-                    ImGui::SameLine(); bool frozen = watch.Frozen; if (ImGui::Checkbox("Freeze", &frozen)) { watch.Frozen = frozen; watch.LastFreeze = 0.0; if (watch.Frozen) { watch.FrozenValue = watch.ValueText.data(); if (watch.FrozenValue.empty() || watch.FrozenValue == "<unreadable>") watch.FrozenValue = watch.Value; } }
+                    if (fixedValueWidth(watch.Type) == 0) { int width = static_cast<int>(watch.Width); ImGui::SetNextItemWidth(120.0f); if (ImGui::InputInt(i18n::tr("re.width"), &width)) { watch.Width = static_cast<std::size_t>(std::max(width, 1)); watch.LastRefresh = 0.0; watch.Frozen = false; } }
+                    ImGui::SeparatorText(i18n::tr("re.changeValue")); ImGui::SetNextItemWidth(220.0f); ImGui::InputText("##WatchValue", watch.ValueText.data(), watch.ValueText.size());
+                    if (ImGui::Button(i18n::tr("re.write"))) { if (writeValueSample(watch.Pid, watch.Address, watch.Type, watch.Width, watch.ValueText.data(), _status)) { watch.LastRefresh = 0.0; if (watch.Frozen) watch.FrozenValue = watch.ValueText.data(); _status = i18n::tr("re.watchValueWritten"); } }
+                    ImGui::SameLine(); bool frozen = watch.Frozen; if (ImGui::Checkbox(i18n::tr("re.freeze"), &frozen)) { watch.Frozen = frozen; watch.LastFreeze = 0.0; if (watch.Frozen) { watch.FrozenValue = watch.ValueText.data(); if (watch.FrozenValue.empty() || watch.FrozenValue == "<unreadable>") watch.FrozenValue = watch.Value; } }
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Inspect memory")) openInspector(manager, watch.Pid, watch.Address);
-                    if (ImGui::MenuItem("Disassemble")) openInspector(manager, watch.Pid, watch.Address);
-                    if (ImGui::MenuItem("Create signature here")) { requestSignatureMaker(watch.Pid, watch.Address); manager.open("native"); }
-                    if (ImGui::MenuItem("Watch accesses...")) openAccessWatch(manager, watch.Pid, watch.Address, watch.Width);
-                    std::uintptr_t pointedAddress = 0; const bool hasPointedAddress = parseAddress(watch.Value.c_str(), pointedAddress) && pointedAddress != 0; ImGui::BeginDisabled(!hasPointedAddress); if (ImGui::MenuItem("Inspect value as address")) openInspector(manager, watch.Pid, pointedAddress); ImGui::EndDisabled();
-                    if (ImGui::MenuItem("Copy address")) { const std::string text = runtimeHexAddress(watch.Address); ImGui::SetClipboardText(text.c_str()); }
-                    if (ImGui::MenuItem("Copy value")) ImGui::SetClipboardText(watch.Value.c_str());
-                    if (ImGui::MenuItem("Copy address + value")) { const std::string text = runtimeHexAddress(watch.Address) + " = " + watch.Value; ImGui::SetClipboardText(text.c_str()); }
-                    ImGui::Separator(); if (ImGui::MenuItem("Remove from watch list")) eraseWatch = i;
+                    if (ImGui::MenuItem(i18n::tr("re.inspectMemory"))) openInspector(manager, watch.Pid, watch.Address);
+                    if (ImGui::MenuItem(i18n::tr("re.disassemble"))) openInspector(manager, watch.Pid, watch.Address);
+                    if (ImGui::MenuItem(i18n::tr("re.createSignatureHere"))) { requestSignatureMaker(watch.Pid, watch.Address); manager.open("native"); }
+                    if (ImGui::MenuItem(i18n::tr("re.watchAccesses"))) openAccessWatch(manager, watch.Pid, watch.Address, watch.Width);
+                    std::uintptr_t pointedAddress = 0; const bool hasPointedAddress = parseAddress(watch.Value.c_str(), pointedAddress) && pointedAddress != 0; ImGui::BeginDisabled(!hasPointedAddress); if (ImGui::MenuItem(i18n::tr("re.inspectValueAsAddress"))) openInspector(manager, watch.Pid, pointedAddress); ImGui::EndDisabled();
+                    if (ImGui::MenuItem(i18n::tr("re.copyAddress"))) { const std::string text = runtimeFormatProcessAddress(watch.Pid,watch.Address); ImGui::SetClipboardText(text.c_str()); }
+                    if (ImGui::MenuItem(i18n::tr("re.copyValue"))) ImGui::SetClipboardText(watch.Value.c_str());
+                    if (ImGui::MenuItem(i18n::tr("re.copyAddressValue"))) { const std::string text = runtimeFormatProcessAddress(watch.Pid,watch.Address) + " = " + watch.Value; ImGui::SetClipboardText(text.c_str()); }
+                    ImGui::Separator(); if (ImGui::MenuItem(i18n::tr("re.removeWatchList"))) eraseWatch = i;
                     ImGui::EndPopup();
                 }
-                ImGui::SameLine(); ImGui::Text("0x%llX", static_cast<unsigned long long>(watch.Address)); ImGui::TableNextColumn(); ImGui::TextUnformatted(memoryScanValueTypeName(watch.Type)); ImGui::TableNextColumn(); ImGui::TextUnformatted(watch.Value.c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(watch.PreviousValue.c_str()); ImGui::TableNextColumn(); bool frozen = watch.Frozen; if (ImGui::Checkbox("##Frozen", &frozen)) { watch.Frozen = frozen; watch.LastFreeze = 0.0; if (watch.Frozen) { watch.FrozenValue = watch.Value; std::snprintf(watch.ValueText.data(), watch.ValueText.size(), "%s", watch.Value.c_str()); } } ImGui::TableNextColumn(); if (ImGui::SmallButton("Remove")) eraseWatch = i; ImGui::PopID();
+                ImGui::SameLine(); ImGui::TextUnformatted(runtimeFormatProcessAddress(watch.Pid,watch.Address).c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(memoryScanValueTypeName(watch.Type)); ImGui::TableNextColumn(); ImGui::TextUnformatted(watch.Value.c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(watch.PreviousValue.c_str()); ImGui::TableNextColumn(); bool frozen = watch.Frozen; if (ImGui::Checkbox("##Frozen", &frozen)) { watch.Frozen = frozen; watch.LastFreeze = 0.0; if (watch.Frozen) { watch.FrozenValue = watch.Value; std::snprintf(watch.ValueText.data(), watch.ValueText.size(), "%s", watch.Value.c_str()); } } ImGui::TableNextColumn(); if (ImGui::SmallButton(i18n::tr("re.remove"))) eraseWatch = i; ImGui::PopID();
             }
             ImGui::EndTable();
         }
         if (eraseWatch && *eraseWatch < _watchList.size()) _watchList.erase(_watchList.begin() + static_cast<std::ptrdiff_t>(*eraseWatch));
-        if (_watchList.empty()) ImGui::TextDisabled("Right-click a scan result and choose Add to watch list.");
+        if (_watchList.empty()) ImGui::TextDisabled("%s",i18n::tr("re.emptyWatchList"));
 
-        ImGui::SeparatorText("Derive byte pattern from address range");
-        ImGui::TextDisabled("Reads [start, end) and optionally wildcards relative immediates plus RIP-relative displacements decoded by Zydis.");
-        drawAddressInput("Start", _rangeStart.data(), _rangeStart.size(), _pid, 220.0f); ImGui::SameLine(); drawAddressInput("End", _rangeEnd.data(), _rangeEnd.size(), _pid, 220.0f);
-        ImGui::Checkbox("Wildcard relocation-sensitive operands", &_wildcardRelocations);
-        if (ImGui::Button("Derive pattern"))
+        ImGui::SeparatorText(i18n::tr("re.derivePattern"));
+        ImGui::TextDisabled("%s",i18n::tr("re.derivePatternDescription"));
+        drawAddressInput(i18n::tr("re.start"), _rangeStart.data(), _rangeStart.size(), _pid, 220.0f); ImGui::SameLine(); drawAddressInput(i18n::tr("re.end"), _rangeEnd.data(), _rangeEnd.size(), _pid, 220.0f);
+        ImGui::Checkbox(i18n::tr("re.wildcardRelocations"), &_wildcardRelocations);
+        if (ImGui::Button(i18n::tr("re.derivePatternAction")))
         {
             std::uintptr_t start = 0, end = 0; std::string error;
             if (!evaluateAddressExpression(_pid, _rangeStart.data(), start, error) || !evaluateAddressExpression(_pid, _rangeEnd.data(), end, error) || start == 0 || end <= start) _status = error.empty() ? "invalid range" : error;
@@ -424,11 +424,11 @@ namespace quartz::client::ui
         }
         if (!_derivedPattern.empty())
         {
-            ImGui::InputTextMultiline("Derived pattern", _derivedPattern.data(), _derivedPattern.size() + 1, ImVec2(-1.0f, 90.0f), ImGuiInputTextFlags_ReadOnly);
-            if (ImGui::Button("Copy pattern")) ImGui::SetClipboardText(_derivedPattern.c_str()); ImGui::SameLine();
-            if (ImGui::Button("Create native-address binding"))
+            ImGui::InputTextMultiline(i18n::tr("re.derivedPattern"), _derivedPattern.data(), _derivedPattern.size() + 1, ImVec2(-1.0f, 90.0f), ImGuiInputTextFlags_ReadOnly);
+            if (ImGui::Button(i18n::tr("re.copyPattern"))) ImGui::SetClipboardText(_derivedPattern.c_str()); ImGui::SameLine();
+            if (ImGui::Button(i18n::tr("re.createNativeBinding")))
             {
-                auto& binding = context.runtimeBindings.add(); std::snprintf(binding.Name, sizeof(binding.Name), "%s", "Derived signature"); binding.Source = RuntimeSourceKind::NativeAddress; binding.ProcessId = _pid; if (selected) std::snprintf(binding.ProcessName, sizeof(binding.ProcessName), "%s", selected->Name.c_str()); binding.AddressMode = ProcessAddressMode::Signature; binding.SignaturePatternKind = RuntimeSignaturePatternKind::HexadecimalPattern; binding.SignatureExecutableOnly = true; binding.WriteMaterial = false; binding.Clamp = false; binding.SmoothingHz = 0.0f; std::snprintf(binding.Signature, sizeof(binding.Signature), "%s", _derivedPattern.c_str()); _status = "created NativeAddress binding";
+                auto& binding = context.runtimeBindings.add(); std::snprintf(binding.Name, sizeof(binding.Name), "%s", "Derived signature"); binding.Source = RuntimeSourceKind::NativeAddress; binding.ProcessId = _pid; if (selected) std::snprintf(binding.ProcessName, sizeof(binding.ProcessName), "%s", selected->Name.c_str()); binding.AddressMode = ProcessAddressMode::Signature; binding.SignaturePatternKind = RuntimeSignaturePatternKind::HexadecimalPattern; binding.SignatureExecutableOnly = true; binding.WriteMaterial = false; binding.Clamp = false; binding.SmoothingHz = 0.0f; std::snprintf(binding.Signature, sizeof(binding.Signature), "%s", _derivedPattern.c_str()); _status = i18n::tr("re.nativeBindingCreated");
             }
         }
     }
