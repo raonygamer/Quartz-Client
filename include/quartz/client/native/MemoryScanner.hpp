@@ -1,5 +1,6 @@
 #pragma once
 #include "quartz/client/native/NativeTypes.hpp"
+#include "quartz/client/native/NativeDisassembly.hpp"
 #include <memory>
 
 namespace quartz::client
