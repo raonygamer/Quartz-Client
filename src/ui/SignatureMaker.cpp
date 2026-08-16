@@ -3,6 +3,7 @@
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/ui/I18n.hpp"
+#include "quartz/client/ui/ProcessPicker.hpp"
 #include "quartz/client/ui/ReverseEngineeringNavigation.hpp"
 #include "quartz/client/native/NativeDisassembly.hpp"
 #include "quartz/client/Model.hpp"
@@ -50,7 +51,9 @@ namespace quartz::client::ui
 
         struct SignatureMakerState
         {
+            std::vector<RuntimeProcessInfo> Processes;
             pid_t Pid = 0;
+            std::array<char, 256> ProcessSearch{};
             std::uintptr_t Address = 0;
             std::array<char, 256> AddressText{};
             int MinimumInstructions = 1;
@@ -254,7 +257,7 @@ namespace quartz::client::ui
 
     void requestSignatureMaker(const pid_t pid, const std::uintptr_t address, const int minimumInstructions) noexcept
     {
-        auto& ui = state(); ui.Pid = pid; ui.Address = address; ui.FocusRequested = true; ui.MinimumInstructions = std::clamp(minimumInstructions, 1, 64); ui.MaxInstructions = std::max(ui.MaxInstructions, ui.MinimumInstructions);
+        auto& ui = state(); ui.Pid = pid; ui.Address = address; ui.FocusRequested = true; ui.MinimumInstructions = std::clamp(minimumInstructions, 1, 64); ui.MaxInstructions = std::max(ui.MaxInstructions, ui.MinimumInstructions); setSharedReverseEngineeringProcess(pid);
         std::snprintf(ui.AddressText.data(), ui.AddressText.size(), "0x%llX", static_cast<unsigned long long>(address));
     }
 
@@ -268,7 +271,7 @@ namespace quartz::client::ui
         (void)context;
         auto& ui = state();
         ImGui::TextWrapped("%s", i18n::tr("re.signatureDescription"));
-        int pid = static_cast<int>(ui.Pid); ImGui::SetNextItemWidth(110.0f); if (ImGui::InputInt("PID##SignatureMaker", &pid)) ui.Pid = static_cast<pid_t>(std::max(pid, 0)); ImGui::SameLine();
+        drawProcessPicker("SignatureMakerProcess", ui.Processes, ui.Pid, ui.ProcessSearch.data(), ui.ProcessSearch.size(), 420.0f);
         drawAddressInput(i18n::tr("re.signatureAddress"), ui.AddressText.data(), ui.AddressText.size(), ui.Pid, 300.0f); ImGui::SameLine();
         ImGui::SetNextItemWidth(145.0f); ImGui::SliderInt(i18n::tr("re.signatureMinimumInstructions"), &ui.MinimumInstructions, 1, 64); ImGui::SameLine();
         ui.MaxInstructions = std::max(ui.MaxInstructions, ui.MinimumInstructions); ImGui::SetNextItemWidth(145.0f); ImGui::SliderInt(i18n::tr("re.signatureMaximumInstructions"), &ui.MaxInstructions, ui.MinimumInstructions, 64);
@@ -310,7 +313,7 @@ namespace quartz::client::ui
             ImGui::SeparatorText(i18n::tr("re.signatureMatches"));
             for (std::size_t i = 0; i < matches.size(); ++i)
             {
-                ImGui::PushID(static_cast<int>(i)); const std::string addressText = runtimeHexAddress(matches[i]);
+                ImGui::PushID(static_cast<int>(i)); const std::string addressText = runtimeFormatProcessAddress(ui.Pid, matches[i]);
                 ImGui::TextUnformatted(addressText.c_str()); ImGui::SameLine();
                 if (ImGui::SmallButton(i18n::tr("re.inspect"))) { requestMemoryInspector(ui.Pid, matches[i]); manager.open("native"); }
                 ImGui::PopID();
