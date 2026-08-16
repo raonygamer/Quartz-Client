@@ -21,7 +21,8 @@ namespace quartz::client::ui
         MemoryWatch _watch;
         std::vector<RuntimeProcessInfo> _processes;
         pid_t _pid = 0;
-        std::array<char, 32> _address{};
+        std::array<char, 256> _processSearch{};
+        std::array<char, 256> _address{};
         int _size = 2;
         int _access = static_cast<int>(MemoryWatchAccess::Write);
         int _maxHits = 64;
