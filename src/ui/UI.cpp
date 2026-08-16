@@ -1,6 +1,8 @@
 #include "quartz/client/Model.hpp"
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/ui/PageContext.hpp"
+#include "quartz/client/ui/I18n.hpp"
+#include "quartz/client/ui/Theme.hpp"
 
 namespace quartz::client
 {
@@ -292,18 +294,66 @@ namespace quartz::client
 
 
 
-    void drawPermanentHeader(RawUSB& usb)
+    void drawPermanentHeader(VisualizerSettings& settings, const std::array<Color32, MatrixSize>& framebuffer)
     {
-        ImGui::Text("Quartz K552X  |  USB %s  |  FW %s  |  %04X:%04X", usb.isConnected() ? "connected" : "disconnected", FirmwareVersion, VendorId, ProductId);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Terminate")) glfwSetWindowShouldClose(glfwGetCurrentContext(), GLFW_TRUE);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Exit Quartz completely. The normal window close button only hides the window.");
-        const char* credits = "Made by Raony Reis, not affiliated with Redragon";
-        const float creditWidth = ImGui::CalcTextSize(credits).x;
+        static bool showKeyboardPreview = false;
+        static const VisualizerSettings defaults{};
+        const char* keyboardLabel = ui::i18n::tr("header.keyboard");
+        const char* appearanceLabel = ui::i18n::tr("header.appearance");
+        const char* terminateLabel = ui::i18n::tr("header.terminate");
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float buttonsWidth = ImGui::CalcTextSize(keyboardLabel).x + ImGui::CalcTextSize(appearanceLabel).x + ImGui::CalcTextSize(terminateLabel).x + ImGui::GetStyle().FramePadding.x * 6.0f + spacing * 2.0f;
         const float right = ImGui::GetWindowContentRegionMax().x;
-        if (ImGui::GetCursorPosX() + creditWidth + 16.0f < right) ImGui::SameLine(right - creditWidth);
-        ImGui::TextDisabled("%s", credits);
+
+        ImGui::TextUnformatted("Quartz K552X");
+        const float bylineWidth = ImGui::CalcTextSize(ui::i18n::tr("header.byline")).x;
+        if (ImGui::GetCursorPosX() + bylineWidth + buttonsWidth + 48.0f < right)
+        {
+            ImGui::SameLine();
+            ImGui::TextDisabled("|  %s", ui::i18n::tr("header.byline"));
+        }
+        const float buttonStart = right - buttonsWidth;
+        if (ImGui::GetCursorPosX() < buttonStart) ImGui::SameLine(buttonStart);
+        if (ImGui::SmallButton(keyboardLabel)) showKeyboardPreview = !showKeyboardPreview;
+        ImGui::SameLine();
+        if (ImGui::SmallButton(appearanceLabel)) ImGui::OpenPopup("##QuartzAppearancePopup");
+        ImGui::SameLine();
+        if (ImGui::SmallButton(terminateLabel)) glfwSetWindowShouldClose(glfwGetCurrentContext(), GLFW_TRUE);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", ui::i18n::tr("header.terminateTooltip"));
+
+        if (ImGui::BeginPopup("##QuartzAppearancePopup"))
+        {
+            ImGui::SeparatorText(ui::i18n::tr("header.appearance"));
+            ui::drawThemeSelector(settings);
+            ui::i18n::drawLanguageSelector();
+            ImGui::Separator();
+            ImGui::SetNextItemWidth(220.0f);
+            ImGui::SliderFloat(ui::i18n::tr("appearance.globalBrightness"), &settings.GlobalBrightness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::SetNextItemWidth(220.0f);
+            ImGui::SliderFloat(ui::i18n::tr("appearance.previewInterpolation"), &settings.LiveOutputInterpolation, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", ui::i18n::tr("appearance.previewInterpolationTooltip"));
+            if (ImGui::Button(ui::i18n::tr("appearance.reset")))
+            {
+                settings.UiTheme = defaults.UiTheme;
+                settings.SuspiciousColorThemes = defaults.SuspiciousColorThemes;
+                settings.GlobalBrightness = defaults.GlobalBrightness;
+                settings.LiveOutputInterpolation = defaults.LiveOutputInterpolation;
+                ui::applyTheme(settings.UiTheme);
+                ui::saveThemePreferences(settings);
+            }
+            ImGui::TextDisabled("%s", settingsPath().string().c_str());
+            ImGui::EndPopup();
+        }
         ImGui::Separator();
+
+        if (showKeyboardPreview)
+        {
+            std::string title = std::string(ui::i18n::tr("keyboardPreview.title")) + "###QuartzKeyboardPreview";
+            ImGui::SetNextWindowSize(ImVec2(560.0f, 270.0f), ImGuiCond_FirstUseEver);
+            if (ImGui::Begin(title.c_str(), &showKeyboardPreview, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize))
+                drawFramebufferPreview(framebuffer, 1.0f, 520.0f, settings.LiveOutputInterpolation);
+            ImGui::End();
+        }
     }
 
     void drawUi(RawUSB& usb, AudioSpectrum& audio, MediaColorProvider& mediaColor, const EvdevKeyboard& keyboardInput, ShaderFramebuffer& shaderFramebuffer, ShaderTransitionState& shaderTransition, ShaderEditorState& shaderEditor, ui::PageManager& pageManager, std::array<char, ShaderSourceCapacity>& vertexShaderSource, std::array<char, ShaderSourceCapacity>& fragmentShaderSource, std::array<char, ShaderPathCapacity>& vertexLoadPath, std::array<char, ShaderPathCapacity>& fragmentLoadPath, VisualizerSettings& settings, const std::array<float, FFTSize>& analysisBands, const std::array<float, Columns>& mappedBands, const std::array<float, Columns>& smoothedBands, const std::array<Color32, MatrixSize>& framebuffer, SharedDeviceState& deviceState, RuntimeBindingEngine& runtimeBindings, JavaScriptRuntime& javascript, RuntimeTelemetry& runtimeTelemetry, const AutoGainState& autoGain, const AudioLevelSnapshot& audioLevel, const ReactiveKeyState& reactiveKeys, const RuntimeInputAnalytics& inputAnalytics, const RuntimeRGBAnalytics& rgbAnalytics, std::uint64_t sentFrames, std::uint64_t droppedFrames, const float appCpuUsage, const bool scrollLockActive, const bool capsLockActive)
@@ -313,7 +363,7 @@ namespace quartz::client
         ImGui::SetNextWindowSize(viewport->WorkSize);
         constexpr ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
         ImGui::Begin("Quartz K552X Visualizer", nullptr, windowFlags);
-        drawPermanentHeader(usb);
+        drawPermanentHeader(settings, framebuffer);
         ImGui::BeginChild("MainScrollableBody", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_HorizontalScrollbar);
 
         ui::PageContext context{usb, audio, mediaColor, keyboardInput, shaderFramebuffer, shaderTransition, shaderEditor, vertexShaderSource, fragmentShaderSource, vertexLoadPath, fragmentLoadPath, settings, analysisBands, mappedBands, smoothedBands, framebuffer, deviceState, runtimeBindings, javascript, runtimeTelemetry, autoGain, audioLevel, reactiveKeys, inputAnalytics, rgbAnalytics, sentFrames, droppedFrames, appCpuUsage, scrollLockActive, capsLockActive};
@@ -324,45 +374,6 @@ namespace quartz::client
             ImGui::End();
             return;
         }
-        static const VisualizerSettings defaults{};
-        const bool connected = usb.isConnected();
-        ImGui::Text("USB: %s", connected ? "connected" : "disconnected");
-        ImGui::SameLine();
-        if (!connected && ImGui::Button("Connect"))
-            usb.connect();
-        if (connected)
-        {
-            ImGui::SameLine();
-            if (ImGui::Button("Disconnect"))
-            {
-                settings.AutoReconnect = false;
-                usb.disconnect();
-            }
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("%04X:%04X", VendorId, ProductId);
-        ImGui::SameLine();
-        ImGui::Checkbox("Auto reconnect", &settings.AutoReconnect);
-        defaultButton("AutoReconnect", settings.AutoReconnect, defaults.AutoReconnect);
-        ImGui::SliderFloat("Global brightness", &settings.GlobalBrightness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-        defaultButton("GlobalBrightness", settings.GlobalBrightness, defaults.GlobalBrightness);
-        ImGui::SliderFloat("Live output interpolation", &settings.LiveOutputInterpolation, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Preview-only spatial color mixing. 0 = exact framebuffer, 1 = strongest neighboring-key blend. It never changes data sent over USB.");
-        defaultButton("LiveOutputInterpolation", settings.LiveOutputInterpolation, defaults.LiveOutputInterpolation);
-        ImGui::SameLine();
-        if (ImGui::Button("Reset all settings"))
-        {
-            const bool restartAudio = std::strcmp(settings.AudioSource, defaults.AudioSource) != 0;
-            settings = defaults;
-            if (restartAudio) audio.start(settings.AudioSource);
-        }
-        if (!connected && usb.lastError() != LIBUSB_SUCCESS)
-            ImGui::TextDisabled("libusb: %s", libusb_error_name(usb.lastError()));
-        ImGui::Text("Frames sent: %llu   busy/dropped: %llu", static_cast<unsigned long long>(sentFrames), static_cast<unsigned long long>(droppedFrames));
-        const std::string configPath = settingsPath().string();
-        ImGui::TextDisabled("Settings: %s", configPath.c_str());
-        ImGui::TextDisabled("%s", g_SettingsStatus.c_str());
-
         pageManager.render(context);
         ImGui::EndChild();
         ImGui::End();
