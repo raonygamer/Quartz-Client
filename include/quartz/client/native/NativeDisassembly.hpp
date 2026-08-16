@@ -17,6 +17,7 @@ namespace quartz::client
 
     RuntimeX86Mode runtimeProcessX86Mode(pid_t pid) noexcept;
     const char* runtimeX86ModeName(RuntimeX86Mode mode) noexcept;
+    std::vector<RuntimeProcessModule> runtimeProcessModules(pid_t pid);
     std::string runtimeFormatProcessAddress(std::span<const RuntimeProcessModule> modules, std::uintptr_t address);
     std::string runtimeFormatProcessAddress(pid_t pid, std::uintptr_t address);
     bool runtimeDecodeProcessInstruction(RuntimeX86Mode mode, std::span<const std::uint8_t> bytes, std::uintptr_t address, RuntimeDecodedInstruction& instruction);
