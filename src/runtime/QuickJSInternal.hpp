@@ -1,6 +1,8 @@
 #pragma once
 #include <quickjs.h>
 #include <chrono>
+#include <string>
+#include <string_view>
 
 namespace quartz::client
 {
@@ -40,6 +42,9 @@ namespace quartz::client
         return true;
     }
 
+    bool runtimeTranspileTypeScript(std::string_view source, std::string& output, std::string& error) noexcept;
+    std::string_view runtimeQuickJSSDKModuleSource() noexcept;
+    void runtimeInstallQuickJSSDKNativeApi(JSContext* ctx, JSValueConst api);
     void runtimeInstallQuickJSLowLevelApi(JSContext* ctx, JSValueConst api);
     void runtimeInstallQuickJSAsyncSignatureApi(JSContext* ctx, JSValueConst api);
     void runtimeRefreshQuickJSSignatureScans(RuntimeScript& script) noexcept;
