@@ -1,5 +1,6 @@
 #include "quartz/client/ui/AddressInput.hpp"
 #include "quartz/client/Functions.hpp"
+#include "quartz/client/native/NativeDisassembly.hpp"
 #include "quartz/client/native/NativeTypes.hpp"
 #include <algorithm>
 #include <charconv>
@@ -115,7 +116,7 @@ namespace quartz::client::ui
                 }
                 if (token.empty()) { error = "expected module name at offset " + std::to_string(_position); return false; }
                 if (_pid <= 0) { error = "select a process before using module names"; return false; }
-                if (_modules.empty()) _modules = enumerateRuntimeModules(_pid);
+                if (_modules.empty()) _modules = runtimeProcessModules(_pid);
                 const std::string wanted = runtimeLower(token);
                 for (const auto& module : _modules)
                 {
