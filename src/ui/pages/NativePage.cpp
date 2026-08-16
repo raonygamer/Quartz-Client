@@ -4,7 +4,6 @@
 #include "quartz/client/ui/I18n.hpp"
 #include "quartz/client/ui/MemoryInspector.hpp"
 #include "quartz/client/ui/ObjectExperiments.hpp"
-#include "quartz/client/ui/ReverseEngineeringTools.hpp"
 #include "quartz/client/ui/ReverseEngineeringNavigation.hpp"
 #include "quartz/client/ui/SignatureMaker.hpp"
 #include "quartz/client/native/OpcodePatternEditor.hpp"
@@ -28,8 +27,6 @@ namespace quartz::client::ui
                     ImGui::SameLine();
                     if (ImGui::Button(i18n::tr("re.signatureFromAddress"))) requestSignatureMaker(inspector.Pid, inspector.Address);
                 }
-                ImGui::SeparatorText(i18n::tr("re.manualWatch"));
-                drawManualMemoryWatch(context, manager);
                 drawEnhancedRuntimeMemoryInspector(inspector);
                 ImGui::EndTabItem();
             }
