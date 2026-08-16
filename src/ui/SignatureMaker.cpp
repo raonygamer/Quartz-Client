@@ -52,6 +52,7 @@ namespace quartz::client::ui
             pid_t Pid = 0;
             std::uintptr_t Address = 0;
             std::array<char, 32> AddressText{};
+            int MinimumInstructions = 1;
             int MaxInstructions = 32;
             bool FocusRequested = false;
             std::unique_ptr<SignatureMakerJob> Job;
@@ -172,7 +173,7 @@ namespace quartz::client::ui
             job.Finished.store(true, std::memory_order_release);
         }
 
-        void runSignatureMaker(SignatureMakerJob& job, const pid_t pid, const std::uintptr_t address, const int maxInstructions, const std::stop_token stop)
+        void runSignatureMaker(SignatureMakerJob& job, const pid_t pid, const std::uintptr_t address, const int minimumInstructions, const int maxInstructions, const std::stop_token stop)
         {
             RuntimeProcessRegion targetRegion;
             if (!findTargetRegion(pid, address, targetRegion)) { finishJob(job, false, "target address is not readable", {}, 0, 0, {}); return; }
@@ -222,7 +223,7 @@ namespace quartz::client::ui
                 finishJob(job, false, "signature maker requires Zydis", {}, 0, 0, {}); return;
 #endif
                 ++instructionCount;
-                if (signature.size() < 4) continue;
+                if (signature.size() < 4 || instructionCount < static_cast<std::size_t>(minimumInstructions)) continue;
                 job.Progress.store(0.40f + static_cast<float>(instructionCount) / static_cast<float>(std::max(maxInstructions, 1)) * 0.58f, std::memory_order_relaxed);
                 matches = countMatches(chunks, signature, mode, stop);
                 if (matches.Count == 1 && !matches.Addresses.empty() && matches.Addresses.front() == address)
@@ -245,14 +246,14 @@ namespace quartz::client::ui
             ui.Address = address;
             ui.Job = std::make_unique<SignatureMakerJob>();
             SignatureMakerJob* job = ui.Job.get();
-            const pid_t pid = ui.Pid; const int maxInstructions = ui.MaxInstructions;
-            job->Worker = std::jthread([job, pid, address, maxInstructions](const std::stop_token stop) { runSignatureMaker(*job, pid, address, maxInstructions, stop); });
+            const pid_t pid = ui.Pid; const int minimumInstructions = ui.MinimumInstructions; const int maxInstructions = std::max(ui.MaxInstructions, minimumInstructions);
+            job->Worker = std::jthread([job, pid, address, minimumInstructions, maxInstructions](const std::stop_token stop) { runSignatureMaker(*job, pid, address, minimumInstructions, maxInstructions, stop); });
         }
     }
 
-    void requestSignatureMaker(const pid_t pid, const std::uintptr_t address) noexcept
+    void requestSignatureMaker(const pid_t pid, const std::uintptr_t address, const int minimumInstructions) noexcept
     {
-        auto& ui = state(); ui.Pid = pid; ui.Address = address; ui.FocusRequested = true;
+        auto& ui = state(); ui.Pid = pid; ui.Address = address; ui.FocusRequested = true; ui.MinimumInstructions = std::clamp(minimumInstructions, 1, 64); ui.MaxInstructions = std::max(ui.MaxInstructions, ui.MinimumInstructions);
         std::snprintf(ui.AddressText.data(), ui.AddressText.size(), "0x%llX", static_cast<unsigned long long>(address));
     }
 
@@ -265,10 +266,11 @@ namespace quartz::client::ui
     {
         (void)context;
         auto& ui = state();
-        ImGui::TextWrapped("Build a signature from decoded instructions. RIP/EIP-relative displacements, relative branches/calls and encoded addresses are wildcarded automatically; libhat scans every readable executable mapping after each instruction until the target becomes unique.");
+        ImGui::TextWrapped("%s", i18n::tr("re.signatureDescription"));
         int pid = static_cast<int>(ui.Pid); ImGui::SetNextItemWidth(110.0f); if (ImGui::InputInt("PID##SignatureMaker", &pid)) ui.Pid = static_cast<pid_t>(std::max(pid, 0)); ImGui::SameLine();
         ImGui::SetNextItemWidth(220.0f); ImGui::InputText(i18n::tr("re.signatureAddress"), ui.AddressText.data(), ui.AddressText.size()); ImGui::SameLine();
-        ImGui::SetNextItemWidth(150.0f); ImGui::SliderInt("Max instructions", &ui.MaxInstructions, 4, 64);
+        ImGui::SetNextItemWidth(145.0f); ImGui::SliderInt(i18n::tr("re.signatureMinimumInstructions"), &ui.MinimumInstructions, 1, 64); ImGui::SameLine();
+        ui.MaxInstructions = std::max(ui.MaxInstructions, ui.MinimumInstructions); ImGui::SetNextItemWidth(145.0f); ImGui::SliderInt(i18n::tr("re.signatureMaximumInstructions"), &ui.MaxInstructions, ui.MinimumInstructions, 64);
 
         const bool running = ui.Job && !ui.Job->Finished.load(std::memory_order_acquire);
         ImGui::BeginDisabled(running || ui.Pid <= 0 || ui.AddressText[0] == '\0');
@@ -302,12 +304,12 @@ namespace quartz::client::ui
         }
         if (!matches.empty())
         {
-            ImGui::SeparatorText("Matches");
+            ImGui::SeparatorText(i18n::tr("re.signatureMatches"));
             for (std::size_t i = 0; i < matches.size(); ++i)
             {
                 ImGui::PushID(static_cast<int>(i)); const std::string addressText = runtimeHexAddress(matches[i]);
                 ImGui::TextUnformatted(addressText.c_str()); ImGui::SameLine();
-                if (ImGui::SmallButton("Inspect")) { requestMemoryInspector(ui.Pid, matches[i]); manager.open("native"); }
+                if (ImGui::SmallButton(i18n::tr("re.inspect"))) { requestMemoryInspector(ui.Pid, matches[i]); manager.open("native"); }
                 ImGui::PopID();
             }
         }

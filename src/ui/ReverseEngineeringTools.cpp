@@ -2,6 +2,8 @@
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/ui/MemoryInspector.hpp"
+#include "quartz/client/ui/ReverseEngineeringNavigation.hpp"
+#include "quartz/client/ui/SignatureMaker.hpp"
 #include "quartz/client/ui/pages/MemoryScannerPage.hpp"
 #include "quartz/client/ui/pages/MemoryWatchPage.hpp"
 #include "quartz/client/native/SignatureScanner.hpp"
@@ -66,7 +68,7 @@ namespace quartz::client::ui
 
         void openInspector(PageManager& manager, const pid_t pid, const std::uintptr_t address)
         {
-            auto& inspector = runtimeMemoryInspectorState(); inspector.Pid = pid; inspector.Address = address; runtimeRefreshMemoryInspector(inspector); manager.open("native");
+            requestMemoryInspector(pid, address); manager.open("native");
         }
 
         void openAccessWatch(PageManager& manager, const pid_t pid, const std::uintptr_t address, const std::size_t width)
@@ -368,7 +370,6 @@ namespace quartz::client::ui
                     if (ImGui::MenuItem("Disassemble at field")) openInspector(manager, state.Pid, sample.Address);
                     if (ImGui::MenuItem("Add field to watch list")) addWatch(manager, state.Pid, sample.Address, watchType, width);
                     if (ImGui::MenuItem("Watch field accesses")) openAccessWatch(manager, state.Pid, sample.Address, width);
-                    const bool bindable = processValueType(watchType).has_value(); ImGui::BeginDisabled(!bindable); if (ImGui::MenuItem("Create direct field binding") && bindable) { const RuntimeProcessInfo* process = findProcess(state.Processes, state.Pid); const std::string name = std::string(descriptor->Name) + "." + field.Name; createDirectBinding(engine, process, state.Pid, sample.Address, watchType, name.c_str()); state.Status = "created direct field binding"; } ImGui::EndDisabled();
                     std::uintptr_t pointed = 0; const bool pointerValue = parseAddress(sample.Value, pointed) && pointed != 0; ImGui::BeginDisabled(!pointerValue); if (ImGui::MenuItem("Inspect value as address")) openInspector(manager, state.Pid, pointed); ImGui::EndDisabled();
                     if (ImGui::MenuItem("Copy address")) { const std::string text = runtimeHexAddress(sample.Address); ImGui::SetClipboardText(text.c_str()); }
                     if (ImGui::MenuItem("Copy value")) ImGui::SetClipboardText(sample.Value.c_str());

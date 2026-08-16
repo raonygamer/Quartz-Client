@@ -2,6 +2,8 @@
 #include "quartz/client/ui/pages/MemoryWatchPage.hpp"
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
+#include "quartz/client/ui/ReverseEngineeringNavigation.hpp"
+#include "quartz/client/ui/SignatureMaker.hpp"
 #include <cerrno>
 #include <cmath>
 #include <cstring>
@@ -208,46 +210,9 @@ namespace quartz::client::ui
             return runtimeWriteProcessMemory(pid, address, std::span<const std::uint8_t>(bytes.data(), bytes.size()), error);
         }
 
-        std::optional<ProcessValueType> bindingValueType(const MemoryScanValueType type) noexcept
-        {
-            switch (type)
-            {
-            case MemoryScanValueType::U8: return ProcessValueType::U8;
-            case MemoryScanValueType::I8: return ProcessValueType::I8;
-            case MemoryScanValueType::U16: return ProcessValueType::U16;
-            case MemoryScanValueType::I16: return ProcessValueType::I16;
-            case MemoryScanValueType::U32: return ProcessValueType::U32;
-            case MemoryScanValueType::I32: return ProcessValueType::I32;
-            case MemoryScanValueType::U64: case MemoryScanValueType::Pointer: return ProcessValueType::U64;
-            case MemoryScanValueType::I64: return ProcessValueType::I64;
-            case MemoryScanValueType::Float: return ProcessValueType::Float;
-            case MemoryScanValueType::Double: return ProcessValueType::Double;
-            case MemoryScanValueType::Bool: return ProcessValueType::Bool;
-            default: return std::nullopt;
-            }
-        }
-
-        void createValueBinding(RuntimeBindingEngine& engine, const pid_t pid, const RuntimeProcessInfo* process, const std::uintptr_t address, const ProcessValueType type)
-        {
-            auto& binding = engine.add();
-            std::snprintf(binding.Name, sizeof(binding.Name), "Scan %llX", static_cast<unsigned long long>(address));
-            binding.Source = RuntimeSourceKind::NativeProcess;
-            binding.ProcessId = static_cast<int>(pid);
-            if (process) std::snprintf(binding.ProcessName, sizeof(binding.ProcessName), "%s", process->Name.c_str());
-            binding.AddressMode = ProcessAddressMode::AddressChain;
-            std::snprintf(binding.Address, sizeof(binding.Address), "0x%llX", static_cast<unsigned long long>(address));
-            binding.ValueType = type;
-            binding.WriteMaterial = false;
-            binding.Normalize = false;
-            binding.Clamp = false;
-            binding.SmoothingHz = 0.0f;
-            binding.UpdateHz = 30.0f;
-            binding.AutoReattach = false;
-        }
-
         void openInspector(PageManager& manager, const pid_t pid, const std::uintptr_t address)
         {
-            auto& inspector = runtimeMemoryInspectorState(); inspector.Pid = pid; inspector.Address = address; runtimeRefreshMemoryInspector(inspector); manager.open("native");
+            requestMemoryInspector(pid, address); manager.open("native");
         }
 
         void openAccessWatch(PageManager& manager, const pid_t pid, const std::uintptr_t address, const std::size_t width)
@@ -327,7 +292,6 @@ namespace quartz::client::ui
 
         const auto rows = _scanner.results(256);
         const auto scanType = _scanner.valueType();
-        const auto bindType = bindingValueType(scanType);
         const double now = runtimeSteadySeconds();
         const double refreshInterval = 1.0 / std::max(static_cast<double>(_refreshHz), 0.1);
         auto addWatch = [&](const MemoryScanResultRow& row, const LiveValue* live)
@@ -364,13 +328,11 @@ namespace quartz::client::ui
                     if (ImGui::IsWindowAppearing() || _scanWriteAddress != row.Address) { _scanWriteAddress = row.Address; std::snprintf(_scanWriteValue.data(), _scanWriteValue.size(), "%s", currentValue.c_str()); }
                     if (ImGui::MenuItem("Inspect memory")) openInspector(manager, _scanner.pid(), row.Address);
                     if (ImGui::MenuItem("Disassemble")) openInspector(manager, _scanner.pid(), row.Address);
+                    if (ImGui::MenuItem("Create signature here")) { requestSignatureMaker(_scanner.pid(), row.Address); manager.open("native"); }
                     if (ImGui::MenuItem("Watch accesses...")) openAccessWatch(manager, _scanner.pid(), row.Address, resultValueWidth(scanType, row.Value));
                     if (ImGui::MenuItem("Add to watch list")) addWatch(row, &live);
                     std::uintptr_t pointedAddress = 0; const bool hasPointedAddress = parseAddress(currentValue.c_str(), pointedAddress) && pointedAddress != 0;
                     ImGui::BeginDisabled(!hasPointedAddress); if (ImGui::MenuItem("Inspect current value as address")) openInspector(manager, _scanner.pid(), pointedAddress); ImGui::EndDisabled();
-                    ImGui::BeginDisabled(!bindType.has_value());
-                    if (ImGui::MenuItem("Create binding") && bindType) { createValueBinding(context.runtimeBindings, _scanner.pid(), selected, row.Address, *bindType); _status = "created native value binding"; }
-                    ImGui::EndDisabled();
                     ImGui::Separator();
                     if (ImGui::MenuItem("Copy address")) { const std::string text = runtimeHexAddress(row.Address); ImGui::SetClipboardText(text.c_str()); }
                     if (ImGui::MenuItem("Copy current value")) ImGui::SetClipboardText(currentValue.c_str());
@@ -383,7 +345,6 @@ namespace quartz::client::ui
                 }
                 ImGui::SameLine(); ImGui::Text("0x%llX", static_cast<unsigned long long>(row.Address)); ImGui::TableNextColumn(); ImGui::TextColored(valueColor, "%s", currentValue.c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(row.Value.c_str()); ImGui::TableNextColumn();
                 if (ImGui::SmallButton("Inspect")) openInspector(manager, _scanner.pid(), row.Address);
-                ImGui::SameLine(); ImGui::BeginDisabled(!bindType.has_value()); if (ImGui::SmallButton("Bind") && bindType) { createValueBinding(context.runtimeBindings, _scanner.pid(), selected, row.Address, *bindType); _status = "created native value binding"; } ImGui::EndDisabled();
                 ImGui::PopID();
             }
             ImGui::EndTable();
@@ -392,7 +353,7 @@ namespace quartz::client::ui
 
         ImGui::SeparatorText("Watch list");
         ImGui::SetNextItemWidth(180.0f); ImGui::SliderFloat("Freeze rate", &_freezeHz, 1.0f, 120.0f, "%.0f Hz", ImGuiSliderFlags_Logarithmic); ImGui::SameLine(); if (ImGui::Button("Clear watch list")) _watchList.clear();
-        ImGui::TextDisabled("Right-click anywhere on a watched row to change its address, type or value, inspect/disassemble it, create a binding, or send it to the hardware access watcher.");
+        ImGui::TextDisabled("Right-click anywhere on a watched row to change its address, type or value, inspect/disassemble it, send it to the signature maker, or open the hardware access watcher.");
         std::optional<std::size_t> eraseWatch;
         if (ImGui::BeginTable("MemoryWatchList", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable, ImVec2(0.0f, 0.0f)))
         {
@@ -434,9 +395,9 @@ namespace quartz::client::ui
                     ImGui::Separator();
                     if (ImGui::MenuItem("Inspect memory")) openInspector(manager, watch.Pid, watch.Address);
                     if (ImGui::MenuItem("Disassemble")) openInspector(manager, watch.Pid, watch.Address);
+                    if (ImGui::MenuItem("Create signature here")) { requestSignatureMaker(watch.Pid, watch.Address); manager.open("native"); }
                     if (ImGui::MenuItem("Watch accesses...")) openAccessWatch(manager, watch.Pid, watch.Address, watch.Width);
                     std::uintptr_t pointedAddress = 0; const bool hasPointedAddress = parseAddress(watch.Value.c_str(), pointedAddress) && pointedAddress != 0; ImGui::BeginDisabled(!hasPointedAddress); if (ImGui::MenuItem("Inspect value as address")) openInspector(manager, watch.Pid, pointedAddress); ImGui::EndDisabled();
-                    const auto watchBindType = bindingValueType(watch.Type); ImGui::BeginDisabled(!watchBindType.has_value()); if (ImGui::MenuItem("Create binding") && watchBindType) { const RuntimeProcessInfo* process = nullptr; for (const auto& candidate : _processes) if (candidate.Pid == watch.Pid) { process = &candidate; break; } createValueBinding(context.runtimeBindings, watch.Pid, process, watch.Address, *watchBindType); _status = "created binding from watch list"; } ImGui::EndDisabled();
                     if (ImGui::MenuItem("Copy address")) { const std::string text = runtimeHexAddress(watch.Address); ImGui::SetClipboardText(text.c_str()); }
                     if (ImGui::MenuItem("Copy value")) ImGui::SetClipboardText(watch.Value.c_str());
                     if (ImGui::MenuItem("Copy address + value")) { const std::string text = runtimeHexAddress(watch.Address) + " = " + watch.Value; ImGui::SetClipboardText(text.c_str()); }

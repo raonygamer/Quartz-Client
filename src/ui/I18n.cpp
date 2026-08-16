@@ -76,7 +76,12 @@ namespace quartz::client::ui::i18n
             {"re.signatureConflict", "Conflicting matches", "Correspondências conflitantes"},
             {"re.signatureAddress", "Target address", "Endereço alvo"},
             {"re.signatureBytes", "Instruction bytes", "Bytes das instruções"},
-            {"re.signatureStatus", "Status", "Status"}
+            {"re.signatureStatus", "Status", "Status"},
+            {"re.signatureDescription", "Build a signature from decoded instructions. Relocation-sensitive operands are wildcarded automatically and libhat extends the pattern until the target is unique.", "Gera uma assinatura a partir das instruções decodificadas. Operandos sensíveis a relocação recebem curingas automaticamente e o libhat estende o padrão até o alvo ser único."},
+            {"re.signatureMinimumInstructions", "Minimum instructions", "Instruções mínimas"},
+            {"re.signatureMaximumInstructions", "Maximum instructions", "Instruções máximas"},
+            {"re.signatureMatches", "Matches", "Correspondências"},
+            {"re.inspect", "Inspect", "Inspecionar"}
         });
 
         Language CurrentLanguage = Language::English;

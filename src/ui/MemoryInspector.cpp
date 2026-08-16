@@ -1,4 +1,5 @@
 #include "quartz/client/ui/MemoryInspector.hpp"
+#include "quartz/client/ui/SignatureMaker.hpp"
 #include "quartz/client/Model.hpp"
 #include "quartz/client/native/ExecutionProbe.hpp"
 #include "quartz/client/native/NativeDisassembly.hpp"
@@ -258,6 +259,21 @@ namespace quartz::client
             if (ImGui::MenuItem("Use as inspector base")) ui.PendingInspectorAddress = address;
             if (ImGui::MenuItem("Copy address")) { const std::string value = runtimeHexAddress(address); ImGui::SetClipboardText(value.c_str()); }
             if (ImGui::MenuItem("Copy instruction line")) { const std::string value = state.Disassembly.GetLineText(data.pos.line); ImGui::SetClipboardText(value.c_str()); }
+            const bool hasSelection = state.Disassembly.CurrentCursorHasSelection();
+            if (ImGui::MenuItem(hasSelection ? "Create signature from selection" : "Create signature here"))
+            {
+                std::size_t firstLine = data.pos.line, lastLine = data.pos.line;
+                if (hasSelection)
+                {
+                    const auto selection = state.Disassembly.GetCurrentCursorSelection(); firstLine = selection.start.line; lastLine = selection.end.line;
+                    if (lastLine > firstLine && selection.end.index == 0) --lastLine;
+                }
+                if (!ui.DisassemblyLines.empty())
+                {
+                    firstLine = std::min(firstLine, ui.DisassemblyLines.size() - 1); lastLine = std::min(std::max(lastLine, firstLine), ui.DisassemblyLines.size() - 1);
+                    ui::requestSignatureMaker(state.Pid, ui.DisassemblyLines[firstLine], static_cast<int>(lastLine - firstLine + 1));
+                }
+            }
             ImGui::Separator();
             const bool thisProbe = probe.running() && probe.pid() == state.Pid && probe.address() == address;
             if (thisProbe)
