@@ -102,7 +102,7 @@ namespace quartz::client::ui
         }
     }
 
-    void drawThemeBackground(const Theme theme, ImDrawList* drawList, const ImVec2& min, const ImVec2& max) noexcept
+    void drawThemeBackground(const Theme theme, ImDrawList* drawList, const ImVec2& min, const ImVec2& max, const float opacity) noexcept
     {
         if (!drawList) return;
         ThemeTexture* texture = textureForTheme(theme);
@@ -120,12 +120,13 @@ namespace quartz::client::ui
         const float bottomBleed = drawHeight * 0.025f;
         const ImVec2 imageMax{max.x + rightBleed, max.y + bottomBleed};
         const ImVec2 imageMin{imageMax.x - drawWidth, imageMax.y - drawHeight};
-        const ImU32 tint = IM_COL32(255, 255, 255, static_cast<int>(silhouetteAlpha(theme) * 255.0f));
+        const float alpha = std::clamp(silhouetteAlpha(theme) * opacity, 0.0f, 1.0f);
+        const ImU32 tint = IM_COL32(255, 255, 255, static_cast<int>(alpha * 255.0f));
         drawList->AddImage(ImTextureRef(static_cast<ImTextureID>(texture->Id)), imageMin, imageMax, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), tint);
     }
 
-    void drawThemeBackground(const int theme, ImDrawList* drawList, const ImVec2& min, const ImVec2& max) noexcept
+    void drawThemeBackground(const int theme, ImDrawList* drawList, const ImVec2& min, const ImVec2& max, const float opacity) noexcept
     {
-        drawThemeBackground(static_cast<Theme>(std::clamp(theme, 0, static_cast<int>(Theme::Count) - 1)), drawList, min, max);
+        drawThemeBackground(static_cast<Theme>(std::clamp(theme, 0, static_cast<int>(Theme::Count) - 1)), drawList, min, max, opacity);
     }
 }
