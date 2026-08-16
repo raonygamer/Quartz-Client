@@ -11,6 +11,7 @@
 #include <TextEditor.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -40,6 +41,27 @@ namespace quartz::client::ui
             bool Readable = false;
         };
 
+        struct FieldHelp
+        {
+            std::string_view Name;
+            std::string_view Signature;
+            std::string_view Description;
+        };
+
+        constexpr auto FieldHelpEntries = std::to_array<FieldHelp>({
+            {"Int8", "Field.Int8(offset: number | bigint)", "Signed 8-bit integer."}, {"UInt8", "Field.UInt8(offset: number | bigint)", "Unsigned 8-bit integer."},
+            {"Int16", "Field.Int16(offset: number | bigint)", "Signed 16-bit integer."}, {"UInt16", "Field.UInt16(offset: number | bigint)", "Unsigned 16-bit integer."},
+            {"Int32", "Field.Int32(offset: number | bigint)", "Signed 32-bit integer."}, {"UInt32", "Field.UInt32(offset: number | bigint)", "Unsigned 32-bit integer."},
+            {"Int64", "Field.Int64(offset: number | bigint)", "Signed 64-bit integer."}, {"UInt64", "Field.UInt64(offset: number | bigint)", "Unsigned 64-bit integer."},
+            {"Float32", "Field.Float32(offset: number | bigint)", "32-bit IEEE floating-point value."}, {"Float64", "Field.Float64(offset: number | bigint)", "64-bit IEEE floating-point value."},
+            {"Boolean", "Field.Boolean(offset: number | bigint)", "One-byte boolean value."},
+            {"Pointer", "Field.Pointer(offset: number | bigint, type?: Struct)", "Native-width pointer. Passing a Struct type makes Quartz expand the pointed object."},
+            {"CString", "Field.CString(offset: number | bigint, maxLength = 256)", "Native-width pointer to a NUL-terminated UTF-8 C string."},
+            {"WString", "Field.WString(offset: number | bigint, maxLength = 256)", "Native-width pointer to a NUL-terminated UTF-16 string."},
+            {"Struct", "Field.Struct(offset: number | bigint, type: Struct)", "Embedded struct at the supplied offset."},
+            {"Array", "Field.Array(offset: number | bigint, element: Field, count: number)", "Fixed-count array of a fixed-width field type."}
+        });
+
         struct ObjectExperimentState
         {
             std::vector<RuntimeProcessInfo> Processes;
@@ -50,7 +72,10 @@ namespace quartz::client::ui
             float RefreshHz = 10.0f;
             double LastRefresh = 0.0;
             TextEditor Editor;
+            TextEditor::AutoCompleteConfig AutoComplete;
             bool EditorInitialized = false;
+            bool EditorValid = false;
+            std::string EditorDiagnostic;
             bool HasDefinition = false;
             StructExperimentDefinition Definition;
             std::vector<ExperimentRow> Rows;
@@ -93,6 +118,27 @@ namespace quartz::client::ui
             return palette;
         }
 
+        std::string dottedTokenAt(const TextEditor& editor, const TextEditor::DocPos pos)
+        {
+            const std::string line = editor.GetLineText(pos.line); if (line.empty()) return {};
+            std::size_t index = std::min(pos.index, line.size()); if (index == line.size() && index) --index;
+            const auto allowed = [](const unsigned char c) { return std::isalnum(c) || c == '_' || c == '$' || c == '.'; };
+            if (index < line.size() && !allowed(static_cast<unsigned char>(line[index])) && index && allowed(static_cast<unsigned char>(line[index - 1]))) --index;
+            if (index >= line.size() || !allowed(static_cast<unsigned char>(line[index]))) return {};
+            std::size_t begin = index, end = index + 1; while (begin && allowed(static_cast<unsigned char>(line[begin - 1]))) --begin; while (end < line.size() && allowed(static_cast<unsigned char>(line[end]))) ++end; return line.substr(begin, end - begin);
+        }
+
+        const FieldHelp* fieldHelp(const std::string_view token)
+        {
+            std::string_view name = token; if (name.starts_with("Field.")) name.remove_prefix(6);
+            const auto it = std::ranges::find(FieldHelpEntries, name, &FieldHelp::Name); return it == FieldHelpEntries.end() ? nullptr : &*it;
+        }
+
+        void validateEditor(ObjectExperimentState& state)
+        {
+            StructExperimentDefinition definition; std::string error; state.EditorValid = runtimeEvaluateStructExperiment(state.Editor.GetText(), definition, error); state.EditorDiagnostic = state.EditorValid ? "Definition is valid." : std::move(error);
+        }
+
         void initializeEditor(ObjectExperimentState& state)
         {
             if (state.EditorInitialized) return;
@@ -104,10 +150,34 @@ namespace quartz::client::ui
 return Struct.define({
     health: Field.Int32(0x0),
     maxHealth: Field.Int32(0x4),
-    position: Field.Struct(0x8, Vec2),
-    owner: Field.Pointer(0x10),
+    name: Field.CString(0x8),
+    position: Field.Struct(0x10, Vec2),
+    owner: Field.Pointer(0x18),
 });)TS";
-            state.Editor.SetLanguage(typescriptLanguage()); state.Editor.SetPalette(typescriptPalette()); state.Editor.SetTabSize(4); state.Editor.SetInsertSpacesOnTabs(true); state.Editor.SetAutoIndentEnabled(true); state.Editor.SetShowLineNumbersEnabled(true); state.Editor.SetShowMatchingBrackets(true); state.Editor.SetShowMiniMapEnabled(false); state.Editor.SetReadOnlyEnabled(false); state.Editor.SetText(DefaultSource); state.EditorInitialized = true;
+            state.Editor.SetLanguage(typescriptLanguage()); state.Editor.SetPalette(typescriptPalette()); state.Editor.SetTabSize(4); state.Editor.SetInsertSpacesOnTabs(true); state.Editor.SetAutoIndentEnabled(true); state.Editor.SetShowLineNumbersEnabled(true); state.Editor.SetShowMatchingBrackets(true); state.Editor.SetShowMiniMapEnabled(false); state.Editor.SetReadOnlyEnabled(false); state.Editor.SetText(DefaultSource);
+            state.AutoComplete = {}; state.AutoComplete.triggerDelay = std::chrono::milliseconds(70); state.AutoComplete.suggestionWidth = 36; state.AutoComplete.noSuggestionsLabel = "No matching Quartz fields";
+            state.AutoComplete.callback = [&state](TextEditor::AutoCompleteState& completion)
+            {
+                completion.suggestions.clear(); const std::string line = state.Editor.GetLineText(completion.searchTermStart.line); const std::size_t start = std::min(completion.searchTermStart.index, line.size()); const std::string_view before(line.data(), start);
+                const auto matches = [&](const std::string_view candidate) { return completion.searchTerm.empty() || candidate.starts_with(completion.searchTerm); };
+                if (before.ends_with("Field.")) for (const auto& entry : FieldHelpEntries) if (matches(entry.Name)) completion.suggestions.emplace_back(entry.Name);
+                else if (before.ends_with("Struct.")) { if (matches("define")) completion.suggestions.emplace_back("define"); }
+                else
+                {
+                    if (matches("Field")) completion.suggestions.emplace_back("Field"); if (matches("Struct")) completion.suggestions.emplace_back("Struct");
+                    state.Editor.IterateIdentifiers([&](const std::string& identifier) { if (identifier != completion.searchTerm && matches(identifier) && std::ranges::find(completion.suggestions, identifier) == completion.suggestions.end()) completion.suggestions.push_back(identifier); });
+                }
+                std::ranges::sort(completion.suggestions);
+            };
+            state.Editor.SetAutoCompleteConfig(&state.AutoComplete);
+            state.Editor.SetTextHoverCallback([&state](TextEditor::PopupData& data)
+            {
+                const std::string token = dottedTokenAt(state.Editor, data.pos); if (token.empty()) return;
+                if (const auto* help = fieldHelp(token)) { ImGui::TextUnformatted(help->Signature.data(), help->Signature.data() + help->Signature.size()); ImGui::Separator(); ImGui::TextWrapped("%.*s", static_cast<int>(help->Description.size()), help->Description.data()); return; }
+                if (token == "Struct" || token == "Struct.define") { ImGui::TextUnformatted("Struct.define(fields: Record<string, Field>): Struct"); ImGui::Separator(); ImGui::TextWrapped("Creates a temporary object type. The returned definition can be nested in Field.Struct/Pointer and the top-level script must return one."); return; }
+                if (token == "Field") { ImGui::TextUnformatted("Quartz Field API"); ImGui::Separator(); ImGui::TextWrapped("Type Field. and use autocomplete (or Ctrl+Space) to see the available memory field descriptors."); }
+            });
+            state.Editor.SetChangeCallback([&state] { validateEditor(state); }, 350); state.EditorInitialized = true; validateEditor(state);
         }
 
         std::size_t pointerWidth(const RuntimeX86Mode mode) noexcept { return mode == RuntimeX86Mode::X86 ? 4 : 8; }
@@ -121,7 +191,8 @@ return Struct.define({
             case StructExperimentFieldKind::I32: return MemoryScanValueType::I32; case StructExperimentFieldKind::U32: return MemoryScanValueType::U32;
             case StructExperimentFieldKind::I64: return MemoryScanValueType::I64; case StructExperimentFieldKind::U64: return MemoryScanValueType::U64;
             case StructExperimentFieldKind::F32: return MemoryScanValueType::Float; case StructExperimentFieldKind::F64: return MemoryScanValueType::Double;
-            case StructExperimentFieldKind::Bool: return MemoryScanValueType::Bool; case StructExperimentFieldKind::Pointer: return MemoryScanValueType::Pointer;
+            case StructExperimentFieldKind::Bool: return MemoryScanValueType::Bool;
+            case StructExperimentFieldKind::Pointer: case StructExperimentFieldKind::CString: case StructExperimentFieldKind::WString: return MemoryScanValueType::Pointer;
             default: return std::nullopt;
             }
         }
@@ -155,6 +226,38 @@ return Struct.define({
             return true;
         }
 
+        void appendUtf8(std::string& output, const std::uint32_t codepoint)
+        {
+            if (codepoint <= 0x7F) output.push_back(static_cast<char>(codepoint));
+            else if (codepoint <= 0x7FF) { output.push_back(static_cast<char>(0xC0 | (codepoint >> 6))); output.push_back(static_cast<char>(0x80 | (codepoint & 0x3F))); }
+            else if (codepoint <= 0xFFFF) { output.push_back(static_cast<char>(0xE0 | (codepoint >> 12))); output.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F))); output.push_back(static_cast<char>(0x80 | (codepoint & 0x3F))); }
+            else { output.push_back(static_cast<char>(0xF0 | (codepoint >> 18))); output.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F))); output.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F))); output.push_back(static_cast<char>(0x80 | (codepoint & 0x3F))); }
+        }
+
+        bool readRemoteString(const pid_t pid, const std::uintptr_t pointer, const StructExperimentFieldKind kind, const std::size_t maxLength, std::string& value, std::string& error)
+        {
+            if (!pointer) { value = "<null>"; return true; }
+            const std::size_t width = kind == StructExperimentFieldKind::WString ? 2 : 1; std::vector<std::uint8_t> data(std::max<std::size_t>(maxLength, 1) * width);
+            if (!readProcessMemoryBlock(pid, pointer, data, error)) return false;
+            value.clear();
+            if (kind == StructExperimentFieldKind::CString)
+            {
+                const auto end = std::ranges::find(data, std::uint8_t{}); value.assign(reinterpret_cast<const char*>(data.data()), static_cast<std::size_t>(end - data.begin())); if (end == data.end()) value += "…"; return true;
+            }
+            const std::size_t units = data.size() / 2; bool terminated = false;
+            for (std::size_t i = 0; i < units; ++i)
+            {
+                std::uint16_t unit = 0; std::memcpy(&unit, data.data() + i * 2, 2); if (!unit) { terminated = true; break; }
+                std::uint32_t codepoint = unit;
+                if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < units)
+                {
+                    std::uint16_t low = 0; std::memcpy(&low, data.data() + (i + 1) * 2, 2); if (low >= 0xDC00 && low <= 0xDFFF) { codepoint = 0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00); ++i; }
+                }
+                appendUtf8(value, codepoint);
+            }
+            if (!terminated) value += "…"; return true;
+        }
+
         void appendFieldRows(const pid_t pid, const RuntimeX86Mode mode, const StructExperimentField& field, const std::uintptr_t base, const std::string& name, std::vector<ExperimentRow>& rows, const std::size_t depth)
         {
             if (depth > 8 || rows.size() >= 2048) return;
@@ -176,11 +279,14 @@ return Struct.define({
                 return;
             }
 
-            ExperimentRow row; row.Name = name; row.Type = runtimeStructExperimentFieldKindName(field.Kind); row.Offset = field.Offset; row.Address = address; row.WatchType = watchType(field.Kind); row.Width = field.Kind == StructExperimentFieldKind::Pointer ? pointerWidth(mode) : field.Size;
+            ExperimentRow row; row.Name = name; row.Type = runtimeStructExperimentFieldKindName(field.Kind); row.Offset = field.Offset; row.Address = address; row.WatchType = watchType(field.Kind); const bool pointerLike = field.Kind == StructExperimentFieldKind::Pointer || field.Kind == StructExperimentFieldKind::CString || field.Kind == StructExperimentFieldKind::WString; row.Width = pointerLike ? pointerWidth(mode) : field.Size;
             std::vector<std::uint8_t> bytes; std::string error;
-            if (field.Kind == StructExperimentFieldKind::Pointer)
+            if (pointerLike)
             {
-                row.Readable = readPointer(pid, address, mode, row.PointerValue, bytes, error); row.Value = row.Readable ? runtimeHexAddress(row.PointerValue) : "<unreadable>";
+                row.Readable = readPointer(pid, address, mode, row.PointerValue, bytes, error);
+                if (row.Readable && (field.Kind == StructExperimentFieldKind::CString || field.Kind == StructExperimentFieldKind::WString)) row.Readable = readRemoteString(pid, row.PointerValue, field.Kind, field.MaxLength ? field.MaxLength : 256, row.Value, error);
+                else if (row.Readable) row.Value = runtimeFormatProcessAddress(pid, row.PointerValue);
+                if (!row.Readable) row.Value = "<unreadable>";
             }
             else
             {
@@ -229,19 +335,25 @@ return Struct.define({
             else { state.HasDefinition = false; state.Rows.clear(); state.Status = std::move(error); }
         }
         ImGui::SameLine(); if (ImGui::Button("Reset example")) { state.EditorInitialized = false; initializeEditor(state); }
-        ImGui::SameLine(); ImGui::TextDisabled("Struct and Field are injected automatically; top-level return is valid here.");
+        ImGui::SameLine(); ImGui::TextDisabled("Struct and Field are injected automatically. Field. autocomplete and Ctrl+Space are enabled; hover API names for signatures.");
         state.Editor.Render("##ObjectExperimentEditor", ImVec2(-1.0f, 230.0f));
+        if (!state.EditorDiagnostic.empty())
+        {
+            if (state.EditorValid) ImGui::TextColored(ImVec4(0.35f, 0.86f, 0.58f, 1.0f), "%s", state.EditorDiagnostic.c_str());
+            else ImGui::TextWrapped("%s", state.EditorDiagnostic.c_str());
+        }
         if (!state.Status.empty()) ImGui::TextWrapped("%s", state.Status.c_str());
 
         if (!state.HasDefinition) { ImGui::TextDisabled("Apply a Struct.define({...}) definition to inspect fields."); return; }
         if (state.Pid <= 0 || state.Base == 0) { ImGui::TextDisabled("Select a process and bind a non-zero address to start live reads."); return; }
         const double now = runtimeSteadySeconds(); if (state.LastRefresh == 0.0 || now - state.LastRefresh >= 1.0 / std::max(static_cast<double>(state.RefreshHz), 0.1)) refreshRows(state);
-        ImGui::SeparatorText("Bound object"); ImGui::Text("0x%llX", static_cast<unsigned long long>(state.Base)); ImGui::SameLine(); ImGui::TextDisabled("PID %d | %s | %zu rows", static_cast<int>(state.Pid), runtimeX86ModeName(runtimeProcessX86Mode(state.Pid)), state.Rows.size());
+        const auto modules = enumerateRuntimeModules(state.Pid);
+        ImGui::SeparatorText("Bound object"); const std::string baseText = runtimeFormatProcessAddress(modules, state.Base); ImGui::TextUnformatted(baseText.c_str()); ImGui::SameLine(); ImGui::TextDisabled("PID %d | %s | %zu rows", static_cast<int>(state.Pid), runtimeX86ModeName(runtimeProcessX86Mode(state.Pid)), state.Rows.size());
         if (ImGui::Button("Inspect base")) openInspector(manager, state.Pid, state.Base); ImGui::SameLine(); if (ImGui::Button("Refresh now")) refreshRows(state);
 
         if (ImGui::BeginTable("ObjectExperimentFields", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY, ImVec2(0.0f, 360.0f)))
         {
-            ImGui::TableSetupColumn("Field"); ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_WidthFixed, 88.0f); ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 145.0f); ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 105.0f); ImGui::TableSetupColumn("Value"); ImGui::TableSetupColumn("Raw bytes"); ImGui::TableHeadersRow();
+            ImGui::TableSetupColumn("Field"); ImGui::TableSetupColumn("Offset", ImGuiTableColumnFlags_WidthFixed, 88.0f); ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 190.0f); ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 105.0f); ImGui::TableSetupColumn("Value"); ImGui::TableSetupColumn("Raw bytes"); ImGui::TableHeadersRow();
             for (std::size_t i = 0; i < state.Rows.size(); ++i)
             {
                 const auto& row = state.Rows[i]; ImGui::PushID(static_cast<int>(i)); ImGui::TableNextRow(); ImGui::TableNextColumn();
@@ -252,9 +364,9 @@ return Struct.define({
                     if (ImGui::MenuItem("Inspect field")) openInspector(manager, state.Pid, row.Address);
                     ImGui::BeginDisabled(!row.WatchType || row.Width == 0); if (ImGui::MenuItem("Add field to watch list")) addWatch(manager, state.Pid, row); if (ImGui::MenuItem("Watch field accesses")) openAccessWatch(manager, state.Pid, row.Address, row.Width); ImGui::EndDisabled();
                     ImGui::BeginDisabled(row.PointerValue == 0); if (ImGui::MenuItem("Inspect pointer value")) openInspector(manager, state.Pid, row.PointerValue); ImGui::EndDisabled();
-                    ImGui::Separator(); if (ImGui::MenuItem("Copy address")) { const std::string text = runtimeHexAddress(row.Address); ImGui::SetClipboardText(text.c_str()); } if (ImGui::MenuItem("Copy value")) ImGui::SetClipboardText(row.Value.c_str()); ImGui::EndPopup();
+                    ImGui::Separator(); if (ImGui::MenuItem("Copy address")) { const std::string text = runtimeHexAddress(row.Address); ImGui::SetClipboardText(text.c_str()); } if (ImGui::MenuItem("Copy module-relative address")) { const std::string text = runtimeFormatProcessAddress(modules, row.Address); ImGui::SetClipboardText(text.c_str()); } if (ImGui::MenuItem("Copy value")) ImGui::SetClipboardText(row.Value.c_str()); ImGui::EndPopup();
                 }
-                ImGui::SameLine(); ImGui::TextUnformatted(row.Name.c_str()); ImGui::TableNextColumn(); ImGui::Text("+0x%llX", static_cast<unsigned long long>(row.Offset)); ImGui::TableNextColumn(); ImGui::Text("0x%llX", static_cast<unsigned long long>(row.Address)); ImGui::TableNextColumn(); ImGui::TextUnformatted(row.Type.c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(row.Value.c_str()); ImGui::TableNextColumn(); ImGui::TextDisabled("%s", row.Raw.c_str()); ImGui::PopID();
+                ImGui::SameLine(); ImGui::TextUnformatted(row.Name.c_str()); ImGui::TableNextColumn(); ImGui::Text("+0x%llX", static_cast<unsigned long long>(row.Offset)); ImGui::TableNextColumn(); const std::string addressText = runtimeFormatProcessAddress(modules, row.Address); ImGui::TextUnformatted(addressText.c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(row.Type.c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(row.Value.c_str()); ImGui::TableNextColumn(); ImGui::TextDisabled("%s", row.Raw.c_str()); ImGui::PopID();
             }
             ImGui::EndTable();
         }
