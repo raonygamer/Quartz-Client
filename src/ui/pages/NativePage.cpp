@@ -2,6 +2,7 @@
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/ui/MemoryInspector.hpp"
+#include "quartz/client/ui/ObjectExperiments.hpp"
 #include "quartz/client/ui/ReverseEngineeringTools.hpp"
 #include "quartz/client/ui/ReverseEngineeringNavigation.hpp"
 #include "quartz/client/ui/SignatureMaker.hpp"
@@ -41,6 +42,7 @@ namespace quartz::client::ui
                 }
                 ImGui::EndTabItem();
             }
+            if (ImGui::BeginTabItem("Object experiments")) { drawObjectExperiments(context, manager); ImGui::EndTabItem(); }
             ImGui::EndTabBar();
         }
     }
