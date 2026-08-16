@@ -1,0 +1,239 @@
+name: Final audit
+
+on:
+  push:
+    branches: ['finalize/**']
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Apply final bug and i18n audit
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected exactly one match, got {count}")
+              return text.replace(old, new, 1)
+
+          # x86-aware scanner pointer width + x86 relocation decoding.
+          path = Path('src/native/MemoryScanner.cpp')
+          text = path.read_text()
+          text = replace_once(text, '''        std::size_t numericWidth(const MemoryScanValueType type) noexcept
+        {
+            switch (type)
+            {
+            case MemoryScanValueType::U8: case MemoryScanValueType::I8: case MemoryScanValueType::Bool: return 1;
+            case MemoryScanValueType::U16: case MemoryScanValueType::I16: return 2;
+            case MemoryScanValueType::U32: case MemoryScanValueType::I32: case MemoryScanValueType::Float: return 4;
+            case MemoryScanValueType::U64: case MemoryScanValueType::I64: case MemoryScanValueType::Double: case MemoryScanValueType::Pointer: return 8;
+            default: return 0;
+            }
+        }
+
+        bool isNumeric(const MemoryScanValueType type) noexcept { return numericWidth(type) != 0; }
+''', '''        bool isNumeric(const MemoryScanValueType type) noexcept
+        {
+            switch (type)
+            {
+            case MemoryScanValueType::U8: case MemoryScanValueType::I8: case MemoryScanValueType::U16: case MemoryScanValueType::I16:
+            case MemoryScanValueType::U32: case MemoryScanValueType::I32: case MemoryScanValueType::U64: case MemoryScanValueType::I64:
+            case MemoryScanValueType::Float: case MemoryScanValueType::Double: case MemoryScanValueType::Pointer: case MemoryScanValueType::Bool: return true;
+            default: return false;
+            }
+        }
+
+        std::size_t numericWidth(const MemoryScanValueType type, const pid_t pid = 0) noexcept
+        {
+            switch (type)
+            {
+            case MemoryScanValueType::U8: case MemoryScanValueType::I8: case MemoryScanValueType::Bool: return 1;
+            case MemoryScanValueType::U16: case MemoryScanValueType::I16: return 2;
+            case MemoryScanValueType::U32: case MemoryScanValueType::I32: case MemoryScanValueType::Float: return 4;
+            case MemoryScanValueType::U64: case MemoryScanValueType::I64: case MemoryScanValueType::Double: return 8;
+            case MemoryScanValueType::Pointer: return pid > 0 && runtimeProcessX86Mode(pid) == RuntimeX86Mode::X86 ? 4 : 8;
+            default: return 0;
+            }
+        }
+''', 'native numeric width')
+          text = replace_once(text, '                parsed.Width = numericWidth(request.Type);', '                parsed.Width = existingWidth != 0 ? existingWidth : numericWidth(request.Type, request.Pid);', 'native parsed pointer width')
+          text = replace_once(text, '''        long double numericAt(const MemoryScanValueType type, const std::uint8_t* data)
+        {
+            switch (type)
+            {
+            case MemoryScanValueType::U8: { std::uint8_t v; std::memcpy(&v, data, 1); return v; }
+            case MemoryScanValueType::I8: { std::int8_t v; std::memcpy(&v, data, 1); return v; }
+            case MemoryScanValueType::U16: { std::uint16_t v; std::memcpy(&v, data, 2); return v; }
+            case MemoryScanValueType::I16: { std::int16_t v; std::memcpy(&v, data, 2); return v; }
+            case MemoryScanValueType::U32: { std::uint32_t v; std::memcpy(&v, data, 4); return v; }
+            case MemoryScanValueType::I32: { std::int32_t v; std::memcpy(&v, data, 4); return v; }
+            case MemoryScanValueType::U64: case MemoryScanValueType::Pointer: { std::uint64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
+            case MemoryScanValueType::I64: { std::int64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
+            case MemoryScanValueType::Float: { float v; std::memcpy(&v, data, 4); return static_cast<long double>(v); }
+            case MemoryScanValueType::Double: { double v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
+            case MemoryScanValueType::Bool: { std::uint8_t v; std::memcpy(&v, data, 1); return v != 0 ? 1.0L : 0.0L; }
+            default: return 0.0L;
+            }
+        }
+''', '''        long double numericAt(const MemoryScanValueType type, const std::uint8_t* data, const std::size_t width = 0)
+        {
+            switch (type)
+            {
+            case MemoryScanValueType::U8: { std::uint8_t v; std::memcpy(&v, data, 1); return v; }
+            case MemoryScanValueType::I8: { std::int8_t v; std::memcpy(&v, data, 1); return v; }
+            case MemoryScanValueType::U16: { std::uint16_t v; std::memcpy(&v, data, 2); return v; }
+            case MemoryScanValueType::I16: { std::int16_t v; std::memcpy(&v, data, 2); return v; }
+            case MemoryScanValueType::U32: { std::uint32_t v; std::memcpy(&v, data, 4); return v; }
+            case MemoryScanValueType::I32: { std::int32_t v; std::memcpy(&v, data, 4); return v; }
+            case MemoryScanValueType::U64: { std::uint64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
+            case MemoryScanValueType::Pointer: { if (width == 4) { std::uint32_t v; std::memcpy(&v, data, 4); return static_cast<long double>(v); } std::uint64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
+            case MemoryScanValueType::I64: { std::int64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
+            case MemoryScanValueType::Float: { float v; std::memcpy(&v, data, 4); return static_cast<long double>(v); }
+            case MemoryScanValueType::Double: { double v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
+            case MemoryScanValueType::Bool: { std::uint8_t v; std::memcpy(&v, data, 1); return v != 0 ? 1.0L : 0.0L; }
+            default: return 0.0L;
+            }
+        }
+''', 'native numericAt')
+          text = replace_once(text, '            if (isNumeric(type)) return numericAt(type, a) == numericAt(type, b);', '            if (isNumeric(type)) return numericAt(type, a, width) == numericAt(type, b, width);', 'native valuesEqual')
+          text = replace_once(text, '                const long double now = numericAt(request.Type, current), before = previous ? numericAt(request.Type, previous) : 0.0L;', '                const long double now = numericAt(request.Type, current, parsed.Width), before = previous ? numericAt(request.Type, previous, parsed.Width) : 0.0L;', 'native matches numericAt')
+          text = replace_once(text, '''                if (type == MemoryScanValueType::Pointer) { std::uint64_t v; std::memcpy(&v, data, 8); out << "0x" << std::hex << std::uppercase << v; }
+                else if (type == MemoryScanValueType::Float || type == MemoryScanValueType::Double) out << std::setprecision(12) << static_cast<double>(numericAt(type, data));
+                else out << std::fixed << std::setprecision(0) << numericAt(type, data);''', '''                if (type == MemoryScanValueType::Pointer) { if (width == 4) { std::uint32_t v; std::memcpy(&v, data, 4); out << "0x" << std::hex << std::uppercase << v; } else { std::uint64_t v; std::memcpy(&v, data, 8); out << "0x" << std::hex << std::uppercase << v; } }
+                else if (type == MemoryScanValueType::Float || type == MemoryScanValueType::Double) out << std::setprecision(12) << static_cast<double>(numericAt(type, data, width));
+                else out << std::fixed << std::setprecision(0) << numericAt(type, data, width);''', 'native format pointer')
+          text = replace_once(text, '            ZydisDecoder decoder{}; ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);', '            const RuntimeX86Mode mode = runtimeProcessX86Mode(pid); ZydisDecoder decoder{}; ZydisDecoderInit(&decoder, mode == RuntimeX86Mode::X86 ? ZYDIS_MACHINE_MODE_LEGACY_32 : ZYDIS_MACHINE_MODE_LONG_64, mode == RuntimeX86Mode::X86 ? ZYDIS_STACK_WIDTH_32 : ZYDIS_STACK_WIDTH_64);', 'x86 pattern decoder')
+          path.write_text(text)
+
+          # Make scanner/watch UI honor target pointer width and localize the remaining visible strings.
+          path = Path('src/ui/pages/MemoryScannerPage.cpp')
+          text = path.read_text()
+          text = replace_once(text, '''        std::size_t fixedValueWidth(const MemoryScanValueType type) noexcept
+        {
+            switch (type)
+            {
+            case MemoryScanValueType::U8: case MemoryScanValueType::I8: case MemoryScanValueType::Bool: return 1;
+            case MemoryScanValueType::U16: case MemoryScanValueType::I16: return 2;
+            case MemoryScanValueType::U32: case MemoryScanValueType::I32: case MemoryScanValueType::Float: return 4;
+            case MemoryScanValueType::U64: case MemoryScanValueType::I64: case MemoryScanValueType::Double: case MemoryScanValueType::Pointer: return 8;
+            default: return 0;
+            }
+        }
+''', '''        std::size_t fixedValueWidth(const MemoryScanValueType type, const pid_t pid = 0) noexcept
+        {
+            switch (type)
+            {
+            case MemoryScanValueType::U8: case MemoryScanValueType::I8: case MemoryScanValueType::Bool: return 1;
+            case MemoryScanValueType::U16: case MemoryScanValueType::I16: return 2;
+            case MemoryScanValueType::U32: case MemoryScanValueType::I32: case MemoryScanValueType::Float: return 4;
+            case MemoryScanValueType::U64: case MemoryScanValueType::I64: case MemoryScanValueType::Double: return 8;
+            case MemoryScanValueType::Pointer: return pid > 0 && runtimeProcessX86Mode(pid) == RuntimeX86Mode::X86 ? 4 : 8;
+            default: return 0;
+            }
+        }
+''', 'ui fixed pointer width')
+          text = replace_once(text, '        std::size_t resultValueWidth(const MemoryScanValueType type, const std::string_view value) noexcept\n        {\n            if (const auto fixed = fixedValueWidth(type); fixed != 0) return fixed;', '        std::size_t resultValueWidth(const MemoryScanValueType type, const std::string_view value, const pid_t pid = 0) noexcept\n        {\n            if (const auto fixed = fixedValueWidth(type, pid); fixed != 0) return fixed;', 'ui result width')
+          text = replace_once(text, '        long double numericAt(const MemoryScanValueType type, const std::uint8_t* data)', '        long double numericAt(const MemoryScanValueType type, const std::uint8_t* data, const std::size_t width = 0)', 'ui numericAt signature')
+          text = replace_once(text, '            case MemoryScanValueType::U64: case MemoryScanValueType::Pointer: { std::uint64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }', '            case MemoryScanValueType::U64: { std::uint64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }\n            case MemoryScanValueType::Pointer: { if (width == 4) { std::uint32_t v; std::memcpy(&v, data, 4); return static_cast<long double>(v); } std::uint64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }', 'ui pointer numericAt')
+          text = replace_once(text, '                if (type == MemoryScanValueType::Pointer) { std::uint64_t value; std::memcpy(&value, bytes.data(), 8); out << "0x" << std::hex << std::uppercase << value; }', '                if (type == MemoryScanValueType::Pointer) { if (bytes.size() == 4) { std::uint32_t value; std::memcpy(&value, bytes.data(), 4); out << "0x" << std::hex << std::uppercase << value; } else { std::uint64_t value; std::memcpy(&value, bytes.data(), 8); out << "0x" << std::hex << std::uppercase << value; } }', 'ui pointer format')
+          text = text.replace('numericAt(type, bytes.data())', 'numericAt(type, bytes.data(), bytes.size())')
+          text = replace_once(text, 'sample.Numeric = fixedValueWidth(type) != 0 ? std::optional<long double>(numericAt(type, bytes.data(), bytes.size())) : std::nullopt;', 'sample.Numeric = fixedValueWidth(type, pid) != 0 ? std::optional<long double>(numericAt(type, bytes.data(), width)) : std::nullopt;', 'ui sample numeric')
+          text = replace_once(text, '''                    std::uint64_t parsed = 0; if (!parseNumber(text, parsed)) { error = "invalid pointer value"; return false; }
+                    bytes.resize(sizeof(parsed)); std::memcpy(bytes.data(), &parsed, sizeof(parsed));''', '''                    std::uint64_t parsed = 0; if (!parseNumber(text, parsed)) { error = i18n::tr("re.invalidPointerValue"); return false; }
+                    if (width == 4) { if (parsed > std::numeric_limits<std::uint32_t>::max()) { error = i18n::tr("re.valueOutsideTypeRange"); return false; } const auto value = static_cast<std::uint32_t>(parsed); bytes.resize(sizeof(value)); std::memcpy(bytes.data(), &value, sizeof(value)); }
+                    else { bytes.resize(sizeof(parsed)); std::memcpy(bytes.data(), &parsed, sizeof(parsed)); }''', 'ui pointer write')
+          text = text.replace('resultValueWidth(scanType, row.Value)', 'resultValueWidth(scanType, row.Value, _scanner.pid())')
+          text = text.replace('fixedValueWidth(type); fixed != 0) watch.Width = fixed', 'fixedValueWidth(type, watch.Pid); fixed != 0) watch.Width = fixed')
+          text = text.replace('fixedValueWidth(watch.Type) == 0', 'fixedValueWidth(watch.Type, watch.Pid) == 0')
+          text = text.replace('error = "invalid value target"', 'error = i18n::tr("re.invalidValueTarget")')
+          text = text.replace('error = "value is outside the selected type range"', 'error = i18n::tr("re.valueOutsideTypeRange")')
+          text = text.replace('error = "bool must be true/false, 1/0 or 0x1/0x0"', 'error = i18n::tr("re.boolValueHint")')
+          text = text.replace('error = "invalid numeric value"', 'error = i18n::tr("re.invalidNumericValue")')
+          text = text.replace('error = "string is wider than the watched value"', 'error = i18n::tr("re.stringTooWide")')
+          text = text.replace('error = "byte-array write must keep the watched width"', 'error = i18n::tr("re.byteArrayWidthMismatch")')
+          text = text.replace('_status = "cannot determine watched value width"', '_status = i18n::tr("re.watchWidthUnknown")')
+          text = text.replace('_status = "value is already in the watch list"', '_status = i18n::tr("re.watchAlreadyExists")')
+          text = text.replace('live.Value = "<unreadable>"', 'live.Value = i18n::tr("re.unreadable")')
+          text = text.replace('watch.Value = "<unreadable>"', 'watch.Value = i18n::tr("re.unreadable")')
+          text = text.replace('watch.FrozenValue == "<unreadable>"', 'watch.FrozenValue == i18n::tr("re.unreadable")')
+          text = text.replace('error.empty() ? "invalid watch address" : error', 'error.empty() ? i18n::tr("re.invalidWatchAddress") : error')
+          text = text.replace('error.empty() ? "invalid range" : error', 'error.empty() ? i18n::tr("re.invalidRange") : error')
+          # Localize scanner combo values without changing the native serialization/API names.
+          anchor = '        bool integerValueType(const MemoryScanValueType type) noexcept\n'
+          labels = '''        const char* scanValueTypeLabel(const MemoryScanValueType type) noexcept
+        {
+            static constexpr const char* English[] = {"u8","i8","u16","i16","u32","i32","u64","i64","float","double","pointer","bool","UTF-8 string","UTF-16 string","byte array"};
+            static constexpr const char* Portuguese[] = {"u8","i8","u16","i16","u32","i32","u64","i64","float","double","ponteiro","bool","string UTF-8","string UTF-16","array de bytes"};
+            const int index = std::clamp(static_cast<int>(type),0,static_cast<int>(std::size(English))-1); return i18n::language()==i18n::Language::PortugueseBrazil?Portuguese[index]:English[index];
+        }
+
+        const char* scanComparisonLabel(const MemoryScanComparison comparison) noexcept
+        {
+            static constexpr const char* English[] = {"Exact value","Not equal","Unknown initial value","Changed","Unchanged","Increased","Decreased","Increased by","Decreased by","Greater than","Less than","Between","Changed from -> to"};
+            static constexpr const char* Portuguese[] = {"Valor exato","Diferente","Valor inicial desconhecido","Alterado","Inalterado","Aumentou","Diminuiu","Aumentou em","Diminuiu em","Maior que","Menor que","Entre","Alterou de -> para"};
+            const int index = std::clamp(static_cast<int>(comparison),0,static_cast<int>(std::size(English))-1); return i18n::language()==i18n::Language::PortugueseBrazil?Portuguese[index]:English[index];
+        }
+
+'''
+          if anchor not in text: raise RuntimeError('scanner label insertion anchor missing')
+          text = text.replace(anchor, labels + anchor, 1)
+          text = text.replace('memoryScanValueTypeName(static_cast<MemoryScanValueType>(_type))', 'scanValueTypeLabel(static_cast<MemoryScanValueType>(_type))')
+          text = text.replace('memoryScanValueTypeName(static_cast<MemoryScanValueType>(i))', 'scanValueTypeLabel(static_cast<MemoryScanValueType>(i))')
+          text = text.replace('memoryScanComparisonName(static_cast<MemoryScanComparison>(_comparison))', 'scanComparisonLabel(static_cast<MemoryScanComparison>(_comparison))')
+          text = text.replace('memoryScanComparisonName(static_cast<MemoryScanComparison>(i))', 'scanComparisonLabel(static_cast<MemoryScanComparison>(i))')
+          text = text.replace('memoryScanValueTypeName(watch.Type)', 'scanValueTypeLabel(watch.Type)')
+          text = text.replace('memoryScanValueTypeName(type)', 'scanValueTypeLabel(type)')
+          path.write_text(text)
+
+          path = Path('src/ui/pages/MemoryWatchPage.cpp')
+          text = path.read_text()
+          text = text.replace('error.empty() ? "invalid address" : error', 'error.empty() ? i18n::tr("re.invalidAddress") : error')
+          text = text.replace('_status = "execution probe cancelled"', '_status = i18n::tr("re.executionProbeCancelled")')
+          text = replace_once(text, '_status = "armed one-shot execution probe at " + runtimeFormatProcessAddress(_pid,site);', 'char message[256]{}; std::snprintf(message,sizeof(message),i18n::tr("re.armedProbeAt"),runtimeFormatProcessAddress(_pid,site).c_str()); _status=message;', 'watch armed probe status')
+          text = replace_once(text, 'ImGui::SetTooltip("%s = %s\\nunsigned: %llu\\nsigned: %lld", reg.Name, symbolic.c_str(), static_cast<unsigned long long>(reg.Value), static_cast<long long>(reg.Value));', 'ImGui::SetTooltip(i18n::tr("re.registerValueTooltip"), reg.Name, symbolic.c_str(), static_cast<unsigned long long>(reg.Value), static_cast<long long>(reg.Value));', 'watch register tooltip')
+          text = replace_once(text, '_status = std::string("watch address field <- ") + reg.Name;', 'char message[160]{}; std::snprintf(message,sizeof(message),i18n::tr("re.watchAddressFromRegister"),reg.Name); _status=message;', 'watch register status')
+          path.write_text(text)
+
+          path = Path('src/ui/MemoryInspector.cpp')
+          text = path.read_text()
+          text = text.replace('state.Status="execution probe cancelled"', 'state.Status=ui::i18n::tr("re.executionProbeCancelled")')
+          text = text.replace('state.Status="armed for next execution"', 'state.Status=ui::i18n::tr("re.armedForNextExecution")')
+          text = text.replace('state.Status="select an address"', 'state.Status=ui::i18n::tr("re.selectAddressStatus")')
+          text = text.replace('error.empty()?"invalid memory address":error', 'error.empty()?ui::i18n::tr("re.invalidMemoryAddress"):error')
+          text = text.replace('"ARMED %s — %s"', 'ui::i18n::tr("re.armedFormat")')
+          path.write_text(text)
+
+          path = Path('src/ui/I18nReverseEngineering.cpp')
+          text = path.read_text()
+          anchor = '            {"re.regOriginalSyscall"'
+          extra = '''            {"re.invalidAddress","Invalid address","Endereço inválido"},{"re.invalidMemoryAddress","Invalid memory address","Endereço de memória inválido"},{"re.selectAddressStatus","Select an address","Selecione um endereço"},
+            {"re.executionProbeCancelled","Execution probe cancelled","Sonda de execução cancelada"},{"re.armedForNextExecution","Armed for next execution","Armado para a próxima execução"},{"re.armedFormat","ARMED %s - %s","ARMADO %s - %s"},{"re.armedProbeAt","Armed one-shot execution probe at %s","Sonda de execução de disparo único armada em %s"},
+            {"re.registerValueTooltip","%s = %s\\nunsigned: %llu\\nsigned: %lld","%s = %s\\nsem sinal: %llu\\ncom sinal: %lld"},{"re.watchAddressFromRegister","Watch address field <- %s","Campo de endereço do monitor <- %s"},
+            {"re.invalidValueTarget","Invalid value target","Alvo de valor inválido"},{"re.valueOutsideTypeRange","Value is outside the selected type range","O valor está fora do intervalo do tipo selecionado"},{"re.invalidPointerValue","Invalid pointer value","Valor de ponteiro inválido"},{"re.boolValueHint","Bool must be true/false, 1/0 or 0x1/0x0","Bool deve ser true/false, 1/0 ou 0x1/0x0"},
+            {"re.invalidNumericValue","Invalid numeric value","Valor numérico inválido"},{"re.stringTooWide","String is wider than the watched value","A string é maior que o valor monitorado"},{"re.byteArrayWidthMismatch","Byte-array write must keep the watched width","A escrita do array de bytes deve manter a largura monitorada"},
+            {"re.watchWidthUnknown","Cannot determine watched value width","Não foi possível determinar a largura do valor monitorado"},{"re.watchAlreadyExists","Value is already in the watch list","O valor já está na lista de monitoramento"},{"re.unreadable","<unreadable>","<ilegível>"},{"re.invalidWatchAddress","Invalid watch address","Endereço de monitoramento inválido"},{"re.invalidRange","Invalid range","Intervalo inválido"},
+'''
+          if anchor not in text: raise RuntimeError('i18n insertion anchor missing')
+          text = text.replace(anchor, extra + anchor, 1)
+          path.write_text(text)
+          PY
+
+      - name: Remove one-shot workflow and commit
+        run: |
+          git rm .github/workflows/finalize-audit.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/native/MemoryScanner.cpp src/ui/pages/MemoryScannerPage.cpp src/ui/pages/MemoryWatchPage.cpp src/ui/MemoryInspector.cpp src/ui/I18nReverseEngineering.cpp
+          git commit -m 'fix: final x86 and i18n audit'
+          git push origin HEAD:master
