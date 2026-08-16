@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [master, refactor/split-main, feature/quickjs-bindings]
+    branches: [master]
   pull_request:
     branches: [master]
 
