@@ -1,6 +1,7 @@
 #include "quartz/client/Model.hpp"
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/ui/PageContext.hpp"
+#include "quartz/client/ui/Configuration.hpp"
 #include "quartz/client/ui/I18n.hpp"
 #include "quartz/client/ui/Theme.hpp"
 
@@ -333,27 +334,35 @@ namespace quartz::client
 
         if (ImGui::BeginPopup("##QuartzAppearancePopup"))
         {
-            ImGui::SeparatorText(ui::i18n::tr("header.appearance"));
-            ui::drawThemeSelector(settings);
-            ui::i18n::drawLanguageSelector();
-            ImGui::Separator();
-            ImGui::SetNextItemWidth(220.0f);
-            ImGui::SliderFloat(ui::i18n::tr("appearance.globalBrightness"), &settings.GlobalBrightness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-            ImGui::SetNextItemWidth(220.0f);
-            ImGui::SliderFloat(ui::i18n::tr("appearance.previewInterpolation"), &settings.LiveOutputInterpolation, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", ui::i18n::tr("appearance.previewInterpolationTooltip"));
-            if (ImGui::Button(ui::i18n::tr("appearance.reset")))
+            if (ImGui::BeginTabBar("QuartzSettingsTabs"))
             {
-                settings.UiTheme = defaults.UiTheme;
-                settings.SuspiciousColorThemes = defaults.SuspiciousColorThemes;
-                settings.UiCornerRounding = defaults.UiCornerRounding;
-                settings.GlobalBrightness = defaults.GlobalBrightness;
-                settings.LiveOutputInterpolation = defaults.LiveOutputInterpolation;
-                ui::applyTheme(settings.UiTheme);
-                ui::applyCornerRounding(settings.UiCornerRounding);
-                ui::saveThemePreferences(settings);
+                if (ImGui::BeginTabItem(ui::i18n::tr("header.appearance")))
+                {
+                    ui::drawThemeSelector(settings);
+                    ui::i18n::drawLanguageSelector();
+                    ImGui::Separator();
+                    ImGui::SetNextItemWidth(220.0f);
+                    ImGui::SliderFloat(ui::i18n::tr("appearance.globalBrightness"), &settings.GlobalBrightness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+                    ImGui::SetNextItemWidth(220.0f);
+                    ImGui::SliderFloat(ui::i18n::tr("appearance.previewInterpolation"), &settings.LiveOutputInterpolation, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", ui::i18n::tr("appearance.previewInterpolationTooltip"));
+                    if (ImGui::Button(ui::i18n::tr("appearance.reset")))
+                    {
+                        settings.UiTheme = defaults.UiTheme;
+                        settings.SuspiciousColorThemes = defaults.SuspiciousColorThemes;
+                        settings.UiCornerRounding = defaults.UiCornerRounding;
+                        settings.GlobalBrightness = defaults.GlobalBrightness;
+                        settings.LiveOutputInterpolation = defaults.LiveOutputInterpolation;
+                        ui::applyTheme(settings.UiTheme);
+                        ui::applyCornerRounding(settings.UiCornerRounding);
+                        ui::saveThemePreferences(settings);
+                    }
+                    ImGui::TextDisabled("%s", settingsPath().string().c_str());
+                    ImGui::EndTabItem();
+                }
+                if (ImGui::BeginTabItem(ui::i18n::tr("header.configuration"))) { ui::drawConfigurationSettings(); ImGui::EndTabItem(); }
+                ImGui::EndTabBar();
             }
-            ImGui::TextDisabled("%s", settingsPath().string().c_str());
             ImGui::EndPopup();
         }
         ImGui::Separator();
