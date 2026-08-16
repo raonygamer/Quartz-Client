@@ -27,7 +27,8 @@ jobs:
           ! grep -n 'instance->Function' src/runtime/QuickJSWorkspace.cpp
           grep -q 'JS_EVAL_TYPE_MODULE' src/runtime/QuickJSWorkspace.cpp
           grep -q 'JS_ExecutePendingJob' src/runtime/QuickJSWorkspace.cpp
-          grep -q '@quartz/client' src/runtime/QuickJSSDK.cpp
+          grep -q '@quartz/client' src/runtime/QuickJSWorkspace.cpp
+          grep -q '@quartz/native' src/runtime/QuickJSSDK.cpp
       - name: Type eraser smoke test
         run: |
           cat >/tmp/ts-strip.cpp <<'CPP'
