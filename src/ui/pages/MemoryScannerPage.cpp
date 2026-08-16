@@ -2,6 +2,8 @@
 #include "quartz/client/ui/pages/MemoryWatchPage.hpp"
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
+#include "quartz/client/ui/AddressInput.hpp"
+#include "quartz/client/ui/ProcessPicker.hpp"
 #include "quartz/client/ui/ReverseEngineeringNavigation.hpp"
 #include "quartz/client/ui/SignatureMaker.hpp"
 #include <cerrno>
@@ -236,14 +238,8 @@ namespace quartz::client::ui
         _scanner.poll();
         if (_processes.empty()) _processes = enumerateRuntimeProcesses();
         ImGui::TextWrapped("Cheat-Engine-style value scanning backed by process_vm_readv() and the shared Quartz worker pool. New Scan snapshots candidates; Next Scan filters the previous candidate bitmap without storing millions of uintptr_t values.");
-        if (ImGui::Button("Refresh processes")) _processes = enumerateRuntimeProcesses();
-        ImGui::SameLine(); ImGui::SetNextItemWidth(420.0f);
+        drawProcessPicker("MemoryScannerProcess", _processes, _pid, _processSearch.data(), _processSearch.size(), 520.0f);
         const RuntimeProcessInfo* selected = nullptr; for (const auto& process : _processes) if (process.Pid == _pid) { selected = &process; break; }
-        if (ImGui::BeginCombo("Process", selected ? runtimeProcessDisplayTitle(*selected).c_str() : "<select process>"))
-        {
-            for (const auto& process : _processes) { const bool active = process.Pid == _pid; const std::string label = runtimeProcessDisplayTitle(process) + "  [" + std::to_string(process.Pid) + "]"; if (ImGui::Selectable(label.c_str(), active)) _pid = process.Pid; if (active) ImGui::SetItemDefaultFocus(); }
-            ImGui::EndCombo();
-        }
 
         ImGui::SeparatorText("Scan");
         ImGui::SetNextItemWidth(180.0f);
@@ -375,8 +371,8 @@ namespace quartz::client::ui
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) openInspector(manager, watch.Pid, watch.Address);
                 if (ImGui::BeginPopupContextItem("WatchValueContext"))
                 {
-                    ImGui::SeparatorText("Change address"); ImGui::SetNextItemWidth(220.0f); ImGui::InputText("##WatchAddress", watch.AddressText.data(), watch.AddressText.size());
-                    if (ImGui::Button("Apply address")) { std::uintptr_t address = 0; if (!parseAddress(watch.AddressText.data(), address)) _status = "invalid watch address"; else { watch.Address = address; watch.LastRefresh = 0.0; watch.LastFreeze = 0.0; _status = "watch address changed"; } }
+                    ImGui::SeparatorText("Change address"); drawAddressInput("##WatchAddress", watch.AddressText.data(), watch.AddressText.size(), watch.Pid, 260.0f);
+                    if (ImGui::Button("Apply address")) { std::uintptr_t address = 0; std::string error; if (!evaluateAddressExpression(watch.Pid, watch.AddressText.data(), address, error) || address == 0) _status = error.empty() ? "invalid watch address" : error; else { watch.Address = address; watch.LastRefresh = 0.0; watch.LastFreeze = 0.0; _status = "watch address changed"; } }
                     ImGui::SeparatorText("Change type"); ImGui::SetNextItemWidth(180.0f);
                     if (ImGui::BeginCombo("##WatchType", memoryScanValueTypeName(watch.Type)))
                     {
@@ -413,12 +409,12 @@ namespace quartz::client::ui
 
         ImGui::SeparatorText("Derive byte pattern from address range");
         ImGui::TextDisabled("Reads [start, end) and optionally wildcards relative immediates plus RIP-relative displacements decoded by Zydis.");
-        ImGui::SetNextItemWidth(180.0f); ImGui::InputText("Start", _rangeStart.data(), _rangeStart.size()); ImGui::SameLine(); ImGui::SetNextItemWidth(180.0f); ImGui::InputText("End", _rangeEnd.data(), _rangeEnd.size());
+        drawAddressInput("Start", _rangeStart.data(), _rangeStart.size(), _pid, 220.0f); ImGui::SameLine(); drawAddressInput("End", _rangeEnd.data(), _rangeEnd.size(), _pid, 220.0f);
         ImGui::Checkbox("Wildcard relocation-sensitive operands", &_wildcardRelocations);
         if (ImGui::Button("Derive pattern"))
         {
-            std::uintptr_t start = 0, end = 0;
-            if (!parseAddress(_rangeStart.data(), start) || !parseAddress(_rangeEnd.data(), end)) _status = "invalid range";
+            std::uintptr_t start = 0, end = 0; std::string error;
+            if (!evaluateAddressExpression(_pid, _rangeStart.data(), start, error) || !evaluateAddressExpression(_pid, _rangeEnd.data(), end, error) || start == 0 || end <= start) _status = error.empty() ? "invalid range" : error;
             else _derivedPattern = deriveRuntimeBytePattern(_pid, start, end, _wildcardRelocations, _status);
         }
         if (!_derivedPattern.empty())
