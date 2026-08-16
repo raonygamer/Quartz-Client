@@ -81,6 +81,7 @@ namespace quartz::client
             std::array<char, 256> AddressText{};
             std::vector<DisassemblyInstruction> Instructions;
             std::vector<std::uintptr_t> DisplayLineAddresses;
+            std::unordered_map<std::uintptr_t,std::size_t> DisplayLineByAddress;
             std::map<std::pair<pid_t, std::uintptr_t>, DisassemblyMarker> Markers;
             std::map<std::pair<pid_t, std::uintptr_t>, std::array<char, 96>> FunctionNames;
             std::vector<std::uint8_t> RawBytes;
@@ -97,8 +98,12 @@ namespace quartz::client
             bool SelectAssemblerTab = false;
             std::optional<std::uintptr_t> PendingInspectorAddress;
             std::optional<std::uintptr_t> PendingScrollAnchor;
+            TextEditor::Scroll PendingScrollAlignment = TextEditor::Scroll::alignTop;
+            float DisassemblyEdgeScroll = 0.0f;
+            double LastDisassemblyWheel = 0.0;
             RuntimeFunctionAnalysisSnapshot FunctionAnalysis;
             std::uint64_t FunctionRevision = 0;
+            double LastFunctionAnalysisPoll = 0.0;
             double LastDisassemblyRefresh = 0.0;
             double LastRawRefresh = 0.0;
             AssemblerState Assembler;
@@ -196,6 +201,16 @@ namespace quartz::client
             const auto it = std::ranges::find(ui.Instructions, address, &DisassemblyInstruction::Address); return it == ui.Instructions.end() ? std::nullopt : std::optional<std::size_t>(static_cast<std::size_t>(it - ui.Instructions.begin()));
         }
 
+        std::optional<std::uintptr_t> displayAddressNearRow(const EnhancedMemoryInspectorState& ui, std::size_t row)
+        {
+            if (ui.DisplayLineAddresses.empty()) return std::nullopt; row = std::min(row,ui.DisplayLineAddresses.size()-1); if (ui.DisplayLineAddresses[row]) return ui.DisplayLineAddresses[row];
+            for (std::size_t distance=1;distance<ui.DisplayLineAddresses.size();++distance)
+            {
+                if (row>=distance&&ui.DisplayLineAddresses[row-distance]) return ui.DisplayLineAddresses[row-distance]; if (row+distance<ui.DisplayLineAddresses.size()&&ui.DisplayLineAddresses[row+distance]) return ui.DisplayLineAddresses[row+distance];
+            }
+            return std::nullopt;
+        }
+
         const RuntimeFunctionCandidate* functionForAddress(const RuntimeFunctionAnalysisSnapshot& analysis, const std::uintptr_t address)
         {
             const RuntimeFunctionCandidate* result = nullptr; for (const auto& candidate : analysis.Candidates) { if (candidate.Address > address) break; result = &candidate; } return result;
@@ -223,7 +238,7 @@ namespace quartz::client
         void rebuildDisassembly(RuntimeMemoryInspectorState& state)
         {
             auto& ui = enhancedMemoryInspectorState(); const RuntimeX86Mode mode = runtimeProcessX86Mode(state.Pid); const auto modules = enumerateRuntimeModules(state.Pid); auto analysis = runtimeFunctionAnalysisSnapshot(state.Pid, state.Address); ui.FunctionAnalysis = analysis; ui.FunctionRevision = analysis.Revision;
-            std::ostringstream disassembly; ui.Instructions.clear(); ui.DisplayLineAddresses.clear(); std::size_t offset = 0;
+            std::ostringstream disassembly; ui.Instructions.clear(); ui.DisplayLineAddresses.clear(); ui.DisplayLineByAddress.clear(); std::size_t offset = 0;
             while (offset < state.Original.size())
             {
                 const std::uintptr_t address = state.Address + offset; RuntimeDecodedInstruction decoded; std::size_t length = 1;
@@ -241,7 +256,7 @@ namespace quartz::client
                 {
                     const std::string name = functionName(ui, state.Pid, modules, *candidate); disassembly << "; ── " << name << " ──  [" << runtimeFunctionCandidateSourceName(candidate->Source) << ", " << static_cast<int>(candidate->Confidence * 100.0f) << "%]\n"; ui.DisplayLineAddresses.push_back(0);
                 }
-                instruction.DisplayLine = ui.DisplayLineAddresses.size(); ui.DisplayLineAddresses.push_back(instruction.Address);
+                instruction.DisplayLine = ui.DisplayLineAddresses.size(); ui.DisplayLineAddresses.push_back(instruction.Address); ui.DisplayLineByAddress[instruction.Address]=instruction.DisplayLine;
                 std::string text = instruction.Decoded.Text; if (instruction.Decoded.Target && instruction.Decoded.Branch != RuntimeBranchKind::None)
                 {
                     const std::size_t space = text.find_first_of(" \t"); const std::string op = space == std::string::npos ? text : text.substr(0, space); const auto targetCandidate = std::ranges::find(ui.FunctionAnalysis.Candidates, *instruction.Decoded.Target, &RuntimeFunctionCandidate::Address);
@@ -254,7 +269,7 @@ namespace quartz::client
             state.Disassembly.SetText(disassembly.str()); applyDisassemblyMarkers(state); ui.LastProbeRunning = executionProbe().running(); ui.LastProbePid = executionProbe().pid(); ui.LastProbeAddress = executionProbe().address(); ui.DisassemblyDirty = false;
             if (ui.PendingScrollAnchor)
             {
-                const auto it = std::ranges::find(ui.DisplayLineAddresses, *ui.PendingScrollAnchor); if (it != ui.DisplayLineAddresses.end()) state.Disassembly.ScrollToLine(static_cast<std::size_t>(it - ui.DisplayLineAddresses.begin()), TextEditor::Scroll::alignTop); ui.PendingScrollAnchor.reset();
+                const auto it = std::ranges::find(ui.DisplayLineAddresses, *ui.PendingScrollAnchor); if (it != ui.DisplayLineAddresses.end()) state.Disassembly.ScrollToLine(static_cast<std::size_t>(it - ui.DisplayLineAddresses.begin()), ui.PendingScrollAlignment); ui.PendingScrollAnchor.reset(); ui.PendingScrollAlignment=TextEditor::Scroll::alignTop;
             }
         }
 
@@ -272,9 +287,9 @@ namespace quartz::client
             if (!readProcessMemoryBlock(state.Pid, state.Address, ui.RawBytes, error)) { ui.RawBytes.clear(); return false; } ui.LastRawRefresh = runtimeSteadySeconds(); return true;
         }
 
-        void setInspectorAddress(RuntimeMemoryInspectorState& state, const std::uintptr_t address, const std::optional<std::uintptr_t> scrollAnchor = std::nullopt)
+        void setInspectorAddress(RuntimeMemoryInspectorState& state, const std::uintptr_t address, const std::optional<std::uintptr_t> scrollAnchor = std::nullopt, const TextEditor::Scroll alignment = TextEditor::Scroll::alignTop)
         {
-            auto& ui = enhancedMemoryInspectorState(); if (scrollAnchor) ui.PendingScrollAnchor = scrollAnchor; state.Address = address; ui.AddressTextValue = std::numeric_limits<std::uintptr_t>::max(); syncInspectorAddressText(state); refreshEnhancedRuntimeMemoryInspector(state);
+            auto& ui = enhancedMemoryInspectorState(); if (scrollAnchor) { ui.PendingScrollAnchor = scrollAnchor; ui.PendingScrollAlignment=alignment; } state.Address = address; ui.AddressTextValue = std::numeric_limits<std::uintptr_t>::max(); syncInspectorAddressText(state); refreshEnhancedRuntimeMemoryInspector(state);
         }
 
         std::string groupedBytesLine(const std::span<const std::uint8_t> bytes, const std::uintptr_t base, const std::size_t offset, const std::size_t count, const std::span<const RuntimeProcessModule> modules)
@@ -428,28 +443,32 @@ namespace quartz::client
             const float s = 4.0f; if (downward) draw->AddTriangleFilled(tip, ImVec2(tip.x - s, tip.y - s * 1.5f), ImVec2(tip.x + s, tip.y - s * 1.5f), color); else draw->AddTriangleFilled(tip, ImVec2(tip.x - s, tip.y + s * 1.5f), ImVec2(tip.x + s, tip.y + s * 1.5f), color);
         }
 
+        void drawLeftArrowHead(ImDrawList* draw, const ImVec2 tip, const ImU32 color)
+        {
+            const float s=4.0f; draw->AddTriangleFilled(tip,ImVec2(tip.x+s*1.6f,tip.y-s),ImVec2(tip.x+s*1.6f,tip.y+s),color);
+        }
+
         void drawBranchLanes(RuntimeMemoryInspectorState& state, const ImVec2 min, const ImVec2 max)
         {
-            auto& ui = enhancedMemoryInspectorState(); if (ui.Instructions.empty()) return; const float width = 92.0f, left = max.x - width, lineHeight = std::max(state.Disassembly.GetLineHeight(), ImGui::GetTextLineHeight()); const std::size_t firstRow = state.Disassembly.GetFirstVisibleRow(), lastRow = state.Disassembly.GetLastVisibleRow(); auto* draw = ImGui::GetWindowDrawList();
+            auto& ui = enhancedMemoryInspectorState(); if (ui.Instructions.empty()) return; const float width = 104.0f, left = max.x - width, dockX=left-10.0f, lineHeight = std::max(state.Disassembly.GetLineHeight(), ImGui::GetTextLineHeight()); const std::size_t firstRow = state.Disassembly.GetFirstVisibleRow(), lastRow = state.Disassembly.GetLastVisibleRow(); auto* draw = ImGui::GetWindowDrawList();
             ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_ChildBg); bg.w = 0.72f; draw->AddRectFilled(ImVec2(left,min.y), max, ImGui::ColorConvertFloat4ToU32(bg)); draw->AddLine(ImVec2(left,min.y), ImVec2(left,max.y), ImGui::GetColorU32(ImGuiCol_Border));
-            std::unordered_map<std::uintptr_t,std::size_t> lineFor; for (const auto& instruction : ui.Instructions) lineFor[instruction.Address] = instruction.DisplayLine;
             std::size_t branchIndex = 0;
             for (std::size_t i = 0; i < ui.Instructions.size(); ++i)
             {
-                const auto& instruction = ui.Instructions[i]; if (instruction.Decoded.Branch == RuntimeBranchKind::None || instruction.Decoded.Branch == RuntimeBranchKind::Return || !instruction.Decoded.Target) continue; const std::size_t sourceRow = state.Disassembly.DocPos2VisPos({instruction.DisplayLine,0}).row; if (sourceRow + 1 < firstRow || sourceRow > lastRow + 1) { ++branchIndex; continue; }
-                const float sourceY = min.y + (static_cast<float>(sourceRow) - static_cast<float>(firstRow) + 0.5f) * lineHeight; const float laneX = max.x - 12.0f - static_cast<float>(branchIndex % 6) * 11.0f; ++branchIndex;
-                const auto targetIt = lineFor.find(*instruction.Decoded.Target); const bool targetVisible = targetIt != lineFor.end(); std::size_t targetRow = 0; if (targetVisible) targetRow = state.Disassembly.DocPos2VisPos({targetIt->second,0}).row; const bool targetAbove = !targetVisible ? *instruction.Decoded.Target < instruction.Address : targetRow < firstRow; const bool targetBelow = !targetVisible ? *instruction.Decoded.Target > instruction.Address : targetRow > lastRow; float targetY = targetAbove ? min.y + 5.0f : targetBelow ? max.y - 5.0f : min.y + (static_cast<float>(targetRow) - static_cast<float>(firstRow) + 0.5f) * lineHeight;
+                const auto& instruction = ui.Instructions[i]; if (instruction.Decoded.Branch == RuntimeBranchKind::None || instruction.Decoded.Branch == RuntimeBranchKind::Return || !instruction.Decoded.Target) continue; const std::size_t sourceRow = instruction.DisplayLine; if (sourceRow + 1 < firstRow || sourceRow > lastRow + 1) { ++branchIndex; continue; }
+                const float sourceY = min.y + (static_cast<float>(sourceRow) - static_cast<float>(firstRow) + 0.5f) * lineHeight; const float laneX = max.x - 12.0f - static_cast<float>(branchIndex % 7) * 11.0f; ++branchIndex;
+                const auto targetIt = ui.DisplayLineByAddress.find(*instruction.Decoded.Target); const bool targetVisible = targetIt != ui.DisplayLineByAddress.end(); std::size_t targetRow = targetVisible ? targetIt->second : 0; const bool targetAbove = !targetVisible ? *instruction.Decoded.Target < instruction.Address : targetRow < firstRow; const bool targetBelow = !targetVisible ? *instruction.Decoded.Target > instruction.Address : targetRow > lastRow; float targetY = targetAbove ? min.y + 5.0f : targetBelow ? max.y - 5.0f : min.y + (static_cast<float>(targetRow) - static_cast<float>(firstRow) + 0.5f) * lineHeight;
                 float targetAlpha = 0.85f, fallAlpha = 0.65f; std::optional<bool> captured;
                 if (instruction.Decoded.Branch == RuntimeBranchKind::Conditional && ui.HasCapturedHit && ui.CapturedHit.Pid == state.Pid && ui.CapturedHit.Address == instruction.Address)
                 {
                     const auto space = instruction.Decoded.Text.find_first_of(" \t"); captured = branchCondition(instruction.Decoded.Text.substr(0, space), ui.CapturedHit.Registers.eflags); if (captured) { targetAlpha = *captured ? 1.0f : 0.24f; fallAlpha = *captured ? 0.24f : 1.0f; }
                 }
                 ImU32 targetColor = instruction.Decoded.Branch == RuntimeBranchKind::Conditional ? ImGui::ColorConvertFloat4ToU32(ImVec4(0.28f,0.88f,0.48f,targetAlpha)) : instruction.Decoded.Branch == RuntimeBranchKind::Call ? ImGui::ColorConvertFloat4ToU32(ImVec4(0.68f,0.48f,0.95f,0.85f)) : ImGui::ColorConvertFloat4ToU32(ImVec4(0.32f,0.68f,0.96f,0.85f));
-                draw->AddLine(ImVec2(left + 3.0f,sourceY), ImVec2(laneX,sourceY), targetColor, 1.5f); draw->AddLine(ImVec2(laneX,sourceY), ImVec2(laneX,targetY), targetColor, 1.5f);
-                if (!targetAbove && !targetBelow) { draw->AddLine(ImVec2(laneX,targetY), ImVec2(left + 3.0f,targetY), targetColor, 1.5f); draw->AddTriangleFilled(ImVec2(left + 2.0f,targetY), ImVec2(left + 8.0f,targetY - 3.5f), ImVec2(left + 8.0f,targetY + 3.5f), targetColor); } else drawArrowHead(draw, ImVec2(laneX,targetY), targetBelow, targetColor);
+                draw->AddCircleFilled(ImVec2(dockX,sourceY),2.6f,targetColor); draw->AddLine(ImVec2(dockX,sourceY), ImVec2(laneX,sourceY), targetColor, 1.7f); draw->AddLine(ImVec2(laneX,sourceY), ImVec2(laneX,targetY), targetColor, 1.7f);
+                if (!targetAbove && !targetBelow) { draw->AddLine(ImVec2(laneX,targetY), ImVec2(dockX,targetY), targetColor, 1.7f); drawLeftArrowHead(draw,ImVec2(dockX,targetY),targetColor); } else drawArrowHead(draw, ImVec2(laneX,targetY), targetBelow, targetColor);
                 if (instruction.Decoded.Branch == RuntimeBranchKind::Conditional && i + 1 < ui.Instructions.size())
                 {
-                    const std::size_t fallRow = state.Disassembly.DocPos2VisPos({ui.Instructions[i + 1].DisplayLine,0}).row; const float fallY = min.y + (static_cast<float>(fallRow) - static_cast<float>(firstRow) + 0.5f) * lineHeight; const ImU32 failColor = ImGui::ColorConvertFloat4ToU32(ImVec4(0.95f,0.34f,0.34f,fallAlpha)); const float failX = left + 15.0f; draw->AddLine(ImVec2(left + 3.0f,sourceY), ImVec2(failX,sourceY), failColor, 1.4f); draw->AddLine(ImVec2(failX,sourceY), ImVec2(failX,fallY), failColor, 1.4f); drawArrowHead(draw, ImVec2(failX,fallY), true, failColor);
+                    const std::size_t fallRow = ui.Instructions[i + 1].DisplayLine; const float fallY = min.y + (static_cast<float>(fallRow) - static_cast<float>(firstRow) + 0.5f) * lineHeight; const ImU32 failColor = ImGui::ColorConvertFloat4ToU32(ImVec4(0.95f,0.34f,0.34f,fallAlpha)); const float failX = left + 15.0f; draw->AddLine(ImVec2(dockX,sourceY), ImVec2(failX,sourceY), failColor, 1.5f); draw->AddLine(ImVec2(failX,sourceY), ImVec2(failX,fallY), failColor, 1.5f); draw->AddLine(ImVec2(failX,fallY),ImVec2(dockX,fallY),failColor,1.5f); drawLeftArrowHead(draw,ImVec2(dockX,fallY),failColor);
                 }
             }
             draw->AddText(ImVec2(left + 4.0f,min.y + 4.0f), ImGui::ColorConvertFloat4ToU32(ImVec4(0.28f,0.88f,0.48f,0.8f)), "T"); draw->AddText(ImVec2(left + 18.0f,min.y + 4.0f), ImGui::ColorConvertFloat4ToU32(ImVec4(0.95f,0.34f,0.34f,0.8f)), "F");
@@ -478,8 +497,8 @@ namespace quartz::client
 
     void refreshEnhancedRuntimeMemoryInspector(RuntimeMemoryInspectorState& state)
     {
-        auto& ui = enhancedMemoryInspectorState(); state.ReadSize = std::clamp(state.ReadSize, 16, 4096); if (state.Pid <= 0 || state.Address == 0) { state.Original.clear(); ui.RawBytes.clear(); state.Disassembly.SetText({}); ui.Instructions.clear(); ui.DisplayLineAddresses.clear(); state.Status = "select a process and enter an address"; return; }
-        if (!refreshDisassemblyBytes(state, true)) return; refreshRawBytes(state); ui.LastPid = state.Pid; ui.LastAddress = state.Address; ui.LastReadSize = state.ReadSize; if (ui.SyncedAddress < state.Address || ui.SyncedAddress >= state.Address + state.Original.size()) ui.SyncedAddress = state.Address; state.Status = "read " + std::to_string(state.Original.size()) + " bytes as " + runtimeX86ModeName(runtimeProcessX86Mode(state.Pid)); syncInspectorAddressText(state); requestRuntimeFunctionAnalysis(state.Pid, state.Address);
+        auto& ui = enhancedMemoryInspectorState(); state.ReadSize = std::clamp(state.ReadSize, 16, 4096); if (state.Pid <= 0 || state.Address == 0) { state.Original.clear(); ui.RawBytes.clear(); state.Disassembly.SetText({}); ui.Instructions.clear(); ui.DisplayLineAddresses.clear(); ui.DisplayLineByAddress.clear(); state.Status = "select a process and enter an address"; return; }
+        if (!refreshDisassemblyBytes(state, true)) return; refreshRawBytes(state); ui.LastPid = state.Pid; ui.LastAddress = state.Address; ui.LastReadSize = state.ReadSize; ui.LastFunctionAnalysisPoll=0.0; if (ui.SyncedAddress < state.Address || ui.SyncedAddress >= state.Address + state.Original.size()) ui.SyncedAddress = state.Address; state.Status = "read " + std::to_string(state.Original.size()) + " bytes as " + runtimeX86ModeName(runtimeProcessX86Mode(state.Pid)); syncInspectorAddressText(state); requestRuntimeFunctionAnalysis(state.Pid, state.Address);
     }
 
     void drawEnhancedRuntimeMemoryInspector(RuntimeMemoryInspectorState& state)
@@ -487,8 +506,13 @@ namespace quartz::client
         auto& ui = enhancedMemoryInspectorState(); auto& probe = executionProbe(); auto& configuration = runtimeConfiguration(); syncInspectorAddressText(state); if ((ui.LastPid != state.Pid || ui.LastAddress != state.Address || ui.LastReadSize != state.ReadSize) && state.Pid > 0 && state.Address != 0) refreshEnhancedRuntimeMemoryInspector(state); configureDisassemblyEditor(state);
         if (const auto hit = probe.hit(); hit && hit->HasRegisters && hit->Pid == state.Pid && hit->Time > ui.LastProbeHitTime) { ui.CapturedHit = *hit; ui.HasCapturedHit = true; ui.LastProbeHitTime = hit->Time; ui.SyncedAddress = hit->Address; ui.SelectRegistersTab = true; state.Status = "captured registers at " + runtimeFormatProcessAddress(state.Pid, hit->Address) + " on TID " + std::to_string(hit->Tid); ui.DisassemblyDirty = true; }
         const bool probeRunning = probe.running(); const pid_t probePid = probe.pid(); const std::uintptr_t probeAddress = probe.address(); if (probeRunning != ui.LastProbeRunning || probePid != ui.LastProbePid || probeAddress != ui.LastProbeAddress) ui.DisassemblyDirty = true;
-        if (configuration.FunctionHeuristics && state.Pid > 0 && state.Address) { requestRuntimeFunctionAnalysis(state.Pid, state.Address); const auto snapshot = runtimeFunctionAnalysisSnapshot(state.Pid, state.Address); if (snapshot.Revision != ui.FunctionRevision) { ui.FunctionAnalysis = snapshot; ui.FunctionRevision = snapshot.Revision; ui.DisassemblyDirty = true; } }
-        const double now = runtimeSteadySeconds(); if (configuration.DisassemblyRefreshHz > 0.0f && state.Pid > 0 && state.Address && now - ui.LastDisassemblyRefresh >= 1.0 / configuration.DisassemblyRefreshHz) refreshDisassemblyBytes(state, false); if (ui.DisassemblyDirty && !state.Original.empty()) rebuildDisassembly(state);
+        const double now = runtimeSteadySeconds();
+        if (configuration.FunctionHeuristics && state.Pid > 0 && state.Address)
+        {
+            const double pollInterval=ui.FunctionAnalysis.Running?0.05:0.25;
+            if (ui.LastFunctionAnalysisPoll==0.0||now-ui.LastFunctionAnalysisPoll>=pollInterval) { requestRuntimeFunctionAnalysis(state.Pid, state.Address); const auto snapshot = runtimeFunctionAnalysisSnapshot(state.Pid, state.Address); if (snapshot.Revision != ui.FunctionRevision) { ui.FunctionAnalysis = snapshot; ui.FunctionRevision = snapshot.Revision; ui.DisassemblyDirty = true; } else ui.FunctionAnalysis.Running=snapshot.Running,ui.FunctionAnalysis.Progress=snapshot.Progress,ui.FunctionAnalysis.Status=snapshot.Status; ui.LastFunctionAnalysisPoll=now; }
+        }
+        if (configuration.DisassemblyRefreshHz > 0.0f && state.Pid > 0 && state.Address && now - ui.LastDisassemblyRefresh >= 1.0 / configuration.DisassemblyRefreshHz) refreshDisassemblyBytes(state, false); if (ui.DisassemblyDirty && !state.Original.empty()) rebuildDisassembly(state);
 
         ImGui::SeparatorText("Memory / disassembly"); int pidValue = static_cast<int>(state.Pid); ImGui::SetNextItemWidth(105.0f); if (ImGui::InputInt("PID##memory2", &pidValue)) { const pid_t old = state.Pid; state.Pid = static_cast<pid_t>(std::max(pidValue,0)); ui.LastPid = 0; if (old != state.Pid) invalidateRuntimeFunctionAnalysis(old); } ImGui::SameLine();
         const bool addressEnter = ui::drawAddressInput("Address##memory2", ui.AddressText.data(), ui.AddressText.size(), state.Pid, 260.0f, ImGuiInputTextFlags_EnterReturnsTrue); ImGui::SameLine(); ImGui::SetNextItemWidth(105.0f); if (ImGui::InputInt("Bytes##memory2", &state.ReadSize)) state.ReadSize = std::clamp(state.ReadSize,16,4096); ImGui::SameLine(); const bool readPressed = ImGui::Button("Read / disassemble");
@@ -498,7 +522,7 @@ namespace quartz::client
 
         ImGui::SeparatorText("Disassembly"); if (probeRunning && probePid == state.Pid) { ImGui::TextColored(ImVec4(1.0f,0.30f,0.30f,1.0f), "ARMED %s — armed for next execution", runtimeFormatProcessAddress(state.Pid, probeAddress).c_str()); ImGui::SameLine(); if (ImGui::SmallButton("Cancel probe")) { probe.stop(); ui.DisassemblyDirty = true; } } else if (ui.HasCapturedHit && ui.CapturedHit.Pid == state.Pid) { ImGui::TextDisabled("Last one-shot capture: %s on TID %d", runtimeFormatProcessAddress(state.Pid, ui.CapturedHit.Address).c_str(), ui.CapturedHit.Tid); ImGui::SameLine(); if (ImGui::SmallButton("Arm again")) { std::string error; if (!probe.start(state.Pid, ui.CapturedHit.Address, error)) state.Status = error; else { state.Status = "armed for next execution"; ui.DisassemblyDirty = true; } } }
         if (ui.FunctionAnalysis.Running) { ImGui::ProgressBar(ui.FunctionAnalysis.Progress, ImVec2(180.0f,0.0f), "function analysis"); ImGui::SameLine(); ImGui::TextDisabled("background / low priority — %zu candidates appear live", ui.FunctionAnalysis.Candidates.size()); } else if (!ui.FunctionAnalysis.Status.empty()) ImGui::TextDisabled("%s | %zu function hints", ui.FunctionAnalysis.Status.c_str(), ui.FunctionAnalysis.Candidates.size());
-        ImGui::TextDisabled("Scroll past either edge to keep disassembling. Green branch lanes are condition-true/taken; red is fall-through. Captured flags emphasize the path actually observed at that instruction.");
+        ImGui::TextDisabled("Scroll deliberately past either edge to keep disassembling. Green branch lanes are condition-true/taken; red is fall-through. Captured flags emphasize the path actually observed at that instruction.");
 
         installAssemblyHover(state, state.Disassembly, true); state.Disassembly.SetTextContextMenuCallback([&](TextEditor::PopupData& data)
         {
@@ -518,11 +542,13 @@ namespace quartz::client
         });
         state.Disassembly.Render("##memory-disassembly", ImVec2(-1.0f,390.0f), ImGuiChildFlags_Borders); const ImVec2 disassemblyMin = ImGui::GetItemRectMin(), disassemblyMax = ImGui::GetItemRectMax(); drawBranchLanes(state,disassemblyMin,disassemblyMax);
         const bool disassemblyHovered = ImGui::IsMouseHoveringRect(disassemblyMin,disassemblyMax); if (ui.SynchronizeAddress && state.Disassembly.IsMousePosOverTextArea(ImGui::GetMousePos()) && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { const auto pos = state.Disassembly.GetDocPosAtMousePos(ImGui::GetMousePos()); if (pos.line < ui.DisplayLineAddresses.size() && ui.DisplayLineAddresses[pos.line]) { ui.SyncedAddress = ui.DisplayLineAddresses[pos.line]; applyDisassemblyMarkers(state); } }
+        if (!disassemblyHovered||now-ui.LastDisassemblyWheel>0.35) ui.DisassemblyEdgeScroll=0.0f;
         if (disassemblyHovered && ImGui::GetIO().MouseWheel != 0.0f && !ui.Instructions.empty())
         {
-            const std::size_t firstVisible = state.Disassembly.GetFirstVisibleRow(), lastVisible = state.Disassembly.GetLastVisibleRow(); const std::uintptr_t shift = static_cast<std::uintptr_t>(std::max(state.ReadSize / 2, 64));
-            if (ImGui::GetIO().MouseWheel < 0.0f && lastVisible + 3 >= ui.DisplayLineAddresses.size()) { std::uintptr_t anchor = ui.Instructions[std::min<std::size_t>(ui.Instructions.size() / 2,ui.Instructions.size() - 1)].Address; setInspectorAddress(state,state.Address + shift,anchor); }
-            else if (ImGui::GetIO().MouseWheel > 0.0f && firstVisible <= 2 && state.Address > shift) { const std::uintptr_t anchor = ui.Instructions.front().Address; setInspectorAddress(state,state.Address - shift,anchor); }
+            ui.LastDisassemblyWheel=now; const float wheel=ImGui::GetIO().MouseWheel; const std::size_t firstVisible = state.Disassembly.GetFirstVisibleRow(), lastVisible = state.Disassembly.GetLastVisibleRow(); const bool atTop=firstVisible<=2,atBottom=lastVisible+3>=ui.DisplayLineAddresses.size(); if (wheel<0.0f&&atBottom) ui.DisassemblyEdgeScroll+=-wheel; else if (wheel>0.0f&&atTop) ui.DisassemblyEdgeScroll-=wheel; else ui.DisassemblyEdgeScroll=0.0f;
+            constexpr float EdgeThreshold=3.0f; const std::uintptr_t shift = static_cast<std::uintptr_t>(std::max(state.ReadSize / 4, 64));
+            if (ui.DisassemblyEdgeScroll>=EdgeThreshold) { const auto anchor=displayAddressNearRow(ui,lastVisible>2?lastVisible-2:lastVisible).value_or(ui.Instructions.back().Address); setInspectorAddress(state,state.Address+shift,anchor,TextEditor::Scroll::alignMiddle); ui.DisassemblyEdgeScroll=0.0f; }
+            else if (ui.DisassemblyEdgeScroll<=-EdgeThreshold&&state.Address>shift) { const auto anchor=displayAddressNearRow(ui,std::min(firstVisible+2,ui.DisplayLineAddresses.size()-1)).value_or(ui.Instructions.front().Address); setInspectorAddress(state,state.Address-shift,anchor,TextEditor::Scroll::alignMiddle); ui.DisassemblyEdgeScroll=0.0f; }
         }
         if (ui.DisassemblyDirty) rebuildDisassembly(state);
 
