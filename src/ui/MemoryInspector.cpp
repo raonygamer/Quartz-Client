@@ -120,10 +120,38 @@ namespace quartz::client
             std::vector<PatchRecord> PatchHistory;
         };
 
+        struct ProcessAddressColumns { std::string Module; std::string Relative; };
+
         EnhancedMemoryInspectorState& enhancedMemoryInspectorState() { static EnhancedMemoryInspectorState state; return state; }
 
         std::string lower(std::string value) { std::ranges::transform(value, value.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); }); return value; }
         std::string upper(std::string value) { std::ranges::transform(value, value.begin(), [](const unsigned char c) { return static_cast<char>(std::toupper(c)); }); return value; }
+
+        std::string moduleDisplayName(const RuntimeProcessModule& module)
+        {
+            if (!module.Name.empty()) return module.Name; const std::size_t slash=module.Path.find_last_of("/\\"); return slash==std::string::npos?module.Path:module.Path.substr(slash+1);
+        }
+
+        ProcessAddressColumns processAddressColumns(const std::span<const RuntimeProcessModule> modules, const std::uintptr_t address)
+        {
+            for (const auto& module:modules) if (module.contains(address)) { std::ostringstream relative; relative << "+0x" << std::hex << std::uppercase << static_cast<unsigned long long>(address-module.Base); return {moduleDisplayName(module),relative.str()}; }
+            return {{},runtimeHexAddress(address)};
+        }
+
+        std::pair<std::size_t,std::size_t> addressColumnWidths(const std::span<const RuntimeProcessModule> modules, const std::vector<DisassemblyInstruction>& instructions)
+        {
+            std::size_t moduleWidth=0,relativeWidth=0; for (const auto& instruction:instructions) { const auto columns=processAddressColumns(modules,instruction.Address); moduleWidth=std::max(moduleWidth,columns.Module.size()); relativeWidth=std::max(relativeWidth,columns.Relative.size()); } return {moduleWidth,relativeWidth};
+        }
+
+        std::pair<std::size_t,std::size_t> addressColumnWidths(const std::span<const RuntimeProcessModule> modules, const std::uintptr_t base, const std::size_t size, const std::size_t stride)
+        {
+            std::size_t moduleWidth=0,relativeWidth=0; for (std::size_t offset=0;offset<size;offset+=std::max<std::size_t>(stride,1)) { const auto columns=processAddressColumns(modules,base+offset); moduleWidth=std::max(moduleWidth,columns.Module.size()); relativeWidth=std::max(relativeWidth,columns.Relative.size()); } return {moduleWidth,relativeWidth};
+        }
+
+        std::string formatAddressColumns(const std::span<const RuntimeProcessModule> modules, const std::uintptr_t address, const std::size_t moduleWidth, const std::size_t relativeWidth)
+        {
+            const auto columns=processAddressColumns(modules,address); std::ostringstream out; out << std::left << std::setw(static_cast<int>(moduleWidth)) << std::setfill(' ') << columns.Module << "  " << std::right << std::setw(static_cast<int>(relativeWidth)) << columns.Relative; return out.str();
+        }
 
         void syncInspectorAddressText(RuntimeMemoryInspectorState& state)
         {
@@ -182,6 +210,13 @@ namespace quartz::client
             return token == "RAX" || token == "EAX" || token == "AX" || token == "AL" || token == "AH" || token == "RBX" || token == "EBX" || token == "BX" || token == "BL" || token == "BH" || token == "RCX" || token == "ECX" || token == "CX" || token == "CL" || token == "CH" || token == "RDX" || token == "EDX" || token == "DX" || token == "DL" || token == "DH" || token == "RSI" || token == "ESI" || token == "SI" || token == "SIL" || token == "RDI" || token == "EDI" || token == "DI" || token == "DIL" || token == "RBP" || token == "EBP" || token == "BP" || token == "BPL" || token == "RSP" || token == "ESP" || token == "SP" || token == "SPL" || token == "RIP" || token == "EIP" || token == "RFLAGS" || token == "EFLAGS" || token == "FLAGS" || (token.size() >= 2 && token[0] == 'R' && token[1] >= '8' && token[1] <= '9') || token.starts_with("R10") || token.starts_with("R11") || token.starts_with("R12") || token.starts_with("R13") || token.starts_with("R14") || token.starts_with("R15");
         }
 
+        const char* registerDescription(std::string token)
+        {
+            token=upper(std::move(token)); if (token=="RAX"||token=="EAX"||token=="AX"||token=="AL"||token=="AH"||token=="ORIG_RAX"||token=="ORIG_EAX") return ui::i18n::tr("re.regAccumulator"); if (token=="RBX"||token=="EBX"||token=="BX"||token=="BL"||token=="BH") return ui::i18n::tr("re.regBase"); if (token=="RCX"||token=="ECX"||token=="CX"||token=="CL"||token=="CH") return ui::i18n::tr("re.regCounter"); if (token=="RDX"||token=="EDX"||token=="DX"||token=="DL"||token=="DH") return ui::i18n::tr("re.regData");
+            if (token=="RSI"||token=="ESI"||token=="SI"||token=="SIL") return ui::i18n::tr("re.regSourceIndex"); if (token=="RDI"||token=="EDI"||token=="DI"||token=="DIL") return ui::i18n::tr("re.regDestinationIndex"); if (token=="RBP"||token=="EBP"||token=="BP"||token=="BPL") return ui::i18n::tr("re.regBasePointer"); if (token=="RSP"||token=="ESP"||token=="SP"||token=="SPL") return ui::i18n::tr("re.regStackPointer"); if (token=="RIP"||token=="EIP") return ui::i18n::tr("re.regInstructionPointer"); if (token=="RFLAGS"||token=="EFLAGS"||token=="FLAGS") return ui::i18n::tr("re.regFlags");
+            if (token=="CS"||token=="SS"||token=="DS"||token=="ES"||token=="FS"||token=="GS") return ui::i18n::tr("re.regSegment"); if (token=="FS_BASE"||token=="GS_BASE") return ui::i18n::tr("re.regSegmentBase"); if (token.size()>=2&&token[0]=='R'&&std::isdigit(static_cast<unsigned char>(token[1]))) return ui::i18n::tr("re.regExtended"); return nullptr;
+        }
+
         std::optional<bool> branchCondition(const std::string_view mnemonic, const std::uint64_t flags)
         {
             const bool cf = flags & (1ULL << 0), pf = flags & (1ULL << 2), zf = flags & (1ULL << 6), sf = flags & (1ULL << 7), of = flags & (1ULL << 11); const std::string op = lower(std::string(mnemonic));
@@ -193,9 +228,7 @@ namespace quartz::client
 
         const char* mnemonicDescription(const std::string_view mnemonic) noexcept
         {
-            if (mnemonic == "mov") return "Copy the source operand into the destination."; if (mnemonic == "lea") return "Compute an effective address without dereferencing memory."; if (mnemonic == "cmp") return "Subtract operands for flags only; the result is discarded."; if (mnemonic == "test") return "Bitwise AND operands for flags only; the result is discarded.";
-            if (mnemonic == "call") return "Call a procedure and push a return address."; if (mnemonic == "ret" || mnemonic == "retf") return "Return to the saved caller address."; if (mnemonic == "jmp") return "Unconditional control-flow transfer."; if (!mnemonic.empty() && mnemonic.front() == 'j') return "Conditional control-flow transfer based on CPU flags.";
-            if (mnemonic == "push") return "Push an operand onto the stack."; if (mnemonic == "pop") return "Pop the top stack value into an operand."; if (mnemonic == "nop") return "No operation; commonly used as patch padding."; return nullptr;
+            if (mnemonic == "mov") return ui::i18n::tr("re.asmMov"); if (mnemonic == "lea") return ui::i18n::tr("re.asmLea"); if (mnemonic == "cmp") return ui::i18n::tr("re.asmCmp"); if (mnemonic == "test") return ui::i18n::tr("re.asmTest"); if (mnemonic == "call") return ui::i18n::tr("re.asmCall"); if (mnemonic == "ret" || mnemonic == "retf") return ui::i18n::tr("re.asmRet"); if (mnemonic == "jmp") return ui::i18n::tr("re.asmJmp"); if (!mnemonic.empty() && mnemonic.front() == 'j') return ui::i18n::tr("re.asmJcc"); if (mnemonic == "push") return ui::i18n::tr("re.asmPush"); if (mnemonic == "pop") return ui::i18n::tr("re.asmPop"); if (mnemonic == "nop") return ui::i18n::tr("re.asmNop"); return nullptr;
         }
 
         std::string tokenAt(const TextEditor& editor, const TextEditor::DocPos pos)
@@ -257,9 +290,9 @@ namespace quartz::client
             for (std::size_t line = 0; line < ui.DisplayLineAddresses.size(); ++line)
             {
                 const std::uintptr_t address = ui.DisplayLineAddresses[line]; if (!address) continue;
-                if (address == armedAddress) { state.Disassembly.AddMarker(line, IM_COL32(255,80,80,255), IM_COL32(180,30,30,82), "armed for next execution", "armed for next execution"); continue; }
+                if (address == armedAddress) { const char* label=ui::i18n::tr("re.armedNextExecution"); state.Disassembly.AddMarker(line, IM_COL32(255,80,80,255), IM_COL32(180,30,30,82), label, label); continue; }
                 if (const auto marker = ui.Markers.find({state.Pid, address}); marker != ui.Markers.end()) { ImVec4 fill = marker->second.Color; fill.w = std::clamp(fill.w, 0.08f, 0.55f); const ImVec4 solid{fill.x,fill.y,fill.z,1.0f}; const std::string_view tag = marker->second.Tag.data(); state.Disassembly.AddMarker(line, ImGui::ColorConvertFloat4ToU32(solid), ImGui::ColorConvertFloat4ToU32(fill), tag, tag); continue; }
-                if (ui.SynchronizeAddress && ui.SyncedAddress == address) state.Disassembly.AddMarker(line, IM_COL32(120,210,235,220), IM_COL32(70,115,130,42), "synchronized address", "synchronized address");
+                if (ui.SynchronizeAddress && ui.SyncedAddress == address) { const char* label=ui::i18n::tr("re.synchronizedMarker"); state.Disassembly.AddMarker(line, IM_COL32(120,210,235,220), IM_COL32(70,115,130,42), label, label); }
             }
         }
 
@@ -276,7 +309,7 @@ namespace quartz::client
                 else if ((decoded.Branch == RuntimeBranchKind::Conditional || decoded.Branch == RuntimeBranchKind::Unconditional) && decoded.Target) runtimeObserveFunctionTarget(state.Pid, *decoded.Target, RuntimeFunctionCandidateSource::EndBranchTarget);
                 ui.Instructions.push_back({address, length, decoded, 0}); offset += length;
             }
-            analysis = runtimeFunctionAnalysisSnapshot(state.Pid, state.Address); ui.FunctionAnalysis = analysis; ui.FunctionRevision = analysis.Revision;
+            analysis = runtimeFunctionAnalysisSnapshot(state.Pid, state.Address); ui.FunctionAnalysis = analysis; ui.FunctionRevision = analysis.Revision; const auto [moduleWidth,relativeWidth]=addressColumnWidths(modules,ui.Instructions);
             for (auto& instruction : ui.Instructions)
             {
                 const auto candidateIt = std::ranges::find(ui.FunctionAnalysis.Candidates, instruction.Address, &RuntimeFunctionCandidate::Address); const RuntimeFunctionCandidate* candidate = candidateIt == ui.FunctionAnalysis.Candidates.end() ? nullptr : &*candidateIt;
@@ -290,9 +323,9 @@ namespace quartz::client
                     const std::size_t space = text.find_first_of(" \t"); const std::string op = space == std::string::npos ? text : text.substr(0, space); const auto targetCandidate = std::ranges::find(ui.FunctionAnalysis.Candidates, *instruction.Decoded.Target, &RuntimeFunctionCandidate::Address);
                     const std::string target = targetCandidate != ui.FunctionAnalysis.Candidates.end() ? functionName(ui, state.Pid, modules, *targetCandidate) + "  ; " + runtimeFormatProcessAddress(modules, *instruction.Decoded.Target) : runtimeFormatProcessAddress(modules, *instruction.Decoded.Target); text = op + " " + target;
                 }
-                disassembly << runtimeFormatProcessAddress(modules, instruction.Address) << "  " << text;
+                disassembly << formatAddressColumns(modules,instruction.Address,moduleWidth,relativeWidth) << "  " << text;
                 if (const auto marker = ui.Markers.find({state.Pid, instruction.Address}); marker != ui.Markers.end()) { const std::string_view tag = marker->second.Tag.data(); disassembly << " ; [" << (tag.empty() ? "bookmark" : tag) << ']'; }
-                if (executionProbe().running() && executionProbe().pid() == state.Pid && executionProbe().address() == instruction.Address) disassembly << " ; [armed for next execution]"; disassembly << '\n';
+                if (executionProbe().running() && executionProbe().pid() == state.Pid && executionProbe().address() == instruction.Address) disassembly << " ; [" << ui::i18n::tr("re.armedNextExecution") << ']'; disassembly << '\n';
             }
             state.Disassembly.SetText(disassembly.str()); applyDisassemblyMarkers(state); ui.LastProbeRunning = executionProbe().running(); ui.LastProbePid = executionProbe().pid(); ui.LastProbeAddress = executionProbe().address(); ui.DisassemblyDirty = false;
             if (ui.PendingScrollAnchor)
@@ -347,9 +380,9 @@ namespace quartz::client
             auto& ui = enhancedMemoryInspectorState(); if (ui.NavigationForward.empty()) return false; const std::uintptr_t target=ui.NavigationForward.back(); ui.NavigationForward.pop_back(); if (state.Address) ui.NavigationBack.push_back(state.Address); setInspectorAddress(state,target,target,TextEditor::Scroll::alignMiddle); return true;
         }
 
-        std::string groupedBytesLine(const std::span<const std::uint8_t> bytes, const std::uintptr_t base, const std::size_t offset, const std::size_t count, const std::span<const RuntimeProcessModule> modules)
+        std::string groupedBytesLine(const std::span<const std::uint8_t> bytes, const std::uintptr_t base, const std::size_t offset, const std::size_t count, const std::span<const RuntimeProcessModule> modules, const std::size_t moduleWidth, const std::size_t relativeWidth)
         {
-            std::ostringstream out; out << runtimeFormatProcessAddress(modules, base + offset) << "  ";
+            std::ostringstream out; out << formatAddressColumns(modules,base+offset,moduleWidth,relativeWidth) << "  ";
             for (std::size_t i = 0; i < 16; ++i) { if (i < count) out << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<unsigned>(bytes[offset + i]); else out << "  "; out << (i == 7 ? "  " : " "); }
             out << " |"; for (std::size_t i = 0; i < count; ++i) { const unsigned char c = bytes[offset + i]; out << (std::isprint(c) ? static_cast<char>(c) : '.'); } for (std::size_t i = count; i < 16; ++i) out << ' '; out << '|'; return out.str();
         }
@@ -452,7 +485,7 @@ namespace quartz::client
                     const std::size_t index = pair + side * ((registers.size() + 1) / 2); ImGui::TableNextColumn(); if (index >= registers.size()) { ImGui::TableNextColumn(); continue; }
                     const auto& reg = registers[index]; ImGui::TextUnformatted(reg.Name); ImGui::TableNextColumn(); ImGui::PushID(static_cast<int>(index)); const std::string hex = runtimeHexAddress(static_cast<std::uintptr_t>(reg.Value)), symbolic = runtimeFormatProcessAddress(modules, static_cast<std::uintptr_t>(reg.Value));
                     ImGui::Selectable(symbolic.c_str(), ui.SynchronizeAddress && ui.SyncedAddress == static_cast<std::uintptr_t>(reg.Value), ImGuiSelectableFlags_AllowOverlap, ImVec2(0.0f, ImGui::GetTextLineHeight()));
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s = %s\nabsolute: %s\nunsigned: %llu\nsigned: %lld", reg.Name, symbolic.c_str(), hex.c_str(), static_cast<unsigned long long>(reg.Value), static_cast<long long>(reg.Value));
+                    if (ImGui::IsItemHovered()) { ImGui::BeginTooltip(); ImGui::Text("%s = %s",reg.Name,symbolic.c_str()); ImGui::TextDisabled(ui::i18n::tr("re.absoluteValue"),hex.c_str()); ImGui::TextDisabled(ui::i18n::tr("re.unsignedValue"),static_cast<unsigned long long>(reg.Value)); ImGui::TextDisabled(ui::i18n::tr("re.signedValue"),static_cast<long long>(reg.Value)); if (const char* description=registerDescription(reg.Name)) { ImGui::Separator(); ImGui::TextWrapped("%s",description); } ImGui::EndTooltip(); }
                     if (ImGui::BeginPopupContextItem("ExecutionRegisterContext")) { if (ImGui::MenuItem(ui::i18n::tr("re.copySymbolicAddress"))) ImGui::SetClipboardText(symbolic.c_str()); if (ImGui::MenuItem(ui::i18n::tr("re.copyHex"))) ImGui::SetClipboardText(hex.c_str()); if (ImGui::MenuItem(ui::i18n::tr("re.copyDecimal"))) { const std::string text = std::to_string(reg.Value); ImGui::SetClipboardText(text.c_str()); } ImGui::Separator(); ImGui::BeginDisabled(reg.Value == 0); if (ImGui::MenuItem(ui::i18n::tr("re.inspectValueAddress"))) ui.PendingInspectorAddress = static_cast<std::uintptr_t>(reg.Value); if (ImGui::MenuItem(ui::i18n::tr("re.synchronizeAddress"))) { ui.SyncedAddress = static_cast<std::uintptr_t>(reg.Value); applyDisassemblyMarkers(state); } ImGui::EndDisabled(); ImGui::EndPopup(); } ImGui::PopID();
                 }
             }
@@ -466,27 +499,27 @@ namespace quartz::client
                 const std::string token = tokenAt(editor, data.pos); bool rendered = false; const auto modules = runtimeProcessModules(state.Pid);
                 if (!token.empty() && knownRegister(token))
                 {
-                    rendered = true; ImGui::TextUnformatted(upper(token).c_str()); ImGui::Separator();
+                    rendered = true; const std::string reg=upper(token); ImGui::TextUnformatted(reg.c_str()); if (const char* description=registerDescription(reg)) ImGui::TextWrapped("%s",description); ImGui::Separator();
                     if (ui.HasCapturedHit && ui.CapturedHit.Pid == state.Pid && ui.CapturedHit.HasRegisters)
                     {
-                        const auto value = registerValue(ui.CapturedHit, token); if (value) { const std::string absolute = runtimeHexAddress(static_cast<std::uintptr_t>(*value)), symbolic = runtimeFormatProcessAddress(modules, static_cast<std::uintptr_t>(*value)); ImGui::Text("%s", symbolic.c_str()); if (symbolic != absolute) ImGui::TextDisabled("absolute %s", absolute.c_str()); ImGui::TextDisabled("captured at %s | TID %d", runtimeFormatProcessAddress(modules, ui.CapturedHit.Address).c_str(), ui.CapturedHit.Tid); }
-                        else ImGui::TextDisabled("<uncaptured alias>");
+                        const auto value = registerValue(ui.CapturedHit, token); if (value) { const std::string absolute = runtimeHexAddress(static_cast<std::uintptr_t>(*value)), symbolic = runtimeFormatProcessAddress(modules, static_cast<std::uintptr_t>(*value)); ImGui::Text("%s", symbolic.c_str()); if (symbolic != absolute) ImGui::TextDisabled(ui::i18n::tr("re.absoluteValue"), absolute.c_str()); ImGui::TextDisabled(ui::i18n::tr("re.capturedAtShort"), runtimeFormatProcessAddress(modules, ui.CapturedHit.Address).c_str(), ui.CapturedHit.Tid); }
+                        else ImGui::TextDisabled("%s",ui::i18n::tr("re.uncapturedAlias"));
                     }
-                    else { ImGui::TextDisabled("<uncaptured>"); ImGui::TextWrapped("Right-click an instruction and capture registers when it executes."); }
+                    else { ImGui::TextDisabled("%s",ui::i18n::tr("re.uncaptured")); ImGui::TextWrapped("%s",ui::i18n::tr("re.captureRegisterHint")); }
                 }
                 const DisassemblyInstruction* instruction = nullptr; if (mappedLines) if (const auto index = instructionIndexForDisplayLine(ui, data.pos.line)) instruction = &ui.Instructions[*index];
                 std::string mnemonic; if (instruction) { const auto space = instruction->Decoded.Text.find_first_of(" \t"); mnemonic = lower(instruction->Decoded.Text.substr(0, space)); } else { const std::string line = editor.GetLineText(data.pos.line); const auto first = line.find_first_not_of(" \t"); if (first != std::string::npos) { const auto end = line.find_first_of(" \t", first); mnemonic = lower(line.substr(first, end - first)); } }
                 if (!token.empty() && lower(token) == mnemonic) if (const char* description = mnemonicDescription(mnemonic)) { if (rendered) ImGui::Separator(); rendered = true; ImGui::Text("%s", mnemonic.c_str()); ImGui::TextWrapped("%s", description); }
                 if (instruction && instruction->Decoded.Target && (instruction->Decoded.Branch == RuntimeBranchKind::Conditional || instruction->Decoded.Branch == RuntimeBranchKind::Unconditional || instruction->Decoded.Branch == RuntimeBranchKind::Call))
                 {
-                    if (rendered) ImGui::Separator(); rendered = true; ImGui::Text("Target: %s", runtimeFormatProcessAddress(modules, *instruction->Decoded.Target).c_str());
+                    if (rendered) ImGui::Separator(); rendered = true; ImGui::Text(ui::i18n::tr("re.hoverTarget"), runtimeFormatProcessAddress(modules, *instruction->Decoded.Target).c_str());
                     if (instruction->Decoded.Branch == RuntimeBranchKind::Conditional)
                     {
                         if (ui.HasCapturedHit && ui.CapturedHit.Pid == state.Pid && ui.CapturedHit.Address == instruction->Address)
                         {
-                            if (const auto condition = branchCondition(mnemonic, ui.CapturedHit.Registers.eflags)) ImGui::TextColored(*condition ? ImVec4(0.35f,0.90f,0.55f,1.0f) : ImVec4(0.95f,0.40f,0.38f,1.0f), "Captured condition: %s (%s)", *condition ? "true" : "false", *condition ? "branch taken" : "fall-through");
+                            if (const auto condition = branchCondition(mnemonic, ui.CapturedHit.Registers.eflags)) ImGui::TextColored(*condition ? ImVec4(0.35f,0.90f,0.55f,1.0f) : ImVec4(0.95f,0.40f,0.38f,1.0f), ui::i18n::tr("re.capturedCondition"), *condition ? ui::i18n::tr("common.true") : ui::i18n::tr("common.false"), *condition ? ui::i18n::tr("re.branchTaken") : ui::i18n::tr("re.fallThrough"));
                         }
-                        else ImGui::TextDisabled("Condition result uncaptured at this exact instruction.");
+                        else ImGui::TextDisabled("%s",ui::i18n::tr("re.conditionUncaptured"));
                     }
                 }
                 if (!rendered) ImGui::CloseCurrentPopup();
@@ -523,21 +556,22 @@ namespace quartz::client
             struct Route
             {
                 std::size_t SourceRow=0,TargetRow=0;
-                bool SourceVisible=false,TargetVisible=false,TargetBelow=false,SourceDot=true;
+                std::uintptr_t Destination=0;
+                bool SourceVisible=false,TargetVisible=false,TargetBelow=false,SourceDot=true,FallThrough=false;
                 float SourceY=0.0f,TargetY=0.0f,SourceDock=0.0f,TargetDock=0.0f,DesiredLane=0.0f,LaneX=0.0f;
                 ImU32 Color=0;
             };
             struct Reservation { float X=0.0f,Y0=0.0f,Y1=0.0f; };
 
             auto& ui=enhancedMemoryInspectorState(); if (ui.Instructions.empty()||ui.DisplayLineAddresses.empty()) return; const std::size_t firstRow=state.Disassembly.GetFirstVisibleRow(),lastRow=state.Disassembly.GetLastVisibleRow(); if (lastRow<firstRow) return;
-            const float top=min.y+5.0f,bottom=max.y-8.0f,right=max.x-8.0f,dockGap=7.0f,routeGap=11.0f,laneStep=8.0f; if (bottom<=top||right<=min.x+20.0f) return;
+            const float top=min.y+5.0f,bottom=max.y-8.0f,right=max.x-12.0f,dockGap=7.0f,routeGap=18.0f,laneStep=12.0f; if (bottom<=top||right<=min.x+20.0f) return;
             std::vector<Route> routes; routes.reserve(ui.Instructions.size()*2);
 
-            const auto addRoute=[&](const std::size_t sourceRow,const std::optional<std::size_t> targetRow,const bool targetBelow,const ImU32 color,const bool sourceDot=true)
+            const auto addRoute=[&](const std::size_t sourceRow,const std::optional<std::size_t> targetRow,const bool targetBelow,const std::uintptr_t destination,const ImU32 color,const bool sourceDot=true,const bool fallThrough=false)
             {
                 const bool sourceVisible=sourceRow>=firstRow&&sourceRow<=lastRow,targetVisible=targetRow&&*targetRow>=firstRow&&*targetRow<=lastRow; const bool sourceAbove=sourceRow<firstRow,sourceBelow=sourceRow>lastRow,targetAbove=targetRow?*targetRow<firstRow:!targetBelow;
                 if (!sourceVisible&&!targetVisible&&!((sourceAbove&&targetBelow)||(sourceBelow&&targetAbove))) return;
-                Route route; route.SourceRow=sourceRow; route.TargetRow=targetRow.value_or(targetBelow?lastRow:firstRow); route.SourceVisible=sourceVisible; route.TargetVisible=targetVisible; route.TargetBelow=targetBelow; route.SourceDot=sourceDot; route.Color=color;
+                Route route; route.SourceRow=sourceRow; route.TargetRow=targetRow.value_or(targetBelow?lastRow:firstRow); route.Destination=destination; route.SourceVisible=sourceVisible; route.TargetVisible=targetVisible; route.TargetBelow=targetBelow; route.SourceDot=sourceDot; route.FallThrough=fallThrough; route.Color=color;
                 route.SourceY=sourceVisible?branchRowCenterY(state,sourceRow):(sourceAbove?top:bottom); route.TargetY=targetVisible?branchRowCenterY(state,*targetRow):(targetBelow?bottom:top); route.SourceY=std::clamp(route.SourceY,top,bottom); route.TargetY=std::clamp(route.TargetY,top,bottom);
                 route.SourceDock=sourceVisible?branchLineEndX(state,sourceRow)+dockGap:min.x+20.0f; route.TargetDock=targetVisible?branchLineEndX(state,*targetRow)+dockGap:route.SourceDock;
                 const std::size_t scanBegin=std::max(firstRow,std::min(sourceRow,targetRow.value_or(targetBelow?lastRow:firstRow))),scanEnd=std::min(lastRow,std::max(sourceRow,targetRow.value_or(targetBelow?lastRow:firstRow))); float desired=std::max(route.SourceDock,route.TargetDock)+routeGap;
@@ -554,8 +588,8 @@ namespace quartz::client
                 {
                     const auto space=instruction.Decoded.Text.find_first_of(" \t"); captured=branchCondition(instruction.Decoded.Text.substr(0,space),ui.CapturedHit.Registers.eflags); if (captured) { targetAlpha=*captured?1.0f:0.24f; fallAlpha=*captured?0.24f:1.0f; }
                 }
-                const ImU32 targetColor=instruction.Decoded.Branch==RuntimeBranchKind::Conditional?ImGui::ColorConvertFloat4ToU32(ImVec4(0.28f,0.88f,0.48f,targetAlpha)):instruction.Decoded.Branch==RuntimeBranchKind::Call?ImGui::ColorConvertFloat4ToU32(ImVec4(0.68f,0.48f,0.95f,0.85f)):ImGui::ColorConvertFloat4ToU32(ImVec4(0.32f,0.68f,0.96f,0.85f)); addRoute(instruction.DisplayLine,targetRow,targetBelow,targetColor,true);
-                if (instruction.Decoded.Branch==RuntimeBranchKind::Conditional&&i+1<ui.Instructions.size()) addRoute(instruction.DisplayLine,ui.Instructions[i+1].DisplayLine,true,ImGui::ColorConvertFloat4ToU32(ImVec4(0.95f,0.34f,0.34f,fallAlpha)),false);
+                const ImU32 targetColor=instruction.Decoded.Branch==RuntimeBranchKind::Conditional?ImGui::ColorConvertFloat4ToU32(ImVec4(0.28f,0.88f,0.48f,targetAlpha)):instruction.Decoded.Branch==RuntimeBranchKind::Call?ImGui::ColorConvertFloat4ToU32(ImVec4(0.68f,0.48f,0.95f,0.85f)):ImGui::ColorConvertFloat4ToU32(ImVec4(0.32f,0.68f,0.96f,0.85f)); addRoute(instruction.DisplayLine,targetRow,targetBelow,*instruction.Decoded.Target,targetColor,true,false);
+                if (instruction.Decoded.Branch==RuntimeBranchKind::Conditional&&i+1<ui.Instructions.size()) addRoute(instruction.DisplayLine,ui.Instructions[i+1].DisplayLine,true,ui.Instructions[i+1].Address,ImGui::ColorConvertFloat4ToU32(ImVec4(0.95f,0.34f,0.34f,fallAlpha)),false,true);
             }
             if (routes.empty()) return;
 
@@ -570,20 +604,25 @@ namespace quartz::client
                 route.LaneX=std::min(best,right); reservations.push_back({route.LaneX,y0,y1});
             }
 
-            const ImVec2 mouse=ImGui::GetMousePos(); const float hoverDistance2=36.0f; auto* draw=ImGui::GetWindowDrawList(); draw->PushClipRect(ImVec2(min.x+1.0f,min.y+1.0f),ImVec2(max.x-1.0f,max.y-1.0f),true);
-            const auto hovered=[&](const Route& route)
+            const ImVec2 mouse=ImGui::GetMousePos(); const float hoverDistance2=64.0f; auto* draw=ImGui::GetWindowDrawList(); draw->PushClipRect(ImVec2(min.x+1.0f,min.y+1.0f),ImVec2(max.x-1.0f,max.y-1.0f),true);
+            const auto routeDistance=[&](const Route& route)
             {
-                if (!ImGui::IsMouseHoveringRect(min,max)) return false; if (route.SourceVisible&&pointSegmentDistanceSquared(mouse,{route.SourceDock,route.SourceY},{route.LaneX,route.SourceY})<=hoverDistance2) return true; if (pointSegmentDistanceSquared(mouse,{route.LaneX,route.SourceY},{route.LaneX,route.TargetY})<=hoverDistance2) return true; return route.TargetVisible&&pointSegmentDistanceSquared(mouse,{route.LaneX,route.TargetY},{route.TargetDock,route.TargetY})<=hoverDistance2;
+                float distance=std::numeric_limits<float>::max(); if (route.SourceVisible) distance=std::min(distance,pointSegmentDistanceSquared(mouse,{route.SourceDock,route.SourceY},{route.LaneX,route.SourceY})); distance=std::min(distance,pointSegmentDistanceSquared(mouse,{route.LaneX,route.SourceY},{route.LaneX,route.TargetY})); if (route.TargetVisible) distance=std::min(distance,pointSegmentDistanceSquared(mouse,{route.LaneX,route.TargetY},{route.TargetDock,route.TargetY})); return distance;
             };
+            std::optional<std::size_t> hotRoute; float hotDistance=hoverDistance2; if (ImGui::IsMouseHoveringRect(min,max)) for (std::size_t i=0;i<routes.size();++i) { const float distance=routeDistance(routes[i]); if (distance<=hotDistance) { hotDistance=distance; hotRoute=i; } }
             const auto drawSegments=[&](const Route& route,const ImU32 color,const float width)
             {
                 if (route.SourceVisible) draw->AddLine({route.SourceDock,route.SourceY},{route.LaneX,route.SourceY},color,width); draw->AddLine({route.LaneX,route.SourceY},{route.LaneX,route.TargetY},color,width); if (route.TargetVisible) draw->AddLine({route.LaneX,route.TargetY},{route.TargetDock,route.TargetY},color,width);
             };
-            for (const auto& route:routes)
+            for (std::size_t i=0;i<routes.size();++i)
             {
-                const bool hot=hovered(route); if (hot) drawSegments(route,IM_COL32(255,255,255,70),5.0f); const ImU32 color=hot?IM_COL32(255,255,255,245):route.Color; drawSegments(route,color,hot?2.2f:1.6f); if (route.SourceVisible&&route.SourceDot) draw->AddCircleFilled({route.SourceDock,route.SourceY},hot?3.0f:2.4f,color); if (route.TargetVisible) drawLeftArrowHead(draw,{route.TargetDock,route.TargetY},color); else drawVerticalArrowHead(draw,{route.LaneX,route.TargetY},route.TargetBelow,color);
+                const auto& route=routes[i]; const bool hot=hotRoute&&*hotRoute==i; if (hot) drawSegments(route,IM_COL32(255,255,255,70),5.0f); const ImU32 color=hot?IM_COL32(255,255,255,245):route.Color; drawSegments(route,color,hot?2.2f:1.6f); if (route.SourceVisible&&route.SourceDot) draw->AddCircleFilled({route.SourceDock,route.SourceY},hot?3.0f:2.4f,color); if (route.TargetVisible) drawLeftArrowHead(draw,{route.TargetDock,route.TargetY},color); else drawVerticalArrowHead(draw,{route.LaneX,route.TargetY},route.TargetBelow,color);
             }
             draw->PopClipRect();
+            if (hotRoute)
+            {
+                const auto& route=routes[*hotRoute]; ImGui::SetMouseCursor(ImGuiMouseCursor_Hand); const std::string destination=runtimeFormatProcessAddress(state.Pid,route.Destination); ImGui::SetTooltip(route.FallThrough?ui::i18n::tr("re.flowFallThrough"):ui::i18n::tr("re.flowDestination"),destination.c_str()); if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) ui.PendingInspectorAddress=route.Destination;
+            }
         }
 
         void drawBookmarks(RuntimeMemoryInspectorState& state)
@@ -652,14 +691,13 @@ namespace quartz::client
         if (ui.FunctionAnalysis.Running) { ImGui::ProgressBar(ui.FunctionAnalysis.Progress, ImVec2(180.0f,0.0f), ui::i18n::tr("re.functionAnalysis")); ImGui::SameLine(); ImGui::TextDisabled(ui::i18n::tr("re.functionAnalysisLive"), ui.FunctionAnalysis.Candidates.size()); } else if (!ui.FunctionAnalysis.Status.empty()) ImGui::TextDisabled(ui::i18n::tr("re.functionHints"), ui.FunctionAnalysis.Status.c_str(), ui.FunctionAnalysis.Candidates.size());
         ImGui::TextDisabled("%s",ui::i18n::tr("re.prefetchHint"));
 
-        installAssemblyHover(state, state.Disassembly, true); state.Disassembly.SetTextContextMenuCallback([&](TextEditor::PopupData& data)
+        installAssemblyHover(state, state.Disassembly, true); state.Disassembly.SetMouseClickCallback([&](TextEditor::MouseClickData& data)
         {
-            auto index = instructionIndexForDisplayLine(ui, data.pos.line); const auto modules = runtimeProcessModules(state.Pid);
-            if (!index)
-            {
-                const std::string line=state.Disassembly.GetLineText(data.pos.line); for (std::size_t i=0;i<ui.Instructions.size();++i) { const std::string prefix=runtimeFormatProcessAddress(modules,ui.Instructions[i].Address)+"  "; if (line.starts_with(prefix)) { index=i; break; } }
-            }
-            if (!index) { ImGui::CloseCurrentPopup(); return; }
+            if (data.button!=ImGuiMouseButton_Left||!data.ctrl) return false; const auto index=instructionIndexForDisplayLine(ui,data.pos.line); if (!index) return false; const auto& instruction=ui.Instructions[*index]; if (!instruction.Decoded.Target) return false; ui.PendingInspectorAddress=*instruction.Decoded.Target; return true;
+        });
+        state.Disassembly.SetTextContextMenuCallback([&](TextEditor::PopupData& data)
+        {
+            auto index = instructionIndexForDisplayLine(ui, data.pos.line); const auto modules = runtimeProcessModules(state.Pid); if (!index) { ImGui::CloseCurrentPopup(); return; }
             const auto& instruction = ui.Instructions[*index]; const std::uintptr_t address = instruction.Address; const auto key = std::pair{state.Pid,address}; ImGui::TextDisabled("%s", runtimeFormatProcessAddress(modules,address).c_str());
             if (ImGui::MenuItem(ui::i18n::tr("re.syncHere"))) { ui.SyncedAddress = address; applyDisassemblyMarkers(state); } if (ImGui::MenuItem(ui::i18n::tr("re.useInspectorBase"))) ui.PendingInspectorAddress = address; if (ImGui::MenuItem(ui::i18n::tr("re.copyModuleAddress"))) { const std::string value = runtimeFormatProcessAddress(modules,address); ImGui::SetClipboardText(value.c_str()); } if (ImGui::MenuItem(ui::i18n::tr("re.copyAbsoluteAddress"))) { const std::string value = runtimeHexAddress(address); ImGui::SetClipboardText(value.c_str()); } if (ImGui::MenuItem(ui::i18n::tr("re.copyInstruction"))) { const std::string value = state.Disassembly.GetLineText(data.pos.line); ImGui::SetClipboardText(value.c_str()); }
             const bool hasSelection = state.Disassembly.CurrentCursorHasSelection(); std::size_t first = *index, last = *index; if (hasSelection) { const auto selection = state.Disassembly.GetCurrentCursorSelection(); for (std::size_t i = 0; i < ui.Instructions.size(); ++i) if (ui.Instructions[i].DisplayLine >= selection.start.line && ui.Instructions[i].DisplayLine <= selection.end.line) { first = std::min(first,i); last = std::max(last,i); } }
@@ -675,14 +713,8 @@ namespace quartz::client
             ImGui::Separator(); auto marker = ui.Markers.find(key); if (marker == ui.Markers.end()) { if (ImGui::MenuItem(ui::i18n::tr("re.addBookmark"))) { ui.Markers.emplace(key,DisassemblyMarker{}); ui.DisassemblyDirty = true; } } else { ImGui::SeparatorText(ui::i18n::tr("re.bookmark")); if (ImGui::InputText(ui::i18n::tr("re.tag"),marker->second.Tag.data(),marker->second.Tag.size())) ui.DisassemblyDirty = true; if (ImGui::ColorEdit4(ui::i18n::tr("re.color"),&marker->second.Color.x,ImGuiColorEditFlags_AlphaBar)) { applyDisassemblyMarkers(state); ui.DisassemblyDirty = true; } if (ImGui::MenuItem(ui::i18n::tr("re.removeBookmark"))) { ui.Markers.erase(marker); ui.DisassemblyDirty = true; } }
         });
         state.Disassembly.Render("##memory-disassembly", ImVec2(-1.0f,390.0f), ImGuiChildFlags_Borders); const ImVec2 disassemblyMin = ImGui::GetItemRectMin(), disassemblyMax = ImGui::GetItemRectMax(); drawBranchLanes(state,disassemblyMin,disassemblyMax);
-        const bool disassemblyHovered = ImGui::IsMouseHoveringRect(disassemblyMin,disassemblyMax);
-        bool followedTarget=false;
-        if (disassemblyHovered && io.KeyCtrl && state.Disassembly.IsMousePosOverTextArea(ImGui::GetMousePos()) && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-        {
-            const auto pos=state.Disassembly.GetDocPosAtMousePos(ImGui::GetMousePos()); if (const auto index=instructionIndexForDisplayLine(ui,pos.line)) { const auto& instruction=ui.Instructions[*index]; if (instruction.Decoded.Target) { navigateInspector(state,*instruction.Decoded.Target,true); followedTarget=true; } }
-        }
-        if (!followedTarget && ui.SynchronizeAddress && state.Disassembly.IsMousePosOverTextArea(ImGui::GetMousePos()) && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { const auto pos = state.Disassembly.GetDocPosAtMousePos(ImGui::GetMousePos()); if (pos.line < ui.DisplayLineAddresses.size() && ui.DisplayLineAddresses[pos.line]) { ui.SyncedAddress = ui.DisplayLineAddresses[pos.line]; applyDisassemblyMarkers(state); } }
-        if (!followedTarget && !ui.DisplayLineAddresses.empty() && ui.BufferSize && now-ui.LastDisassemblyWindowShift>=0.10)
+        if (!ui.PendingInspectorAddress && ui.SynchronizeAddress && state.Disassembly.IsMousePosOverTextArea(ImGui::GetMousePos()) && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { const auto pos = state.Disassembly.GetDocPosAtMousePos(ImGui::GetMousePos()); if (pos.line < ui.DisplayLineAddresses.size() && ui.DisplayLineAddresses[pos.line]) { ui.SyncedAddress = ui.DisplayLineAddresses[pos.line]; applyDisassemblyMarkers(state); } }
+        if (!ui.PendingInspectorAddress && !ui.DisplayLineAddresses.empty() && ui.BufferSize && now-ui.LastDisassemblyWindowShift>=0.10)
         {
             const std::size_t first=state.Disassembly.GetFirstVisibleRow(),last=state.Disassembly.GetLastVisibleRow(); if (last>=first)
             {
@@ -702,10 +734,10 @@ namespace quartz::client
         {
             if (ImGui::BeginTabItem(ui::i18n::tr("re.rawBytes")))
             {
-                if (configuration.RawBytesRefreshHz > 0.0f && now - ui.LastRawRefresh >= 1.0 / configuration.RawBytesRefreshHz) refreshRawBytes(state); ImGui::TextDisabled(ui::i18n::tr("re.rawBytesDescription"), configuration.RawBytesRefreshHz); const auto modules = runtimeProcessModules(state.Pid); const auto bytes = std::span<const std::uint8_t>(ui.RawBytes.empty() ? state.Original : ui.RawBytes);
+                if (configuration.RawBytesRefreshHz > 0.0f && now - ui.LastRawRefresh >= 1.0 / configuration.RawBytesRefreshHz) refreshRawBytes(state); ImGui::TextDisabled(ui::i18n::tr("re.rawBytesDescription"), configuration.RawBytesRefreshHz); const auto modules = runtimeProcessModules(state.Pid); const auto bytes = std::span<const std::uint8_t>(ui.RawBytes.empty() ? state.Original : ui.RawBytes); const auto [rawModuleWidth,rawRelativeWidth]=addressColumnWidths(modules,ui.BufferBase,bytes.size(),16);
                 if (ImGui::BeginChild("##GroupedRawMemory",ImVec2(0.0f,235.0f),ImGuiChildFlags_Borders,ImGuiWindowFlags_HorizontalScrollbar))
                 {
-                    const int lines = static_cast<int>((bytes.size()+15)/16); ImGuiListClipper clipper; clipper.Begin(lines); while (clipper.Step()) for (int line=clipper.DisplayStart;line<clipper.DisplayEnd;++line) { const std::size_t offset=static_cast<std::size_t>(line)*16,count=std::min<std::size_t>(16,bytes.size()-offset); const std::uintptr_t address=ui.BufferBase+offset; const bool active=ui.SynchronizeAddress&&ui.SyncedAddress>=address&&ui.SyncedAddress<address+count; const std::string text=groupedBytesLine(bytes,ui.BufferBase,offset,count,modules); ImGui::PushID(line); if (ImGui::Selectable("##raw-line",active,ImGuiSelectableFlags_AllowOverlap,ImVec2(0.0f,ImGui::GetTextLineHeight()))&&ui.SynchronizeAddress) { ui.SyncedAddress=address; applyDisassemblyMarkers(state); } ImGui::SameLine(); ImGui::TextUnformatted(text.c_str()); if (ImGui::BeginPopupContextItem("RawLineContext")) { if (ImGui::MenuItem(ui::i18n::tr("re.useInspectorBase"))) ui.PendingInspectorAddress=address; if (ImGui::MenuItem(ui::i18n::tr("re.copyModuleAddress"))) { const std::string value=runtimeFormatProcessAddress(modules,address); ImGui::SetClipboardText(value.c_str()); } if (ImGui::MenuItem(ui::i18n::tr("re.copyByteGroup"))) { const std::string value=runtimeFormatHexBytes(bytes.subspan(offset,count)); ImGui::SetClipboardText(value.c_str()); } ImGui::EndPopup(); } ImGui::PopID(); }
+                    const int lines = static_cast<int>((bytes.size()+15)/16); ImGuiListClipper clipper; clipper.Begin(lines); while (clipper.Step()) for (int line=clipper.DisplayStart;line<clipper.DisplayEnd;++line) { const std::size_t offset=static_cast<std::size_t>(line)*16,count=std::min<std::size_t>(16,bytes.size()-offset); const std::uintptr_t address=ui.BufferBase+offset; const bool active=ui.SynchronizeAddress&&ui.SyncedAddress>=address&&ui.SyncedAddress<address+count; const std::string text=groupedBytesLine(bytes,ui.BufferBase,offset,count,modules,rawModuleWidth,rawRelativeWidth); ImGui::PushID(line); if (ImGui::Selectable("##raw-line",active,ImGuiSelectableFlags_AllowOverlap,ImVec2(0.0f,ImGui::GetTextLineHeight()))&&ui.SynchronizeAddress) { ui.SyncedAddress=address; applyDisassemblyMarkers(state); } ImGui::SameLine(); ImGui::TextUnformatted(text.c_str()); if (ImGui::BeginPopupContextItem("RawLineContext")) { if (ImGui::MenuItem(ui::i18n::tr("re.useInspectorBase"))) ui.PendingInspectorAddress=address; if (ImGui::MenuItem(ui::i18n::tr("re.copyModuleAddress"))) { const std::string value=runtimeFormatProcessAddress(modules,address); ImGui::SetClipboardText(value.c_str()); } if (ImGui::MenuItem(ui::i18n::tr("re.copyByteGroup"))) { const std::string value=runtimeFormatHexBytes(bytes.subspan(offset,count)); ImGui::SetClipboardText(value.c_str()); } ImGui::EndPopup(); } ImGui::PopID(); }
                 }
                 ImGui::EndChild(); ImGui::EndTabItem();
             }
