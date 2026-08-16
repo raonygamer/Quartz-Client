@@ -18,6 +18,8 @@ namespace quartz::client
         bool ShaderKeyStateUniforms = true;
         bool ShaderCapsLockColorEnabled = true;
         bool ShaderScrollLockColorEnabled = true;
+        bool SuspiciousColorThemes = false;
+        int UiTheme = 0;
         int ShaderFramebufferWidth = DefaultShaderWidth;
         int ShaderFramebufferHeight = DefaultShaderHeight;
         int FrameRate = 240;
