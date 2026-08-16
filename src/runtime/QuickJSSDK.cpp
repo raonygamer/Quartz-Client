@@ -140,6 +140,20 @@ namespace quartz::client
             }
         }
 
+        std::size_t declarationDelimiter(const std::string& source, const std::vector<bool>& code, const std::size_t start)
+        {
+            int paren = 0, brace = 0, bracket = 0;
+            for (std::size_t i = start; i < source.size(); ++i)
+            {
+                if (!code[i]) continue; const char c = source[i];
+                if (c == '(') ++paren; else if (c == ')' && paren > 0) --paren;
+                else if (c == '{') ++brace; else if (c == '}' && brace > 0) --brace;
+                else if (c == '[') ++bracket; else if (c == ']' && bracket > 0) --bracket;
+                if (!paren && !brace && !bracket && (c == ',' || c == ';')) return i;
+            }
+            return source.size();
+        }
+
         void stripVariableTypes(std::string& output, const std::vector<bool>& code)
         {
             static constexpr std::string_view Keywords[] = {"let", "const", "var"};
@@ -148,16 +162,18 @@ namespace quartz::client
                 std::size_t keywordLength = 0; for (const auto keyword : Keywords) if (wordAt(output, code, i, keyword)) { keywordLength = keyword.size(); break; }
                 if (!keywordLength) continue;
                 std::size_t cursor = skipSpace(output, i + keywordLength);
-                while (cursor < output.size() && identifierStart(output[cursor]))
+                while (cursor < output.size())
                 {
+                    if (!identifierStart(output[cursor])) break;
                     ++cursor; while (cursor < output.size() && identifierContinue(output[cursor])) ++cursor; cursor = skipSpace(output, cursor);
                     if (cursor < output.size() && code[cursor] && output[cursor] == ':')
                     {
-                        const std::size_t end = typeEnd(output, code, cursor + 1, output.size(), false); blank(output, cursor, end); cursor = end;
+                        const std::size_t end = typeEnd(output, code, cursor + 1, output.size(), false); blank(output, cursor, end); cursor = skipSpace(output, end);
                     }
-                    while (cursor < output.size() && (!code[cursor] || (output[cursor] != ',' && output[cursor] != ';'))) ++cursor;
-                    if (cursor >= output.size() || output[cursor] == ';') break;
-                    cursor = skipSpace(output, cursor + 1);
+                    if (cursor < output.size() && code[cursor] && output[cursor] == '=') ++cursor;
+                    const std::size_t delimiter = declarationDelimiter(output, code, cursor);
+                    if (delimiter >= output.size() || output[delimiter] == ';') break;
+                    cursor = skipSpace(output, delimiter + 1);
                 }
             }
         }
@@ -354,27 +370,27 @@ function writeField(process, base, field, value) {
     const current = fieldAddress(base, field);
     if (field.kind === "struct" || field.kind === "array") throw new TypeError("embedded structs/arrays are not directly assignable");
     if (field.kind === "pointer") {
-        const pointer = value && typeof value === "object" && "address" in value ? value.address : value;
+        const pointer = value && typeof value === "object" && "$address" in value ? value.$address : value;
         api.memory.write(process.pid, current, "ptr", pointer || 0n); return;
     }
     api.memory.write(process.pid, current, field.kind, value);
 }
 function pointerFor(type, process, targetAddress) {
     const target = {
-        process,
-        address: address(targetAddress),
-        get readable() { return this.isReadable(); },
-        isReadable() { try { api.memory.read(process.pid, this.address, "u8"); return true; } catch { return false; } },
-        as(nextType) { return pointerFor(nextType, process, this.address); }
+        $process: process,
+        $address: address(targetAddress),
+        get $readable() { return this.isReadable(); },
+        isReadable() { try { api.memory.read(process.pid, this.$address, "u8"); return true; } catch { return false; } },
+        as(nextType) { return pointerFor(nextType, process, this.$address); }
     };
     return new Proxy(target, {
         get(object, key, receiver) {
             if (Reflect.has(object, key)) return Reflect.get(object, key, receiver);
-            const field = type.fields[key]; return field ? readField(process, object.address, field) : undefined;
+            const field = type.fields[key]; return field ? readField(process, object.$address, field) : undefined;
         },
         set(object, key, value, receiver) {
             const field = type.fields[key]; if (!field) return Reflect.set(object, key, value, receiver);
-            writeField(process, object.address, field, value); return true;
+            writeField(process, object.$address, field, value); return true;
         }
     });
 }

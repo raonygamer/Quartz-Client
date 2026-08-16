@@ -141,9 +141,10 @@ declare module "@quartz/client" {
     }
 
     export interface PointerBase {
-        readonly process: Process;
-        readonly address: Address;
-        readonly readable: boolean;
+        /** Process/address metadata use reserved $ names so struct fields can freely use names such as address or process. */
+        readonly $process: Process;
+        readonly $address: Address;
+        readonly $readable: boolean;
         isReadable(): boolean;
         as<TFields extends StructFields>(type: Struct<TFields>): Pointer<Struct<TFields>>;
     }
