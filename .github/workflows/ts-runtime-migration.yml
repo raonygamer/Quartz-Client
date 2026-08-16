@@ -4,23 +4,23 @@ on:
   push:
     branches: [feature/quickjs-bindings]
     paths:
-      - tools/apply_ts_runtime.py
+      - tools/apply_ts_runtime_fixup.py
       - .github/workflows/ts-runtime-migration.yml
 
 permissions:
   contents: write
 
 jobs:
-  migrate:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
-      - name: Apply runtime migration
-        run: python3 tools/apply_ts_runtime.py
-      - name: Reject old workspace execution model
+      - name: Apply correctness fixups
+        run: python3 tools/apply_ts_runtime_fixup.py
+      - name: Validate runtime architecture
         run: |
           ! grep -n 'function(q)' src/runtime/QuickJSWorkspace.cpp
           ! grep -n 'q.import' src/runtime/QuickJSWorkspace.cpp
@@ -29,7 +29,8 @@ jobs:
           grep -q 'JS_ExecutePendingJob' src/runtime/QuickJSWorkspace.cpp
           grep -q '@quartz/client' src/runtime/QuickJSWorkspace.cpp
           grep -q '@quartz/native' src/runtime/QuickJSSDK.cpp
-      - name: Type eraser smoke test
+          grep -q 'readonly \$address: Address' src/runtime/QuickJSTypes.cpp
+      - name: Terraria-shaped TypeScript smoke test
         run: |
           cat >/tmp/ts-strip.cpp <<'CPP'
           #include "QuickJSInternal.hpp"
@@ -37,18 +38,31 @@ jobs:
           #include <iostream>
           using namespace quartz::client;
           int main() {
-              const char* ts = R"TS(import { Process, Struct, Field, System } from "@quartz/client";
+              const char* ts = R"TS(import { Breakpoint, Field, Process, Property, Runtime, Script, Signature, Struct, System } from "@quartz/client";
           import type { Pointer } from "@quartz/client";
-          const Player = Struct.define({ life: Field.Int32(0x10n) });
+          const WorldReference = Struct.define({ address: Field.UInt32(0x11n) });
+          const Player = Struct.define({
+              statLifeMax2: Field.Int32(0x814n),
+              statLife: Field.Int32(0x81Cn)
+          });
           let process: Process | undefined;
           let player: Pointer<typeof Player> | undefined;
-          async function connect(target: Process): Promise<void> { process = target; }
-          function update({ time }: { time: number; deltaTime: number }): void { if (player) console.log(time, player.life); }
+          let capture: Breakpoint | undefined;
+          async function resolveSession(target: Process): Promise<void> {
+              const [worldSite, playerSite] = await Promise.all([Signature.scan(target, "AA"), Signature.scan(target, "BB")]);
+              const worldAddress = BigInt(WorldReference.at(target, worldSite).address);
+              console.log(worldAddress, playerSite);
+          }
+          function update({ time }: { time: number; deltaTime: number }): void {
+              if (player) Runtime.setMaterial("source.health", 0, Math.max(0, player.statLife / player.statLifeMax2));
+              if (capture) console.log(time);
+          }
           System.on("update", update);
           )TS";
               std::string js, error;
               if (!runtimeTranspileTypeScript(ts, js, error)) { std::cerr << error << '\n'; return 1; }
-              if (js.find("import type") != std::string::npos || js.find(": Process") != std::string::npos || js.find(": Pointer") != std::string::npos || js.find(": Promise") != std::string::npos || js.find(": { time") != std::string::npos) return 2;
+              if (js.find("import type") != std::string::npos || js.find(": Process") != std::string::npos || js.find(": Pointer") != std::string::npos || js.find(": Breakpoint") != std::string::npos || js.find(": Promise") != std::string::npos || js.find(": { time") != std::string::npos) return 2;
+              if (js.find("statLifeMax2: Field.Int32") == std::string::npos || js.find("statLife: Field.Int32") == std::string::npos || js.find("address: Field.UInt32") == std::string::npos) return 3;
               std::ofstream("/tmp/ts-strip.mjs") << js;
           }
           CPP
@@ -72,5 +86,5 @@ jobs:
             echo "No product changes"
             exit 0
           fi
-          git commit -m "feat: execute TypeScript SDK scripts"
+          git commit -m "fix: harden TypeScript scripting runtime"
           git push
