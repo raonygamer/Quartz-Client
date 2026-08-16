@@ -301,18 +301,26 @@ namespace quartz::client
         const char* keyboardLabel = ui::i18n::tr("header.keyboard");
         const char* appearanceLabel = ui::i18n::tr("header.appearance");
         const char* terminateLabel = ui::i18n::tr("header.terminate");
+        const std::string themeText = std::string(ui::i18n::tr("header.theme")) + ": " + ui::themeName(static_cast<ui::Theme>(std::clamp(settings.UiTheme, 0, static_cast<int>(ui::Theme::Count) - 1)));
         const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float themeWidth = ImGui::CalcTextSize(themeText.c_str()).x;
         const float buttonsWidth = ImGui::CalcTextSize(keyboardLabel).x + ImGui::CalcTextSize(appearanceLabel).x + ImGui::CalcTextSize(terminateLabel).x + ImGui::GetStyle().FramePadding.x * 6.0f + spacing * 2.0f;
         const float right = ImGui::GetWindowContentRegionMax().x;
 
         ImGui::TextUnformatted("Quartz K552X");
         const float bylineWidth = ImGui::CalcTextSize(ui::i18n::tr("header.byline")).x;
-        if (ImGui::GetCursorPosX() + bylineWidth + buttonsWidth + 48.0f < right)
+        if (ImGui::GetCursorPosX() + bylineWidth + themeWidth + buttonsWidth + 72.0f < right)
         {
             ImGui::SameLine();
             ImGui::TextDisabled("|  %s", ui::i18n::tr("header.byline"));
         }
         const float buttonStart = right - buttonsWidth;
+        const float themeStart = buttonStart - themeWidth - spacing * 2.0f;
+        if (ImGui::GetCursorPosX() + themeWidth + spacing < buttonStart)
+        {
+            ImGui::SameLine(std::max(ImGui::GetCursorPosX(), themeStart));
+            ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "%s", themeText.c_str());
+        }
         if (ImGui::GetCursorPosX() < buttonStart) ImGui::SameLine(buttonStart);
         if (ImGui::SmallButton(keyboardLabel)) showKeyboardPreview = !showKeyboardPreview;
         ImGui::SameLine();

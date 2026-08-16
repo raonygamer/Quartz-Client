@@ -85,6 +85,7 @@ namespace quartz::client::ui
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 7.0f);
         if (ImGui::BeginChild("PageNavigation", ImVec2(NavigationWidth, available.y), ImGuiChildFlags_Borders))
         {
+            ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
             ImGui::Dummy({0.0f, 3.0f});
             for (const PageSection section : Sections)
             {
@@ -99,16 +100,17 @@ namespace quartz::client::ui
                     const bool selected = page->id() == _activePageId;
                     const float selectableWidth = ImGui::GetContentRegionAvail().x;
                     ImGui::PushID(page->id().data());
-                    if (ImGui::Selectable(pageName(*page), selected, ImGuiSelectableFlags_None, ImVec2(selectableWidth, 27.0f))) _activePageId.assign(page->id());
+                    if (ImGui::Selectable(pageName(*page), selected, ImGuiSelectableFlags_None, ImVec2(selectableWidth, 25.0f))) _activePageId.assign(page->id());
                     if (selected)
                     {
                         const ImVec2 min = ImGui::GetItemRectMin(); const ImVec2 max = ImGui::GetItemRectMax();
-                        ImGui::GetWindowDrawList()->AddRectFilled({min.x, min.y + 4.0f}, {min.x + 3.0f, max.y - 4.0f}, ImGui::GetColorU32(ImGuiCol_CheckMark), 2.0f);
+                        ImGui::GetWindowDrawList()->AddRectFilled({min.x, min.y + 3.0f}, {min.x + 3.0f, max.y - 3.0f}, ImGui::GetColorU32(ImGuiCol_CheckMark), 2.0f);
                     }
                     ImGui::PopID();
                 }
                 ImGui::Spacing(); ImGui::Spacing();
             }
+            ImGui::PopStyleVar();
         }
         ImGui::EndChild();
         ImGui::PopStyleVar();

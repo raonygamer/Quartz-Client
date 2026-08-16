@@ -41,6 +41,7 @@ namespace quartz::client::ui::i18n
             {"header.byline", "Made by Raony Reis, not affiliated with Redragon", "Feito por Raony Reis, sem afiliação com a Redragon"},
             {"header.keyboard", "Keyboard", "Teclado"},
             {"header.appearance", "Appearance", "Aparência"},
+            {"header.theme", "Theme", "Tema"},
             {"header.terminate", "Terminate", "Encerrar"},
             {"header.terminateTooltip", "Exit Quartz completely. The normal window close button only hides the window.", "Fecha o Quartz completamente. O botão normal de fechar apenas oculta a janela."},
             {"appearance.theme", "Theme", "Tema"},
