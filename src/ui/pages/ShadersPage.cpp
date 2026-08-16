@@ -32,6 +32,7 @@ namespace quartz::client::ui
         auto& fragmentPath = context.fragmentLoadPath;
         auto& settings = context.settings;
         static const VisualizerSettings defaults{};
+        const bool pt = i18n::language() == i18n::Language::PortugueseBrazil;
 
         ImGui::TextWrapped("%s", i18n::tr("shaders.description"));
         ImGui::SeparatorText(i18n::tr("shaders.current"));
@@ -44,7 +45,7 @@ namespace quartz::client::ui
             {
                 const bool selected = settings.ShaderPresetIndex == static_cast<int>(i + 1);
                 std::string label = ShaderPresets[i].Name;
-                if (!ShaderPresets[i].BuiltIn) label += "  [catalog]";
+                if (!ShaderPresets[i].BuiltIn) label += pt ? "  [catálogo]" : "  [catalog]";
                 if (ImGui::Selectable(label.c_str(), selected))
                 {
                     clearExternalShaderFile(editor, true);
@@ -82,7 +83,7 @@ namespace quartz::client::ui
         ImGui::SetNextItemWidth(vertexInputWidth); ImGui::InputText(i18n::tr("shaders.vertexFile"), vertexPath.data(), vertexPath.size()); ImGui::SameLine();
         if (ImGui::Button(selectVertex.c_str())) if (const auto path = pickShaderFile()) setPath(vertexPath, *path); ImGui::SameLine();
         if (ImGui::Button(openVertex.c_str())) loadExternalShaderFile(editor, framebuffer, vertexSource, fragmentSource, settings, vertexPath.data(), false);
-        if (!editor.ExternalVertexPath.empty()) { ImGui::TextDisabled("bound vertex: %s", editor.ExternalVertexPath.string().c_str()); ImGui::SameLine(); if (ImGui::SmallButton("Unbind##vertex")) clearExternalShaderFile(editor, false); }
+        if (!editor.ExternalVertexPath.empty()) { ImGui::TextDisabled(pt ? "vértice vinculado: %s" : "bound vertex: %s", editor.ExternalVertexPath.string().c_str()); ImGui::SameLine(); if (ImGui::SmallButton(pt ? "Desvincular##vertex" : "Unbind##vertex")) clearExternalShaderFile(editor, false); }
 
         ImGui::SetNextItemWidth(fragmentInputWidth); ImGui::InputText(i18n::tr("shaders.fragmentFile"), fragmentPath.data(), fragmentPath.size()); ImGui::SameLine();
         if (ImGui::Button(selectFragment.c_str())) if (const auto path = pickShaderFile()) setPath(fragmentPath, *path); ImGui::SameLine();
@@ -93,12 +94,12 @@ namespace quartz::client::ui
             if (importShaderToLibrary(fragmentPath.data(), importedId, error))
             {
                 refreshShaderLibrary();
-                if (switchShaderId(framebuffer, transition, editor, vertexSource, fragmentSource, settings, importedId, glfwGetTime(), settings.ShaderTransitionSeconds)) editor.ExternalStatus = "Imported to catalog as " + importedId;
-                else editor.ExternalStatus = "Imported, but could not activate " + importedId;
+                if (switchShaderId(framebuffer, transition, editor, vertexSource, fragmentSource, settings, importedId, glfwGetTime(), settings.ShaderTransitionSeconds)) editor.ExternalStatus = std::string(pt ? "Importado para o catálogo como " : "Imported to catalog as ") + importedId;
+                else editor.ExternalStatus = std::string(pt ? "Importado, mas não foi possível ativar " : "Imported, but could not activate ") + importedId;
             }
             else editor.ExternalStatus = std::move(error);
         }
-        if (!editor.ExternalFragmentPath.empty()) { ImGui::TextDisabled("bound fragment: %s", editor.ExternalFragmentPath.string().c_str()); ImGui::SameLine(); if (ImGui::SmallButton("Unbind##fragment")) clearExternalShaderFile(editor, true); }
+        if (!editor.ExternalFragmentPath.empty()) { ImGui::TextDisabled(pt ? "fragmento vinculado: %s" : "bound fragment: %s", editor.ExternalFragmentPath.string().c_str()); ImGui::SameLine(); if (ImGui::SmallButton(pt ? "Desvincular##fragment" : "Unbind##fragment")) clearExternalShaderFile(editor, true); }
         const bool hasExternal = !editor.ExternalVertexPath.empty() || !editor.ExternalFragmentPath.empty();
         if (!hasExternal) ImGui::BeginDisabled();
         ImGui::Checkbox(i18n::tr("shaders.hotReload"), &editor.HotReloadExternal);
@@ -114,17 +115,17 @@ namespace quartz::client::ui
             settings.ShaderFramebufferHeight = std::clamp(requestedSize[1], static_cast<int>(Rows), MaxShaderDimension);
         }
         ImGui::SameLine(); if (ImGui::Button(i18n::tr("shaders.regenerate"))) framebuffer.regenerate(settings.ShaderFramebufferWidth, settings.ShaderFramebufferHeight);
-        const char* downsampleModes[] = {"Average logical cell", "Average center 4x4", "Center pixel / exact"};
+        const char* downsampleModes[] = {pt ? "Média da célula lógica" : "Average logical cell", pt ? "Média central 4x4" : "Average center 4x4", pt ? "Pixel central / exato" : "Center pixel / exact"};
         ImGui::Combo(i18n::tr("shaders.downsample"), &settings.ShaderDownsampleMode, downsampleModes, 3);
         ImGui::SliderFloat(i18n::tr("shaders.crossfade"), &settings.ShaderTransitionSeconds, 0.0f, 5.0f, "%.2f s");
         ImGui::Checkbox(i18n::tr("shaders.recompileChange"), &settings.ShaderRecompileOnChange);
         ImGui::Checkbox(i18n::tr("shaders.keyUniforms"), &settings.ShaderKeyStateUniforms);
         ImGui::Checkbox(i18n::tr("shaders.capsColor"), &settings.ShaderCapsLockColorEnabled); ImGui::SameLine(); ImGui::ColorEdit3("##capsShaderColor", settings.ShaderCapsLockColor.data(), ImGuiColorEditFlags_NoInputs);
         ImGui::Checkbox(i18n::tr("shaders.scrollColor"), &settings.ShaderScrollLockColorEnabled); ImGui::SameLine(); ImGui::ColorEdit3("##scrollShaderColor", settings.ShaderScrollLockColor.data(), ImGuiColorEditFlags_NoInputs);
-        ImGui::TextDisabled("Active surface %dx%d -> 16x7 QRPC framebuffer", framebuffer.width(), framebuffer.height());
+        ImGui::TextDisabled(pt ? "Superfície ativa %dx%d -> framebuffer QRPC 16x7" : "Active surface %dx%d -> 16x7 QRPC framebuffer", framebuffer.width(), framebuffer.height());
 
         ImGui::SeparatorText(i18n::tr("shaders.materialParameters"));
         drawShaderMaterialEditor(framebuffer, 190.0f);
-        ImGui::TextDisabled("Arbitrary active uniforms are reflected automatically; // @ui annotations can override labels/ranges/defaults.");
+        ImGui::TextDisabled("%s", pt ? "Uniformes ativos arbitrários são refletidos automaticamente; anotações // @ui podem substituir rótulos/faixas/padrões." : "Arbitrary active uniforms are reflected automatically; // @ui annotations can override labels/ranges/defaults.");
     }
 }
