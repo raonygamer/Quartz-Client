@@ -2,8 +2,11 @@
 #include "quartz/client/Functions.hpp"
 #include "quartz/client/Model.hpp"
 #include <elf.h>
+#include <charconv>
+#include <fstream>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <unordered_map>
 
 namespace quartz::client
@@ -36,7 +39,37 @@ namespace quartz::client
 
         double metadataNow() noexcept { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
-        std::shared_ptr<const std::vector<RuntimeProcessModule>> processModules(const pid_t pid, const double now)
+        std::vector<RuntimeProcessModule> enumerateMappedProcessModules(const pid_t pid)
+        {
+            std::vector<RuntimeProcessModule> modules;
+            std::ifstream maps("/proc/" + std::to_string(pid) + "/maps");
+            if (!maps) return modules;
+            std::string line;
+            while (std::getline(maps,line))
+            {
+                std::istringstream stream(line); std::string range,permissions,offsetText,device,inode;
+                if (!(stream>>range>>permissions>>offsetText>>device>>inode)) continue;
+                std::string path; std::getline(stream,path); path=trim(std::move(path));
+                if (path.empty()||path.front()=='[') continue;
+                const std::size_t dash=range.find('-'); if (dash==std::string::npos) continue;
+                const auto parseHex=[](const std::string_view text,std::uintptr_t& value)
+                {
+                    const auto [ptr,ec]=std::from_chars(text.data(),text.data()+text.size(),value,16); return ec==std::errc{}&&ptr==text.data()+text.size();
+                };
+                std::uintptr_t start=0,end=0,offset=0;
+                if (!parseHex(std::string_view(range).substr(0,dash),start)||!parseHex(std::string_view(range).substr(dash+1),end)||!parseHex(offsetText,offset)||start>=end) continue;
+                RuntimeProcessModule module; module.Base=start>=offset?start-offset:start; module.MappingBase=start; module.End=end; module.Path=path; module.Name=std::filesystem::path(path).filename().string(); modules.emplace_back(std::move(module));
+            }
+            std::ranges::sort(modules,[](const RuntimeProcessModule& a,const RuntimeProcessModule& b)
+            {
+                if (a.MappingBase!=b.MappingBase) return a.MappingBase<b.MappingBase;
+                if (a.Base!=b.Base) return a.Base<b.Base;
+                return a.Path<b.Path;
+            });
+            return modules;
+        }
+
+        std::shared_ptr<const std::vector<RuntimeProcessModule>> cachedProcessModules(const pid_t pid, const double now)
         {
             if (LocalMetadata.ModulesPid == pid && LocalMetadata.Modules && now - LocalMetadata.ModulesUpdated < ModuleCacheSeconds) return LocalMetadata.Modules;
             {
@@ -46,7 +79,7 @@ namespace quartz::client
                     LocalMetadata.ModulesPid = pid; LocalMetadata.Modules = it->second.Modules; LocalMetadata.ModulesUpdated = it->second.ModulesUpdated; return LocalMetadata.Modules;
                 }
             }
-            auto modules = std::make_shared<const std::vector<RuntimeProcessModule>>(enumerateRuntimeModules(pid));
+            auto modules = std::make_shared<const std::vector<RuntimeProcessModule>>(enumerateMappedProcessModules(pid));
             {
                 std::lock_guard lock(MetadataMutex); auto& cached = MetadataCache[pid]; cached.Modules = modules; cached.ModulesUpdated = now;
             }
@@ -84,22 +117,28 @@ namespace quartz::client
 
     const char* runtimeX86ModeName(const RuntimeX86Mode mode) noexcept { return mode == RuntimeX86Mode::X86 ? "x86" : "x86-64"; }
 
+    std::vector<RuntimeProcessModule> runtimeProcessModules(const pid_t pid)
+    {
+        if (pid<=0) return {}; const auto modules=cachedProcessModules(pid,metadataNow()); return modules?*modules:std::vector<RuntimeProcessModule>{};
+    }
+
     std::string runtimeFormatProcessAddress(const std::span<const RuntimeProcessModule> modules, const std::uintptr_t address)
     {
         for (const auto& module : modules)
         {
-            if (address < module.Base || address >= module.End) continue;
+            if (!module.contains(address)) continue;
             std::string name = module.Name;
             if (name.empty() && !module.Path.empty()) name = std::filesystem::path(module.Path).filename().string();
             if (name.empty()) break;
-            std::ostringstream out; out << name << "+0x" << std::hex << std::uppercase << static_cast<unsigned long long>(address - module.Base); return out.str();
+            const std::uintptr_t base=address>=module.Base?module.Base:module.MappingBase;
+            std::ostringstream out; out << name << "+0x" << std::hex << std::uppercase << static_cast<unsigned long long>(address - base); return out.str();
         }
         return runtimeHexAddress(address);
     }
 
     std::string runtimeFormatProcessAddress(const pid_t pid, const std::uintptr_t address)
     {
-        if (pid <= 0 || address == 0) return runtimeHexAddress(address); const auto modules = processModules(pid, metadataNow()); return modules ? runtimeFormatProcessAddress(*modules, address) : runtimeHexAddress(address);
+        if (pid <= 0 || address == 0) return runtimeHexAddress(address); const auto modules = cachedProcessModules(pid, metadataNow()); return modules ? runtimeFormatProcessAddress(*modules, address) : runtimeHexAddress(address);
     }
 
     bool runtimeDecodeProcessInstruction(const RuntimeX86Mode mode, const std::span<const std::uint8_t> bytes, const std::uintptr_t address, RuntimeDecodedInstruction& result)
