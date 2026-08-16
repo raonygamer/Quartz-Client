@@ -102,8 +102,9 @@ set_source_files_properties("${QUARTZ_THEME_ASSETS_SOURCE}" PROPERTIES OBJECT_DE
 
 # Keep a tiny, checked patch layer over the vendored editor instead of carrying a fork.
 # 1) Completion selection only scrolls on keyboard navigation, so the wheel can freely browse the popup.
-# 2) Programmatic SetText refreshes keep the Dear ImGui viewport. This matters for live/read-only views
-#    such as disassembly and script state, where new analysis/data must not throw the user back to line 1.
+# 2) Programmatic SetText refreshes preserve viewport + cursors/selections. Live/read-only views such as
+#    disassembly/state must not jump to line 1, and editable hot-reloaded sources must not move the caret to 0:0.
+#    Undo history and diagnostic overlays still reset because SetText semantically replaces the document.
 set(QUARTZ_TEXT_EDITOR_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/TextEditor.cpp")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ImGuiColorTextEdit/TextEditor.cpp" QUARTZ_TEXT_EDITOR_CONTENT)
 set(QUARTZ_AUTOCOMPLETE_SCROLL_OLD "if (selected) {\n\t\t\t\t\t\tImGui::SetScrollHereY(1.0f);\n\t\t\t\t\t}")
@@ -113,13 +114,13 @@ if(QUARTZ_AUTOCOMPLETE_SCROLL_POS EQUAL -1)
     message(FATAL_ERROR "ImGuiColorTextEdit autocomplete scroll patch no longer matches the vendored source")
 endif()
 string(REPLACE "${QUARTZ_AUTOCOMPLETE_SCROLL_OLD}" "${QUARTZ_AUTOCOMPLETE_SCROLL_NEW}" QUARTZ_TEXT_EDITOR_CONTENT "${QUARTZ_TEXT_EDITOR_CONTENT}")
-set(QUARTZ_SETTEXT_SCROLL_OLD "\tclearMarkers();\n\tclearSquiggles();\n\tresetScrolling();\n}")
-set(QUARTZ_SETTEXT_SCROLL_NEW "\tclearMarkers();\n\tclearSquiggles();\n}")
-string(FIND "${QUARTZ_TEXT_EDITOR_CONTENT}" "${QUARTZ_SETTEXT_SCROLL_OLD}" QUARTZ_SETTEXT_SCROLL_POS)
-if(QUARTZ_SETTEXT_SCROLL_POS EQUAL -1)
-    message(FATAL_ERROR "ImGuiColorTextEdit SetText scroll patch no longer matches the vendored source")
+set(QUARTZ_SETTEXT_STATE_OLD "void TextEditor::setText(const std::string_view& text) {\n\t// load text into document and reset overlays\n\tdocument.setText(config, text);\n\ttransactions.reset();\n\tcursors.clearAll();\n\tclearMarkers();\n\tclearSquiggles();\n\tresetScrolling();\n}")
+set(QUARTZ_SETTEXT_STATE_NEW "void TextEditor::setText(const std::string_view& text) {\n\t// Quartz: replacing generated/live text must not destroy the user's viewport or caret.\n\tconst auto previousCursors = cursors;\n\tdocument.setText(config, text);\n\ttransactions.reset();\n\tcursors = previousCursors;\n\tfor (auto& cursor : cursors) {\n\t\tcursor.update(normalizePos(cursor.getInteractiveStart()), normalizePos(cursor.getInteractiveEnd()));\n\t}\n\tclearMarkers();\n\tclearSquiggles();\n\t// Cancel stale deferred cursor/line scrolling without resetting Dear ImGui's current scroll position.\n\tensureVisiblePos = DocPos(invalidLine, 0);\n\tscrollToLineNumber = invalidLine;\n}")
+string(FIND "${QUARTZ_TEXT_EDITOR_CONTENT}" "${QUARTZ_SETTEXT_STATE_OLD}" QUARTZ_SETTEXT_STATE_POS)
+if(QUARTZ_SETTEXT_STATE_POS EQUAL -1)
+    message(FATAL_ERROR "ImGuiColorTextEdit SetText state patch no longer matches the vendored source")
 endif()
-string(REPLACE "${QUARTZ_SETTEXT_SCROLL_OLD}" "${QUARTZ_SETTEXT_SCROLL_NEW}" QUARTZ_TEXT_EDITOR_CONTENT "${QUARTZ_TEXT_EDITOR_CONTENT}")
+string(REPLACE "${QUARTZ_SETTEXT_STATE_OLD}" "${QUARTZ_SETTEXT_STATE_NEW}" QUARTZ_TEXT_EDITOR_CONTENT "${QUARTZ_TEXT_EDITOR_CONTENT}")
 file(WRITE "${QUARTZ_TEXT_EDITOR_SOURCE}" "${QUARTZ_TEXT_EDITOR_CONTENT}")
 
 add_executable(QuartzClient
