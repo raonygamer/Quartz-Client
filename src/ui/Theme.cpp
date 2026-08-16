@@ -60,23 +60,26 @@ namespace quartz::client::ui
         try
         {
             std::ifstream file(themePath());
-            if (!file) return;
-            std::string line;
-            while (std::getline(file, line))
+            if (file)
             {
-                const std::size_t separator = line.find('=');
-                if (separator == std::string::npos) continue;
-                const std::string_view key(line.data(), separator);
-                const std::string_view value(line.data() + separator + 1, line.size() - separator - 1);
-                if (key == "Theme") parseNumber(value, settings.UiTheme);
-                else if (key == "Suspicious") parseBool(value, settings.SuspiciousColorThemes);
-                else if (key == "Rounding") parseNumber(value, settings.UiCornerRounding);
+                std::string line;
+                while (std::getline(file, line))
+                {
+                    const std::size_t separator = line.find('=');
+                    if (separator == std::string::npos) continue;
+                    const std::string_view key(line.data(), separator);
+                    const std::string_view value(line.data() + separator + 1, line.size() - separator - 1);
+                    if (key == "Theme") parseNumber(value, settings.UiTheme);
+                    else if (key == "Suspicious") parseBool(value, settings.SuspiciousColorThemes);
+                    else if (key == "Rounding") parseNumber(value, settings.UiCornerRounding);
+                }
             }
             settings.UiTheme = std::clamp(settings.UiTheme, 0, static_cast<int>(Theme::Count) - 1);
             settings.UiCornerRounding = std::clamp(settings.UiCornerRounding, 0.0f, 12.0f);
             if (suspiciousTheme(static_cast<Theme>(settings.UiTheme)) && !settings.SuspiciousColorThemes) settings.UiTheme = static_cast<int>(Theme::QuartzCyan);
+            applyCornerRounding(settings.UiCornerRounding);
         }
-        catch (...) {}
+        catch (...) { applyCornerRounding(settings.UiCornerRounding); }
     }
 
     void saveThemePreferences(const VisualizerSettings& settings) noexcept
@@ -103,6 +106,7 @@ namespace quartz::client::ui
     {
         const int index = std::clamp(static_cast<int>(theme), 0, static_cast<int>(Theme::Count) - 1);
         const Palette& p = Palettes[static_cast<std::size_t>(index)];
+        const ImGuiStyle previousStyle = ImGui::GetStyle();
         ImGui::StyleColorsDark();
         ImGuiStyle& style = ImGui::GetStyle();
         style.WindowPadding = {12.0f, 10.0f};
@@ -111,7 +115,13 @@ namespace quartz::client::ui
         style.ItemInnerSpacing = {6.0f, 5.0f};
         style.ScrollbarSize = 13.0f;
         style.GrabMinSize = 10.0f;
-        applyCornerRounding(5.0f);
+        style.WindowRounding = previousStyle.WindowRounding;
+        style.ChildRounding = previousStyle.ChildRounding;
+        style.FrameRounding = previousStyle.FrameRounding;
+        style.PopupRounding = previousStyle.PopupRounding;
+        style.ScrollbarRounding = previousStyle.ScrollbarRounding;
+        style.GrabRounding = previousStyle.GrabRounding;
+        style.TabRounding = previousStyle.TabRounding;
         style.WindowBorderSize = 1.0f;
         style.ChildBorderSize = 1.0f;
         style.PopupBorderSize = 1.0f;
