@@ -226,7 +226,7 @@ namespace quartz::client::ui
                     }
                     if (ImGui::BeginTabItem("Console"))
                     {
-                        static std::unordered_map<std::uint64_t, bool> autoScroll; bool& follow = autoScroll[script.Id]; if (!autoScroll.contains(script.Id)) follow = true;
+                        static std::unordered_map<std::uint64_t, bool> autoScroll; auto [followIt, inserted] = autoScroll.try_emplace(script.Id, true); bool& follow = followIt->second;
                         if (ImGui::SmallButton("Clear")) script.Console.clear(); ImGui::SameLine(); ImGui::Checkbox("Auto-scroll", &follow); ImGui::SameLine(); ImGui::TextDisabled("%zu / 512", script.Console.size());
                         ImGui::BeginChild("##jsConsole", ImVec2(0.0f, 260.0f), true, ImGuiWindowFlags_HorizontalScrollbar);
                         for (const auto& entry : script.Console) { ImGui::TextColored(consoleColor(entry.Level), "[%8.3f]", entry.Time); ImGui::SameLine(); ImGui::TextUnformatted(entry.Text.c_str()); }
