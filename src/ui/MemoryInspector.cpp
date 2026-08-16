@@ -120,7 +120,9 @@ namespace quartz::client
             pid_t FlowPid = 0;
             std::vector<FarControlFlowEntry> FarFlowEntries;
             std::unordered_map<std::uintptr_t,std::string> FlowPreviewCache;
-            bool OpenFarFlowPopup = false;
+            bool OpenFarFlowWindow = false;
+            bool FocusFarFlowWindow = false;
+            bool FarFlowWindowHovered = false;
             std::optional<std::uintptr_t> ContextAddress;
             bool OpenContextPopup = false;
             std::map<std::pair<pid_t, std::uintptr_t>, DisassemblyMarker> Markers;
@@ -346,19 +348,16 @@ namespace quartz::client
             }
             while (ui.FlowGraph.size()>8192) ui.FlowGraph.erase(ui.FlowGraph.begin());
             analysis = runtimeFunctionAnalysisSnapshot(state.Pid, state.Address); ui.FunctionAnalysis = analysis; ui.FunctionRevision = analysis.Revision;
-            const auto appendBoundary=[&](const std::string& name,const char* label,const std::string& metadata)
+            const auto appendBoundary=[&](const std::string& name,const bool ending)
             {
-                disassembly << "; ────────────────────────────────────────────────────────────────\n"; ui.DisplayLineAddresses.push_back(0);
-                disassembly << "; " << name << "    " << label; if (!metadata.empty()) disassembly << "    " << metadata; disassembly << '\n'; ui.DisplayLineAddresses.push_back(0);
-                disassembly << "; ────────────────────────────────────────────────────────────────\n"; ui.DisplayLineAddresses.push_back(0);
+                disassembly << '\n'; ui.DisplayLineAddresses.push_back(0);
+                disassembly << "; "; if (ending) disassembly << ui::i18n::tr("re.functionEnd") << ' '; disassembly << name << '\n'; ui.DisplayLineAddresses.push_back(0);
+                disassembly << '\n'; ui.DisplayLineAddresses.push_back(0);
             };
             for (auto& instruction : ui.Instructions)
             {
                 const auto candidateIt = std::ranges::find(ui.FunctionAnalysis.Candidates, instruction.Address, &RuntimeFunctionCandidate::Address); const RuntimeFunctionCandidate* candidate = candidateIt == ui.FunctionAnalysis.Candidates.end() ? nullptr : &*candidateIt;
-                if (candidate)
-                {
-                    const std::string name=functionName(ui,state.Pid,modules,*candidate); std::ostringstream metadata; metadata << '[' << runtimeFunctionCandidateSourceName(candidate->Source) << ", " << static_cast<int>(candidate->Confidence*100.0f) << "%]"; appendBoundary(name,candidate->Source==RuntimeFunctionCandidateSource::Prologue?ui::i18n::tr("re.functionPrologue"):ui::i18n::tr("re.functionStart"),metadata.str());
-                }
+                if (candidate) appendBoundary(functionName(ui,state.Pid,modules,*candidate),false);
                 instruction.DisplayLine = ui.DisplayLineAddresses.size(); ui.DisplayLineAddresses.push_back(instruction.Address); ui.DisplayLineByAddress[instruction.Address]=instruction.DisplayLine;
                 std::string text = instruction.Decoded.Text; if (instruction.Decoded.Target && instruction.Decoded.Branch != RuntimeBranchKind::None)
                 {
@@ -370,7 +369,7 @@ namespace quartz::client
                 if (executionProbe().running() && executionProbe().pid() == state.Pid && executionProbe().address() == instruction.Address) disassembly << " ; [" << ui::i18n::tr("re.armedNextExecution") << ']'; disassembly << '\n';
                 if (instruction.Decoded.Branch==RuntimeBranchKind::Return)
                 {
-                    if (const RuntimeFunctionCandidate* owner=functionForAddress(ui.FunctionAnalysis,instruction.Address)) appendBoundary(functionName(ui,state.Pid,modules,*owner),ui::i18n::tr("re.functionEnd"),{});
+                    if (const RuntimeFunctionCandidate* owner=functionForAddress(ui.FunctionAnalysis,instruction.Address)) appendBoundary(functionName(ui,state.Pid,modules,*owner),true);
                 }
             }
             state.Disassembly.SetText(disassembly.str()); applyDisassemblyMarkers(state); ui.LastProbeRunning = executionProbe().running(); ui.LastProbePid = executionProbe().pid(); ui.LastProbeAddress = executionProbe().address(); ui.DisassemblyDirty = false;
@@ -569,7 +568,7 @@ namespace quartz::client
             std::string mnemonic; if (instruction) { const auto space = instruction->Decoded.Text.find_first_of(" \t"); mnemonic = lower(instruction->Decoded.Text.substr(0, space)); } else { const std::string line = editor.GetLineText(pos.line); const auto first = line.find_first_not_of(" \t"); if (first != std::string::npos) { const auto end = line.find_first_of(" \t", first); mnemonic = lower(line.substr(first, end - first)); } }
             if (!token.empty() && lower(token) == mnemonic)
             {
-                const char* readable=mnemonicReadableName(mnemonic); const char* description=mnemonicDescription(mnemonic); if (readable||description) { if (rendered) ImGui::Separator(); rendered=true; const std::string opcode=upper(mnemonic); if (readable) ImGui::Text("%s — %s",opcode.c_str(),readable); else ImGui::TextUnformatted(opcode.c_str()); if (description) ImGui::TextWrapped("%s",description); }
+                const char* readable=mnemonicReadableName(mnemonic); const char* description=mnemonicDescription(mnemonic); if (readable||description) { if (rendered) ImGui::Separator(); rendered=true; const std::string opcode=upper(mnemonic); if (readable) ImGui::Text("%s - %s",opcode.c_str(),readable); else ImGui::TextUnformatted(opcode.c_str()); if (description) ImGui::TextWrapped("%s",description); }
             }
             if (instruction && instruction->Decoded.Target && (instruction->Decoded.Branch == RuntimeBranchKind::Conditional || instruction->Decoded.Branch == RuntimeBranchKind::Unconditional || instruction->Decoded.Branch == RuntimeBranchKind::Call))
             {
@@ -616,6 +615,11 @@ namespace quartz::client
             const float s=4.0f; draw->AddTriangleFilled(tip,ImVec2(tip.x+s*1.6f,tip.y-s),ImVec2(tip.x+s*1.6f,tip.y+s),color);
         }
 
+        void drawHorizontalContinuation(ImDrawList* draw, const ImVec2 center, const bool right, const ImU32 color)
+        {
+            const float direction=right?1.0f:-1.0f,s=3.0f; for (int i=0;i<2;++i) { const float x=center.x+direction*static_cast<float>(i)*4.5f; draw->AddLine({x-direction*s,center.y-s},{x,center.y},color,1.6f); draw->AddLine({x-direction*s,center.y+s},{x,center.y},color,1.6f); }
+        }
+
         float pointSegmentDistanceSquared(const ImVec2 point, const ImVec2 a, const ImVec2 b)
         {
             const float vx=b.x-a.x,vy=b.y-a.y,wx=point.x-a.x,wy=point.y-a.y,length=vx*vx+vy*vy; if (length<=0.0001f) return wx*wx+wy*wy; const float t=std::clamp((wx*vx+wy*vy)/length,0.0f,1.0f),dx=point.x-(a.x+t*vx),dy=point.y-(a.y+t*vy); return dx*dx+dy*dy;
@@ -631,19 +635,21 @@ namespace quartz::client
             return state.Disassembly.GetDocPosScreenPos(TextEditor::DocPos(row,0)).y+state.Disassembly.GetLineHeight()*0.5f;
         }
 
-        void drawFarControlFlowPopup(RuntimeMemoryInspectorState& state)
+        void drawFarControlFlowWindow(RuntimeMemoryInspectorState& state)
         {
-            auto& ui=enhancedMemoryInspectorState(); if (ui.OpenFarFlowPopup) { ImGui::OpenPopup("##QuartzFarControlFlow"); ui.OpenFarFlowPopup=false; }
-            if (!ImGui::BeginPopup("##QuartzFarControlFlow")) return; ImGui::SeparatorText(ui::i18n::tr("re.farFlow")); ImGui::TextDisabled(ui::i18n::tr("re.farFlowCount"),ui.FarFlowEntries.size()); const RuntimeX86Mode mode=runtimeProcessX86Mode(state.Pid); const auto modules=runtimeProcessModules(state.Pid);
-            const ImGuiTableFlags flags=ImGuiTableFlags_Borders|ImGuiTableFlags_RowBg|ImGuiTableFlags_Resizable|ImGuiTableFlags_ScrollX|ImGuiTableFlags_ScrollY|ImGuiTableFlags_SizingFixedFit;
-            if (ImGui::BeginTable("##FarFlowTable",5,flags,ImVec2(760.0f,300.0f),1080.0f))
+            auto& ui=enhancedMemoryInspectorState(); ui.FarFlowWindowHovered=false; if (!ui.OpenFarFlowWindow) return; if (ui.FocusFarFlowWindow) { ImGui::SetNextWindowFocus(); ui.FocusFarFlowWindow=false; } ImGui::SetNextWindowSize(ImVec2(900.0f,420.0f),ImGuiCond_FirstUseEver); bool open=ui.OpenFarFlowWindow; const std::string title=std::string(ui::i18n::tr("re.farFlow"))+"###QuartzFarControlFlow";
+            if (ImGui::Begin(title.c_str(),&open,ImGuiWindowFlags_NoCollapse))
             {
-                ImGui::TableSetupScrollFreeze(0,1); ImGui::TableSetupColumn(ui::i18n::tr("re.source"),ImGuiTableColumnFlags_WidthFixed,170.0f); ImGui::TableSetupColumn(ui::i18n::tr("re.sourceInstruction"),ImGuiTableColumnFlags_WidthFixed,260.0f); ImGui::TableSetupColumn(ui::i18n::tr("re.destination"),ImGuiTableColumnFlags_WidthFixed,170.0f); ImGui::TableSetupColumn(ui::i18n::tr("re.destinationInstruction"),ImGuiTableColumnFlags_WidthFixed,260.0f); ImGui::TableSetupColumn("##go",ImGuiTableColumnFlags_WidthFixed,100.0f); ImGui::TableHeadersRow(); ImGuiListClipper clipper; clipper.Begin(static_cast<int>(ui.FarFlowEntries.size())); while (clipper.Step()) for (int i=clipper.DisplayStart;i<clipper.DisplayEnd;++i)
+                ui.FarFlowWindowHovered=ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows|ImGuiHoveredFlags_AllowWhenBlockedByActiveItem); ImGui::TextDisabled(ui::i18n::tr("re.farFlowCount"),ui.FarFlowEntries.size()); const RuntimeX86Mode mode=runtimeProcessX86Mode(state.Pid); const auto modules=runtimeProcessModules(state.Pid); const ImGuiTableFlags flags=ImGuiTableFlags_Borders|ImGuiTableFlags_RowBg|ImGuiTableFlags_Resizable|ImGuiTableFlags_ScrollX|ImGuiTableFlags_ScrollY|ImGuiTableFlags_SizingFixedFit;
+                const float tableHeight=std::max(180.0f,ImGui::GetContentRegionAvail().y); if (ImGui::BeginTable("##FarFlowTable",5,flags,ImVec2(0.0f,tableHeight),1080.0f))
                 {
-                    const auto& entry=ui.FarFlowEntries[static_cast<std::size_t>(i)]; const std::string source=processAddressText(mode,modules,entry.Source),destination=processAddressText(mode,modules,entry.Destination),sourcePreview=instructionPreviewAt(state,entry.Source),destinationPreview=instructionPreviewAt(state,entry.Destination); ImGui::PushID(i); ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0); ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(entry.Color),"%s",source.c_str()); ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(sourcePreview.c_str()); ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(destination.c_str()); ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(destinationPreview.c_str()); ImGui::TableSetColumnIndex(4); if (ImGui::SmallButton("S")) { ui.PendingInspectorAddress=entry.Source; ImGui::CloseCurrentPopup(); } if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s",ui::i18n::tr("re.goSource")); ImGui::SameLine(); if (ImGui::SmallButton("D")) { ui.PendingInspectorAddress=entry.Destination; ImGui::CloseCurrentPopup(); } if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s",ui::i18n::tr("re.goDestination")); ImGui::PopID();
-                } ImGui::EndTable();
+                    ImGui::TableSetupScrollFreeze(1,1); ImGui::TableSetupColumn(ui::i18n::tr("re.source"),ImGuiTableColumnFlags_WidthFixed,170.0f); ImGui::TableSetupColumn(ui::i18n::tr("re.sourceInstruction"),ImGuiTableColumnFlags_WidthFixed,260.0f); ImGui::TableSetupColumn(ui::i18n::tr("re.destination"),ImGuiTableColumnFlags_WidthFixed,170.0f); ImGui::TableSetupColumn(ui::i18n::tr("re.destinationInstruction"),ImGuiTableColumnFlags_WidthFixed,260.0f); ImGui::TableSetupColumn("##go",ImGuiTableColumnFlags_WidthFixed,100.0f); ImGui::TableHeadersRow(); ImGuiListClipper clipper; clipper.Begin(static_cast<int>(ui.FarFlowEntries.size())); while (clipper.Step()) for (int i=clipper.DisplayStart;i<clipper.DisplayEnd;++i)
+                    {
+                        const auto& entry=ui.FarFlowEntries[static_cast<std::size_t>(i)]; const std::string source=processAddressText(mode,modules,entry.Source),destination=processAddressText(mode,modules,entry.Destination),sourcePreview=instructionPreviewAt(state,entry.Source),destinationPreview=instructionPreviewAt(state,entry.Destination); ImGui::PushID(i); ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0); ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(entry.Color),"%s",source.c_str()); ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(sourcePreview.c_str()); ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(destination.c_str()); ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(destinationPreview.c_str()); ImGui::TableSetColumnIndex(4); if (ImGui::SmallButton("S")) ui.PendingInspectorAddress=entry.Source; if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s",ui::i18n::tr("re.goSource")); ImGui::SameLine(); if (ImGui::SmallButton("D")) ui.PendingInspectorAddress=entry.Destination; if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s",ui::i18n::tr("re.goDestination")); ImGui::PopID();
+                    } ImGui::EndTable();
+                }
             }
-            ImGui::EndPopup();
+            ImGui::End(); ui.OpenFarFlowWindow=open;
         }
 
         void drawBranchLanes(RuntimeMemoryInspectorState& state, const ImVec2 min, const ImVec2 max)
@@ -660,7 +666,7 @@ namespace quartz::client
             struct Reservation { float X=0.0f,Y0=0.0f,Y1=0.0f; };
 
             auto& ui=enhancedMemoryInspectorState(); if (ui.FlowGraph.empty()||ui.DisplayLineAddresses.empty()) return; const std::size_t firstRow=state.Disassembly.GetFirstVisibleRow(),lastRow=state.Disassembly.GetLastVisibleRow(); if (lastRow<firstRow) return; const auto firstAddress=displayAddressNearRow(ui,firstRow),lastAddress=displayAddressNearRow(ui,lastRow); if (!firstAddress||!lastAddress) return;
-            const float top=min.y+6.0f,bottom=max.y-9.0f,right=max.x-24.0f,farRailX=max.x-11.0f,dockGap=15.0f,routeGap=32.0f,laneStep=19.0f,portOffset=3.0f; if (bottom<=top||right<=min.x+20.0f) return; const std::size_t visibleRows=std::max<std::size_t>(1,lastRow-firstRow+1);
+            const float scrollbarClearance=ImGui::GetStyle().ScrollbarSize+20.0f,top=min.y+7.0f,bottom=max.y-10.0f,farRailX=max.x-scrollbarClearance,right=farRailX-28.0f,dockGap=15.0f,routeGap=32.0f,laneStep=19.0f,portOffset=3.0f; if (bottom<=top||right<=min.x+20.0f) return; const std::size_t visibleRows=std::max<std::size_t>(1,lastRow-firstRow+1);
             std::vector<Route> routes; routes.reserve(ui.FlowGraph.size()*2); std::vector<FarRoute> farRoutes;
 
             const auto rowFor=[&](const std::uintptr_t address)->std::optional<std::size_t> { const auto it=ui.DisplayLineByAddress.find(address); return it==ui.DisplayLineByAddress.end()?std::nullopt:std::optional<std::size_t>(it->second); };
@@ -711,9 +717,29 @@ namespace quartz::client
 
             if (!farRoutes.empty())
             {
-                bool hasUp=false,hasDown=false,hasConditional=false,hasCall=false,hasJump=false; for (const auto& route:farRoutes) { hasUp|=route.Entry.Destination<route.Entry.Source; hasDown|=route.Entry.Destination>=route.Entry.Source; hasConditional|=route.Entry.Branch==RuntimeBranchKind::Conditional; hasCall|=route.Entry.Branch==RuntimeBranchKind::Call; hasJump|=route.Entry.Branch==RuntimeBranchKind::Unconditional; if (route.SourceVisible) { const float end=std::min(farRailX-18.0f,route.SourceDock+22.0f); draw->AddLine({route.SourceDock,route.SourceY},{end,route.SourceY},route.Entry.Color,2.0f); draw->AddCircleFilled({route.SourceDock,route.SourceY},2.7f,route.Entry.Color); } if (route.TargetVisible) { const float start=std::min(farRailX-18.0f,route.TargetDock+22.0f); draw->AddLine({route.TargetDock,route.TargetY},{start,route.TargetY},route.Entry.Color,2.0f); drawLeftArrowHead(draw,{route.TargetDock,route.TargetY},route.Entry.Color); } }
-                const bool hot=ImGui::IsMouseHoveringRect(ImVec2(farRailX-11.0f,top),ImVec2(max.x-1.0f,bottom)); std::vector<ImU32> colors; if (hasConditional) colors.push_back(IM_COL32(72,224,122,225)); if (hasCall) colors.push_back(IM_COL32(174,122,242,225)); if (hasJump) colors.push_back(IM_COL32(82,174,245,225)); if (colors.empty()) colors.push_back(IM_COL32(180,180,190,225)); const float stripe=3.0f,total=stripe*static_cast<float>(colors.size()-1); if (hot) draw->AddLine({farRailX,top},{farRailX,bottom},IM_COL32(255,255,255,210),8.0f); for (std::size_t i=0;i<colors.size();++i) { const float x=farRailX-total*0.5f+stripe*static_cast<float>(i); draw->AddLine({x,top},{x,bottom},hot?IM_COL32(255,255,255,245):colors[i],2.5f); }
-                const ImU32 headColor=hot?IM_COL32(255,255,255,245):colors.front(); if (hasUp) drawVerticalArrowHead(draw,{farRailX,top},false,headColor); if (hasDown) drawVerticalArrowHead(draw,{farRailX,bottom},true,headColor); const std::string count="×"+std::to_string(farRoutes.size()); draw->AddText({farRailX-ImGui::CalcTextSize(count.c_str()).x-8.0f,top+5.0f},hot?IM_COL32(255,255,255,255):IM_COL32(215,215,225,230),count.c_str()); if (hot) { ImGui::SetMouseCursor(ImGuiMouseCursor_Hand); ImGui::SetTooltip(ui::i18n::tr("re.farFlowTooltip"),farRoutes.size()); if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { ui.FarFlowEntries.clear(); ui.FarFlowEntries.reserve(farRoutes.size()); for (const auto& route:farRoutes) ui.FarFlowEntries.push_back(route.Entry); ui.OpenFarFlowPopup=true; } }
+                bool hasUp=false,hasDown=false,hasConditional=false,hasCall=false,hasJump=false; bool farHot=ImGui::IsMouseHoveringRect(ImVec2(farRailX-9.0f,top),ImVec2(farRailX+9.0f,bottom));
+                for (const auto& route:farRoutes)
+                {
+                    hasUp|=route.Entry.Destination<route.Entry.Source; hasDown|=route.Entry.Destination>=route.Entry.Source; hasConditional|=route.Entry.Branch==RuntimeBranchKind::Conditional; hasCall|=route.Entry.Branch==RuntimeBranchKind::Call; hasJump|=route.Entry.Branch==RuntimeBranchKind::Unconditional;
+                    if (route.SourceVisible&&route.SourceDock<farRailX-5.0f) farHot|=pointSegmentDistanceSquared(mouse,{route.SourceDock,route.SourceY},{farRailX,route.SourceY})<=hoverDistance2;
+                    if (route.TargetVisible&&route.TargetDock<farRailX-5.0f) farHot|=pointSegmentDistanceSquared(mouse,{farRailX,route.TargetY},{route.TargetDock,route.TargetY})<=hoverDistance2;
+                }
+                std::vector<ImU32> colors; if (hasConditional) colors.push_back(IM_COL32(72,224,122,225)); if (hasCall) colors.push_back(IM_COL32(174,122,242,225)); if (hasJump) colors.push_back(IM_COL32(82,174,245,225)); if (colors.empty()) colors.push_back(IM_COL32(180,180,190,225)); const float stripe=3.0f,total=stripe*static_cast<float>(colors.size()-1); if (farHot) draw->AddLine({farRailX,top},{farRailX,bottom},IM_COL32(255,255,255,210),8.0f); for (std::size_t i=0;i<colors.size();++i) { const float x=farRailX-total*0.5f+stripe*static_cast<float>(i); draw->AddLine({x,top},{x,bottom},farHot?IM_COL32(255,255,255,245):colors[i],2.5f); }
+                for (const auto& route:farRoutes)
+                {
+                    const ImU32 color=farHot?IM_COL32(255,255,255,245):route.Entry.Color;
+                    if (route.SourceVisible)
+                    {
+                        if (route.SourceDock<farRailX-7.0f) { draw->AddLine({route.SourceDock,route.SourceY},{farRailX,route.SourceY},color,2.0f); draw->AddCircleFilled({route.SourceDock,route.SourceY},2.7f,color); draw->AddCircleFilled({farRailX,route.SourceY},2.8f,color); }
+                        else drawHorizontalContinuation(draw,{farRailX-8.0f,route.SourceY},true,color);
+                    }
+                    if (route.TargetVisible)
+                    {
+                        if (route.TargetDock<farRailX-7.0f) { draw->AddLine({farRailX,route.TargetY},{route.TargetDock,route.TargetY},color,2.0f); draw->AddCircleFilled({farRailX,route.TargetY},2.8f,color); drawLeftArrowHead(draw,{route.TargetDock,route.TargetY},color); }
+                        else drawHorizontalContinuation(draw,{farRailX-8.0f,route.TargetY},false,color);
+                    }
+                }
+                const ImU32 headColor=farHot?IM_COL32(255,255,255,245):colors.front(); if (hasUp) drawVerticalArrowHead(draw,{farRailX,top},false,headColor); if (hasDown) drawVerticalArrowHead(draw,{farRailX,bottom},true,headColor); const std::string count="×"+std::to_string(farRoutes.size()); draw->AddText({farRailX-ImGui::CalcTextSize(count.c_str()).x-9.0f,top+5.0f},farHot?IM_COL32(255,255,255,255):IM_COL32(215,215,225,230),count.c_str()); if (farHot) { ImGui::SetMouseCursor(ImGuiMouseCursor_Hand); ImGui::SetTooltip(ui::i18n::tr("re.farFlowTooltip"),farRoutes.size()); if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { ui.FarFlowEntries.clear(); ui.FarFlowEntries.reserve(farRoutes.size()); for (const auto& route:farRoutes) ui.FarFlowEntries.push_back(route.Entry); ui.OpenFarFlowWindow=true; ui.FocusFarFlowWindow=true; } }
             }
             draw->PopClipRect();
             if (hotRoute)
@@ -780,7 +806,7 @@ namespace quartz::client
 
         const pid_t oldPid=state.Pid; if (ui::drawProcessPicker("DisassemblyProcess",ui.Processes,state.Pid,ui.ProcessSearch.data(),ui.ProcessSearch.size(),360.0f) && state.Pid!=oldPid)
         {
-            if (oldPid>0) invalidateRuntimeFunctionAnalysis(oldPid); ui.BufferBase=0; ui.BufferSize=0; ui.LastPid=0; ui.NavigationBack.clear(); ui.NavigationForward.clear(); ui.FlowGraph.clear(); ui.FlowPreviewCache.clear(); ui.FarFlowEntries.clear(); ui.FlowPid=state.Pid; ui.ContextAddress.reset(); ui.NavigationHighlightAddress=0; state.Address=0; ui.AddressTextValue=std::numeric_limits<std::uintptr_t>::max(); state.Original.clear(); state.Disassembly.SetText({}); state.Status="select an address";
+            if (oldPid>0) invalidateRuntimeFunctionAnalysis(oldPid); ui.BufferBase=0; ui.BufferSize=0; ui.LastPid=0; ui.NavigationBack.clear(); ui.NavigationForward.clear(); ui.FlowGraph.clear(); ui.FlowPreviewCache.clear(); ui.FarFlowEntries.clear(); ui.OpenFarFlowWindow=false; ui.FlowPid=state.Pid; ui.ContextAddress.reset(); ui.NavigationHighlightAddress=0; state.Address=0; ui.AddressTextValue=std::numeric_limits<std::uintptr_t>::max(); state.Original.clear(); state.Disassembly.SetText({}); state.Status="select an address";
         }
 
         ImGui::BeginDisabled(ui.NavigationBack.empty()); if (ImGui::SmallButton("<##DisassemblyBack")) navigateBack(state); ImGui::EndDisabled(); if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s",ui::i18n::tr("re.backTooltip")); ImGui::SameLine();
@@ -811,13 +837,13 @@ namespace quartz::client
             if (data.button==ImGuiMouseButton_Right) { ui.ContextAddress=instruction.Address; ui.OpenContextPopup=true; return true; }
             return false;
         });
-        state.Disassembly.Render("##memory-disassembly", ImVec2(-1.0f,390.0f), ImGuiChildFlags_Borders); const ImVec2 disassemblyMin = ImGui::GetItemRectMin(), disassemblyMax = ImGui::GetItemRectMax();
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&ImGui::IsMouseHoveringRect(disassemblyMin,disassemblyMax)) { const auto pos=state.Disassembly.GetDocPosAtMousePos(ImGui::GetMousePos()); if (const auto index=instructionIndexForDisplayLine(ui,pos.line)) { ui.ContextAddress=ui.Instructions[*index].Address; ui.OpenContextPopup=true; } }
-        drawBranchLanes(state,disassemblyMin,disassemblyMax); drawFarControlFlowPopup(state);
+        state.Disassembly.Render("##memory-disassembly", ImVec2(-1.0f,390.0f), ImGuiChildFlags_Borders); const ImVec2 disassemblyMin = ImGui::GetItemRectMin(), disassemblyMax = ImGui::GetItemRectMax(),mouse=ImGui::GetMousePos(); const float contentRight=disassemblyMax.x-ImGui::GetStyle().ScrollbarSize-2.0f; const bool overDisassembly=ImGui::IsMouseHoveringRect(disassemblyMin,disassemblyMax,false),overDisassemblyContent=overDisassembly&&mouse.x<contentRight;
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&overDisassemblyContent) { const auto pos=state.Disassembly.GetDocPosAtMousePos(mouse); if (const auto index=instructionIndexForDisplayLine(ui,pos.line)) { ui.ContextAddress=ui.Instructions[*index].Address; ui.OpenContextPopup=true; } }
+        drawBranchLanes(state,disassemblyMin,disassemblyMax); drawFarControlFlowWindow(state);
         if (ui.OpenContextPopup) { ImGui::OpenPopup("##QuartzDisassemblyContext"); ui.OpenContextPopup=false; }
         if (ImGui::BeginPopup("##QuartzDisassemblyContext")) { if (ui.ContextAddress) drawDisassemblyContextMenu(state,*ui.ContextAddress); else ImGui::CloseCurrentPopup(); ImGui::EndPopup(); }
-        const bool contextOpen=ImGui::IsPopupOpen("##QuartzDisassemblyContext")||ImGui::IsPopupOpen("##QuartzFarControlFlow"); if (!contextOpen&&!ImGui::IsMouseDown(ImGuiMouseButton_Right)&&!ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&state.Disassembly.IsMousePosOverTextArea(ImGui::GetMousePos())) { const auto pos=state.Disassembly.GetDocPosAtMousePos(ImGui::GetMousePos()); if (assemblyHoverAvailable(state,state.Disassembly,true,pos)) { ImGui::BeginTooltip(); drawAssemblyHoverContent(state,state.Disassembly,true,pos); ImGui::EndTooltip(); } }
-        if (!ui.PendingInspectorAddress && ui.SynchronizeAddress && state.Disassembly.IsMousePosOverTextArea(ImGui::GetMousePos()) && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { const auto pos = state.Disassembly.GetDocPosAtMousePos(ImGui::GetMousePos()); if (pos.line < ui.DisplayLineAddresses.size() && ui.DisplayLineAddresses[pos.line]) { ui.SyncedAddress = ui.DisplayLineAddresses[pos.line]; ui.NavigationHighlightAddress=ui.SyncedAddress; applyDisassemblyMarkers(state); } }
+        const bool contextOpen=ImGui::IsPopupOpen("##QuartzDisassemblyContext"); if (!contextOpen&&!ui.FarFlowWindowHovered&&!ImGui::IsMouseDown(ImGuiMouseButton_Right)&&!ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&overDisassemblyContent) { const auto pos=state.Disassembly.GetDocPosAtMousePos(mouse); if (assemblyHoverAvailable(state,state.Disassembly,true,pos)) { ImGui::BeginTooltip(); drawAssemblyHoverContent(state,state.Disassembly,true,pos); ImGui::EndTooltip(); } }
+        if (!ui.PendingInspectorAddress && ui.SynchronizeAddress && overDisassemblyContent && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { const auto pos = state.Disassembly.GetDocPosAtMousePos(mouse); if (pos.line < ui.DisplayLineAddresses.size() && ui.DisplayLineAddresses[pos.line]) { ui.SyncedAddress = ui.DisplayLineAddresses[pos.line]; ui.NavigationHighlightAddress=ui.SyncedAddress; applyDisassemblyMarkers(state); } }
         if (!ui.PendingInspectorAddress && !ui.DisplayLineAddresses.empty() && ui.BufferSize && now-ui.LastDisassemblyWindowShift>=0.10)
         {
             const std::size_t first=state.Disassembly.GetFirstVisibleRow(),last=state.Disassembly.GetLastVisibleRow(); if (last>=first)
