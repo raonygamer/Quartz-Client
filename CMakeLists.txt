@@ -108,7 +108,8 @@ set_source_files_properties("${QUARTZ_THEME_ASSETS_SOURCE}" PROPERTIES OBJECT_DE
 # 3) Hover popups follow the pointer continuously, keep a sane width, close when the pointer leaves, and
 #    don't reopen every frame for tokens whose callback rejected the hover. Context menus always take
 #    priority over hover popups. Editors also claim wheel input while hovered so reaching a code-view edge
-#    cannot unexpectedly scroll the containing Quartz page.
+#    cannot unexpectedly scroll the containing Quartz page. Read-only editors leave Ctrl+Click available
+#    to their host instead of treating it as a multi-caret gesture.
 set(QUARTZ_TEXT_EDITOR_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/TextEditor.cpp")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ImGuiColorTextEdit/TextEditor.cpp" QUARTZ_TEXT_EDITOR_CONTENT)
 set(QUARTZ_AUTOCOMPLETE_SCROLL_OLD "if (selected) {\n\t\t\t\t\t\tImGui::SetScrollHereY(1.0f);\n\t\t\t\t\t}")
@@ -132,6 +133,13 @@ if(QUARTZ_EDITOR_WHEEL_POS EQUAL -1)
     message(FATAL_ERROR "ImGuiColorTextEdit wheel ownership patch no longer matches the vendored source")
 endif()
 string(REPLACE "${QUARTZ_EDITOR_WHEEL_OLD}" "${QUARTZ_EDITOR_WHEEL_NEW}" QUARTZ_TEXT_EDITOR_CONTENT "${QUARTZ_TEXT_EDITOR_CONTENT}")
+set(QUARTZ_READONLY_CTRL_CLICK_OLD "\t\t\t\tauto addCursor = ImGui::GetIO().ConfigMacOSXBehaviors\n\t\t\t\t\t? ImGui::IsKeyDown(ImGuiMod_Alt) :\n\t\t\t\t\tImGui::IsKeyDown(ImGuiMod_Ctrl);")
+set(QUARTZ_READONLY_CTRL_CLICK_NEW "\t\t\t\tauto addCursor = !config.readOnly && (ImGui::GetIO().ConfigMacOSXBehaviors\n\t\t\t\t\t? ImGui::IsKeyDown(ImGuiMod_Alt) :\n\t\t\t\t\tImGui::IsKeyDown(ImGuiMod_Ctrl));")
+string(FIND "${QUARTZ_TEXT_EDITOR_CONTENT}" "${QUARTZ_READONLY_CTRL_CLICK_OLD}" QUARTZ_READONLY_CTRL_CLICK_POS)
+if(QUARTZ_READONLY_CTRL_CLICK_POS EQUAL -1)
+    message(FATAL_ERROR "ImGuiColorTextEdit read-only Ctrl+Click patch no longer matches the vendored source")
+endif()
+string(REPLACE "${QUARTZ_READONLY_CTRL_CLICK_OLD}" "${QUARTZ_READONLY_CTRL_CLICK_NEW}" QUARTZ_TEXT_EDITOR_CONTENT "${QUARTZ_TEXT_EDITOR_CONTENT}")
 set(QUARTZ_HOVER_MOUSE_SETUP_OLD "void TextEditor::handleMouseInteractions() {\n\tauto io = ImGui::GetIO();\n\tauto mousePos = ImGui::GetMousePos() - cursorScreenPos;\n\tauto absoluteMousePos = ImGui::GetMousePos() - ImGui::GetWindowPos();")
 set(QUARTZ_HOVER_MOUSE_SETUP_NEW "void TextEditor::handleMouseInteractions() {\n\tauto io = ImGui::GetIO();\n\tauto mousePos = ImGui::GetMousePos() - cursorScreenPos;\n\tauto absoluteMousePos = ImGui::GetMousePos() - ImGui::GetWindowPos();\n\tconst bool contextPopupOpen = ImGui::IsPopupOpen(\"TextContextMenu\") || ImGui::IsPopupOpen(\"LineNumberContextMenu\");\n\tconst ImGuiHoveredFlags editorHoverFlags = !contextPopupOpen && ImGui::IsPopupOpen(\"TextHoverPopup\") ? ImGuiHoveredFlags_AllowWhenBlockedByPopup : ImGuiHoveredFlags_None;\n\tif (textHoverCallback && (contextPopupOpen || !ImGui::IsWindowHovered(editorHoverFlags))) popupDocPos = DocPos(invalidLine, 0);")
 string(FIND "${QUARTZ_TEXT_EDITOR_CONTENT}" "${QUARTZ_HOVER_MOUSE_SETUP_OLD}" QUARTZ_HOVER_MOUSE_SETUP_POS)
@@ -154,7 +162,7 @@ if(QUARTZ_HOVER_TRACK_POS EQUAL -1)
 endif()
 string(REPLACE "${QUARTZ_HOVER_TRACK_OLD}" "${QUARTZ_HOVER_TRACK_NEW}" QUARTZ_TEXT_EDITOR_CONTENT "${QUARTZ_TEXT_EDITOR_CONTENT}")
 set(QUARTZ_HOVER_POPUP_OLD "\tif (ImGui::IsPopupOpen(\"TextHoverPopup\")) {\n\t\tImGui::SetNextWindowPos(popupWindowPos, ImGuiCond_Always, ImVec2(0.0f, 1.0f));\n\n\t\tif (ImGui::BeginPopup(\"TextHoverPopup\", ImGuiWindowFlags_NoFocusOnAppearing)) {\n\t\t\tif (textHoverCallback) {\n\t\t\t\tImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());\n\t\t\t\ttextHoverCallback(popupData);\n\n\t\t\t} else {\n\t\t\t\tImGui::CloseCurrentPopup();\n\t\t\t}\n\n\t\t\tImGui::EndPopup();\n\t\t}\n\t}")
-set(QUARTZ_HOVER_POPUP_NEW "\tif (!ImGui::IsPopupOpen(\"TextContextMenu\") && !ImGui::IsPopupOpen(\"LineNumberContextMenu\") && ImGui::IsPopupOpen(\"TextHoverPopup\")) {\n\t\tImGui::SetNextWindowPos(popupWindowPos, ImGuiCond_Always);\n\t\tImGui::SetNextWindowSizeConstraints(ImVec2(220.0f * fontScaleDpi, 0.0f), ImVec2(520.0f * fontScaleDpi, FLT_MAX));\n\n\t\tif (ImGui::BeginPopup(\"TextHoverPopup\", ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {\n\t\t\tif (textHoverCallback && popupDocPos.line != invalidLine) {\n\t\t\t\tImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());\n\t\t\t\ttextHoverCallback(popupData);\n\n\t\t\t} else {\n\t\t\t\tImGui::CloseCurrentPopup();\n\t\t\t}\n\n\t\t\tImGui::EndPopup();\n\t\t}\n\t}")
+set(QUARTZ_HOVER_POPUP_NEW "\tif (!ImGui::IsPopupOpen(\"TextContextMenu\") && !ImGui::IsPopupOpen(\"LineNumberContextMenu\") && ImGui::IsPopupOpen(\"TextHoverPopup\")) {\n\t\tImGui::SetNextWindowPos(popupWindowPos, ImGuiCond_Always);\n\t\tImGui::SetNextWindowSizeConstraints(ImVec2(220.0f * fontScaleDpi, 0.0f), ImVec2(520.0f * fontScaleDpi, FLT_MAX));\n\n\t\tif (ImGui::BeginPopup(\"TextHoverPopup\", ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs)) {\n\t\t\tif (textHoverCallback && popupDocPos.line != invalidLine) {\n\t\t\t\tImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());\n\t\t\t\ttextHoverCallback(popupData);\n\n\t\t\t} else {\n\t\t\t\tImGui::CloseCurrentPopup();\n\t\t\t}\n\n\t\t\tImGui::EndPopup();\n\t\t}\n\t}")
 string(FIND "${QUARTZ_TEXT_EDITOR_CONTENT}" "${QUARTZ_HOVER_POPUP_OLD}" QUARTZ_HOVER_POPUP_POS)
 if(QUARTZ_HOVER_POPUP_POS EQUAL -1)
     message(FATAL_ERROR "ImGuiColorTextEdit hover popup patch no longer matches the vendored source")
