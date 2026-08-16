@@ -8,7 +8,7 @@ namespace quartz::client::ui
     public:
         [[nodiscard]] std::string_view id() const noexcept override { return "profiles"; }
         [[nodiscard]] std::string_view title() const noexcept override { return "Profiles"; }
-        [[nodiscard]] PageSection section() const noexcept override { return PageSection::Runtime; }
+        [[nodiscard]] PageSection section() const noexcept override { return PageSection::Scripting; }
         void render(PageContext& context, PageManager& manager) override;
     };
 }
