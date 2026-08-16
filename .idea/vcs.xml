@@ -6,7 +6,9 @@
     <mapping directory="$PROJECT_DIR$/vendor/ImGuiColorTextEdit" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/vendor/glfw" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/vendor/imgui" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/vendor/libhat" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/vendor/libusb" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/vendor/quickjs" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/vendor/zydis" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/vendor/zydis/dependencies/zycore" vcs="Git" />
   </component>
