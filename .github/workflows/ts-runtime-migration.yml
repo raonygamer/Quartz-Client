@@ -1,0 +1,75 @@
+name: Executable TypeScript runtime
+
+on:
+  push:
+    branches: [feature/quickjs-bindings]
+    paths:
+      - tools/apply_ts_runtime.py
+      - .github/workflows/ts-runtime-migration.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Apply runtime migration
+        run: python3 tools/apply_ts_runtime.py
+      - name: Reject old workspace execution model
+        run: |
+          ! grep -n 'function(q)' src/runtime/QuickJSWorkspace.cpp
+          ! grep -n 'q.import' src/runtime/QuickJSWorkspace.cpp
+          ! grep -n 'instance->Function' src/runtime/QuickJSWorkspace.cpp
+          grep -q 'JS_EVAL_TYPE_MODULE' src/runtime/QuickJSWorkspace.cpp
+          grep -q 'JS_ExecutePendingJob' src/runtime/QuickJSWorkspace.cpp
+          grep -q '@quartz/client' src/runtime/QuickJSSDK.cpp
+      - name: Type eraser smoke test
+        run: |
+          cat >/tmp/ts-strip.cpp <<'CPP'
+          #include "QuickJSInternal.hpp"
+          #include <fstream>
+          #include <iostream>
+          using namespace quartz::client;
+          int main() {
+              const char* ts = R"TS(import { Process, Struct, Field, System } from "@quartz/client";
+          import type { Pointer } from "@quartz/client";
+          const Player = Struct.define({ life: Field.Int32(0x10n) });
+          let process: Process | undefined;
+          let player: Pointer<typeof Player> | undefined;
+          async function connect(target: Process): Promise<void> { process = target; }
+          function update({ time }: { time: number; deltaTime: number }): void { if (player) console.log(time, player.life); }
+          System.on("update", update);
+          )TS";
+              std::string js, error;
+              if (!runtimeTranspileTypeScript(ts, js, error)) { std::cerr << error << '\n'; return 1; }
+              if (js.find("import type") != std::string::npos || js.find(": Process") != std::string::npos || js.find(": Pointer") != std::string::npos || js.find(": Promise") != std::string::npos || js.find(": { time") != std::string::npos) return 2;
+              std::ofstream("/tmp/ts-strip.mjs") << js;
+          }
+          CPP
+          g++ -std=c++20 -Isrc/runtime -Iinclude -Ivendor/quickjs /tmp/ts-strip.cpp src/runtime/QuickJSSDK.cpp -o /tmp/ts-strip
+          /tmp/ts-strip
+          node --check /tmp/ts-strip.mjs
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev libudev-dev
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+      - name: Build
+        run: cmake --build build -j2
+      - name: Commit validated product changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A src include
+          if git diff --cached --quiet; then
+            echo "No product changes"
+            exit 0
+          fi
+          git commit -m "feat: execute TypeScript SDK scripts"
+          git push
