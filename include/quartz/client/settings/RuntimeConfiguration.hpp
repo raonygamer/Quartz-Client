@@ -8,6 +8,8 @@ namespace quartz::client
         std::size_t SignatureScanChunkBytes = 4ULL * 1024ULL * 1024ULL;
         float DisassemblyRefreshHz = 0.5f;
         float RawBytesRefreshHz = 0.25f;
+        bool FunctionHeuristics = true;
+        std::size_t FunctionAnalysisWindowBytes = 128ULL * 1024ULL;
         bool AssemblerFillNops = true;
         bool AssemblerWholeInstructions = true;
         bool AssemblerConsumeFollowing = false;
