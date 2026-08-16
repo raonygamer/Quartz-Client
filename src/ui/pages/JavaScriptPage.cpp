@@ -153,7 +153,11 @@ namespace quartz::client::ui
                 if (ImGui::BeginCombo(label, property.StringValue.c_str())) { for (const auto& value : property.EnumValues) { const bool selected = property.StringValue == value; if (ImGui::Selectable(value.c_str(), selected)) { property.StringValue = value; changed = true; } if (selected) ImGui::SetItemDefaultFocus(); } ImGui::EndCombo(); } break;
             default:
             {
-                char value[1024]{}; std::snprintf(value, sizeof(value), "%s", property.StringValue.c_str()); ImGui::SetNextItemWidth(-80.0f); if (ImGui::InputText(label, value, sizeof(value))) { property.StringValue = value; property.KeyIsNumber = false; changed = true; } break;
+                char value[1024]{}; std::snprintf(value, sizeof(value), "%s", property.StringValue.c_str());
+                const float available = ImGui::GetContentRegionAvail().x;
+                const float reserve = ImGui::CalcTextSize(label).x + ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetStyle().ItemSpacing.x * 3.0f + 36.0f;
+                ImGui::SetNextItemWidth(std::clamp(available - reserve, 220.0f, 760.0f));
+                if (ImGui::InputText(label, value, sizeof(value))) { property.StringValue = value; property.KeyIsNumber = false; changed = true; } break;
             }
             }
             if (!property.Description.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", property.Description.c_str());
