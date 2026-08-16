@@ -239,6 +239,31 @@ function subscription(id) {
 
 function listen(type, callback) { return subscription(api.events.subscribe(type, callback)); }
 function address(value) { return typeof value === "bigint" ? value : BigInt(value); }
+function stringLimit(value) { value = Number(value ?? 256); return Math.max(1, Math.min(4096, Number.isFinite(value) ? Math.trunc(value) : 256)); }
+function decodeUtf8(bytes) {
+    let output = "";
+    for (let i = 0; i < bytes.length;) {
+        const a = bytes[i++];
+        if (a < 0x80) { output += String.fromCharCode(a); continue; }
+        if ((a & 0xE0) === 0xC0 && i < bytes.length) { const b = bytes[i++]; output += String.fromCodePoint(((a & 0x1F) << 6) | (b & 0x3F)); continue; }
+        if ((a & 0xF0) === 0xE0 && i + 1 < bytes.length) { const b = bytes[i++], c = bytes[i++]; output += String.fromCodePoint(((a & 0x0F) << 12) | ((b & 0x3F) << 6) | (c & 0x3F)); continue; }
+        if ((a & 0xF8) === 0xF0 && i + 2 < bytes.length) { const b = bytes[i++], c = bytes[i++], d = bytes[i++]; output += String.fromCodePoint(((a & 0x07) << 18) | ((b & 0x3F) << 12) | ((c & 0x3F) << 6) | (d & 0x3F)); continue; }
+        output += "�";
+    }
+    return output;
+}
+function readCString(process, target, maxLength) {
+    const bytes = Array.from(api.memory.readBytes(process.pid, target, stringLimit(maxLength))); const end = bytes.indexOf(0); return decodeUtf8(end < 0 ? bytes : bytes.slice(0, end));
+}
+function readWString(process, target, maxLength) {
+    const bytes = Array.from(api.memory.readBytes(process.pid, target, stringLimit(maxLength) * 2)); let output = "";
+    for (let i = 0; i + 1 < bytes.length; i += 2) {
+        const high = bytes[i] | (bytes[i + 1] << 8); if (!high) break;
+        if (high >= 0xD800 && high <= 0xDBFF && i + 3 < bytes.length) { const low = bytes[i + 2] | (bytes[i + 3] << 8); if (low >= 0xDC00 && low <= 0xDFFF) { output += String.fromCodePoint(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)); i += 2; continue; } }
+        output += String.fromCodePoint(high);
+    }
+    return output;
+}
 
 const processCache = new Map();
 function processFrom(info) {
@@ -357,6 +382,11 @@ function readField(process, base, field) {
         if (!value) return undefined;
         return field.struct ? field.struct.at(process, value) : value;
     }
+    if (field.kind === "cstring" || field.kind === "wstring") {
+        const value = api.memory.read(process.pid, current, "ptr");
+        if (!value) return undefined;
+        return field.kind === "cstring" ? readCString(process, value, field.maxLength) : readWString(process, value, field.maxLength);
+    }
     if (field.kind === "struct") return field.struct.at(process, current);
     if (field.kind === "array") {
         if (!field.element.size) throw new TypeError("array element has no fixed size");
@@ -368,7 +398,7 @@ function readField(process, base, field) {
 }
 function writeField(process, base, field, value) {
     const current = fieldAddress(base, field);
-    if (field.kind === "struct" || field.kind === "array") throw new TypeError("embedded structs/arrays are not directly assignable");
+    if (field.kind === "struct" || field.kind === "array" || field.kind === "cstring" || field.kind === "wstring") throw new TypeError("embedded structs/arrays and string-pointer fields are not directly assignable");
     if (field.kind === "pointer") {
         const pointer = value && typeof value === "object" && "$address" in value ? value.$address : value;
         api.memory.write(process.pid, current, "ptr", pointer || 0n); return;
@@ -402,6 +432,8 @@ export const Field = Object.freeze({
     Int64: offset => scalar("i64", offset), UInt64: offset => scalar("u64", offset),
     Float32: offset => scalar("f32", offset), Float64: offset => scalar("f64", offset), Boolean: offset => scalar("bool", offset),
     Pointer(offset, struct) { return Object.freeze({ kind: "pointer", offset: address(offset), struct }); },
+    CString(offset, maxLength = 256) { return Object.freeze({ kind: "cstring", offset: address(offset), maxLength: stringLimit(maxLength) }); },
+    WString(offset, maxLength = 256) { return Object.freeze({ kind: "wstring", offset: address(offset), maxLength: stringLimit(maxLength) }); },
     Struct(offset, struct) { return Object.freeze({ kind: "struct", offset: address(offset), struct }); },
     Array(offset, element, count) { return Object.freeze({ kind: "array", offset: address(offset), element, count }); }
 });
