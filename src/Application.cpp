@@ -5,6 +5,8 @@
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/platform/Window.hpp"
 #include "quartz/client/ui/ImGuiRuntime.hpp"
+#include "quartz/client/ui/I18n.hpp"
+#include "quartz/client/ui/Theme.hpp"
 #include "quartz/client/shader/ShaderWorkspace.hpp"
 
 namespace quartz::client
@@ -23,6 +25,9 @@ int Application::run(int argc, char* argv[])
     if (!window.initialize(1280, 800, "Quartz")) return EXIT_FAILURE;
     ui::ImGuiRuntime imgui;
     if (!imgui.initialize(window.handle())) return EXIT_FAILURE;
+    ui::i18n::loadLanguagePreference();
+    ui::loadThemePreferences(settings);
+    ui::applyTheme(settings.UiTheme);
 
     RawUSB usb;
     AudioSpectrum audio;
@@ -178,58 +183,37 @@ int Application::run(int argc, char* argv[])
         const bool capsLockActive = reactiveKeys.CapsLockActive;
         if (capsLockActive != lastCapsLock)
         {
-            runtimeTelemetry.event(currentFrame, "Input", std::string("Caps Lock ") + (capsLockActive ? "on" : "off"));
+            runtimeTelemetry.event(currentFrame, "Input", capsLockActive ? "Caps Lock on" : "Caps Lock off");
             lastCapsLock = capsLockActive;
         }
         if (scrollLockActive != lastScrollLock)
         {
-            runtimeTelemetry.event(currentFrame, "Input", std::string("Scroll Lock ") + (scrollLockActive ? "on" : "off"));
+            runtimeTelemetry.event(currentFrame, "Input", scrollLockActive ? "Scroll Lock on" : "Scroll Lock off");
             lastScrollLock = scrollLockActive;
         }
-
-        settings.AnalysisBandCount = std::clamp(settings.AnalysisBandCount, 32, static_cast<int>(FFTSize));
-        settings.BassEndBand = std::clamp(settings.BassEndBand, 0, settings.AnalysisBandCount - 1);
-        settings.ShaderDownsampleMode = std::clamp(settings.ShaderDownsampleMode, 0, 2);
-        settings.ShaderPresetIndex = std::clamp(settings.ShaderPresetIndex, 0, static_cast<int>(ShaderPresets.size()));
-        settings.ShaderFramebufferWidth = std::clamp(settings.ShaderFramebufferWidth, static_cast<int>(Columns), MaxShaderDimension);
-        settings.ShaderFramebufferHeight = std::clamp(settings.ShaderFramebufferHeight, static_cast<int>(Rows), MaxShaderDimension);
-        settings.ShaderEditorZoom = std::clamp(std::round(settings.ShaderEditorZoom * 10.0f) / 10.0f, 0.60f, 2.50f);
-        settings.ShaderTransitionSeconds = std::clamp(settings.ShaderTransitionSeconds, 0.0f, 10.0f);
-        settings.AutoGainBaseline = std::clamp(settings.AutoGainBaseline, 0.05f, 20.0f);
-        settings.AutoGainTargetRms = std::clamp(settings.AutoGainTargetRms, 0.005f, 0.75f);
-        settings.AutoGainAdaptation = std::clamp(settings.AutoGainAdaptation, 0.01f, 5.0f);
-        settings.AutoGainMinCorrection = std::clamp(settings.AutoGainMinCorrection, 0.05f, 10.0f);
-        settings.AutoGainMaxCorrection = std::clamp(settings.AutoGainMaxCorrection, settings.AutoGainMinCorrection, 20.0f);
-        settings.AutoGainSilenceGate = std::clamp(settings.AutoGainSilenceGate, 0.0f, 0.25f);
-        settings.GlobalBrightness = std::clamp(settings.GlobalBrightness, 0.0f, 1.0f);
-        settings.LiveOutputInterpolation = std::clamp(settings.LiveOutputInterpolation, 0.0f, 1.0f);
-        settings.FeatherRows = std::max(settings.FeatherRows, 0.01f);
-        settings.MaxFrequency = std::max(settings.MaxFrequency, settings.MinFrequency + 1.0f);
-        settings.MaxDb = std::max(settings.MaxDb, settings.MinDb + 0.1f);
-        mediaColor.setPollInterval(settings.MediaPollInterval);
-
-        const bool usbConnectedNow = usb.isConnected();
-        if (usbConnectedNow != lastUSBConnected)
+        const bool usbConnected = usb.isConnected();
+        if (usbConnected != lastUSBConnected)
         {
-            runtimeTelemetry.event(currentFrame, "USB", usbConnectedNow ? "Device connected" : "Device disconnected");
-            lastUSBConnected = usbConnectedNow;
+            runtimeTelemetry.event(currentFrame, "USB", usbConnected ? "Device connected" : "Device disconnected");
+            lastUSBConnected = usbConnected;
         }
-        const std::string mediaTitleNow = mediaColor.mediaTitle();
-        const bool mediaPlayingNow = mediaColor.playing();
-        if (mediaTitleNow != lastMediaTitle || mediaPlayingNow != lastMediaPlaying)
+        const std::string mediaTitle = mediaColor.mediaTitle();
+        const bool mediaPlaying = mediaColor.playing();
+        if (mediaTitle != lastMediaTitle || mediaPlaying != lastMediaPlaying)
         {
-            runtimeTelemetry.event(currentFrame, "Media", mediaPlayingNow ? "Playing: " + mediaTitleNow : "Paused/stopped: " + mediaTitleNow);
-            lastMediaTitle = mediaTitleNow;
-            lastMediaPlaying = mediaPlayingNow;
+            runtimeTelemetry.event(currentFrame, "Media", (mediaPlaying ? "Playing: " : "Paused: ") + (mediaTitle.empty() ? std::string("<none>") : mediaTitle));
+            lastMediaTitle = mediaTitle;
+            lastMediaPlaying = mediaPlaying;
         }
-
         if (settings.AutoReconnect && !usb.isConnected() && currentFrame >= nextReconnectAttempt)
         {
             usb.connect();
             nextReconnectAttempt = currentFrame + 1.0;
         }
 
-        if (!settings.ShaderId.empty() && settings.ShaderId != javascriptObservedShaderId)
+        const double javascriptFrameTime = std::max(currentFrame - lastJavaScriptFrame, 0.000001);
+        lastJavaScriptFrame = currentFrame;
+        if (settings.ShaderId != javascriptObservedShaderId)
         {
             javascriptPreviousShaderId = javascriptObservedShaderId;
             javascriptObservedShaderId = settings.ShaderId;
@@ -243,9 +227,8 @@ int Application::run(int argc, char* argv[])
         }
         RuntimeSignalContext javascriptContext;
         javascriptContext.Time = currentFrame;
-        javascriptContext.DeltaTime = static_cast<float>(std::clamp(currentFrame - lastJavaScriptFrame, 0.0, 1.0));
-        lastJavaScriptFrame = currentFrame;
-        javascriptContext.Audio = audio.levelSnapshot();
+        javascriptContext.DeltaTime = static_cast<float>(javascriptFrameTime);
+        javascriptContext.Audio = audioLevel;
         javascriptContext.MappedBands = &mappedBands;
         javascriptContext.SmoothedBands = &smoothedBands;
         javascriptContext.MediaColor = visualizerColor;
