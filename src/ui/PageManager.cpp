@@ -5,14 +5,10 @@
 #include "quartz/client/ui/pages/AudioPage.hpp"
 #include "quartz/client/ui/pages/RGBPage.hpp"
 #include "quartz/client/ui/pages/ShadersPage.hpp"
-#include "quartz/client/ui/pages/BindingsPage.hpp"
 #include "quartz/client/ui/pages/JavaScriptPage.hpp"
-#include "quartz/client/ui/pages/ControlsPage.hpp"
-#include "quartz/client/ui/pages/ObjectsPage.hpp"
 #include "quartz/client/ui/pages/NativePage.hpp"
 #include "quartz/client/ui/pages/MemoryScannerPage.hpp"
 #include "quartz/client/ui/pages/MemoryWatchPage.hpp"
-#include "quartz/client/ui/pages/ValueBankPage.hpp"
 #include "quartz/client/ui/pages/ProfilesPage.hpp"
 #include "quartz/client/ui/pages/DevicePage.hpp"
 #include "quartz/client/ui/pages/InputPage.hpp"
@@ -31,13 +27,14 @@ namespace quartz::client::ui
 {
     namespace
     {
-        constexpr auto Sections = std::to_array<PageSection>({PageSection::Visual, PageSection::Runtime, PageSection::Device, PageSection::Diagnostics, PageSection::Other});
+        constexpr auto Sections = std::to_array<PageSection>({PageSection::Visual, PageSection::Scripting, PageSection::ReverseEngineering, PageSection::Device, PageSection::Diagnostics, PageSection::Other});
         const char* sectionName(const PageSection section) noexcept
         {
             switch (section)
             {
             case PageSection::Visual: return "VISUAL";
-            case PageSection::Runtime: return "REVERSE ENGINEERING";
+            case PageSection::Scripting: return "SCRIPTING";
+            case PageSection::ReverseEngineering: return "REVERSE ENGINEERING";
             case PageSection::Device: return "DEVICE";
             case PageSection::Diagnostics: return "DIAGNOSTICS";
             case PageSection::Other: return "OTHER";
@@ -76,7 +73,7 @@ namespace quartz::client::ui
         if (!active) return;
 
         const ImVec2 available = ImGui::GetContentRegionAvail();
-        constexpr float NavigationWidth = 178.0f;
+        constexpr float NavigationWidth = 184.0f;
         if (ImGui::BeginChild("PageNavigation", ImVec2(NavigationWidth, available.y), ImGuiChildFlags_Borders))
         {
             for (const PageSection section : Sections)
@@ -108,27 +105,23 @@ namespace quartz::client::ui
     {
         PageManager manager;
         manager.add<VisualizerPage>();
+        manager.add<ShadersPage>();
         manager.add<SpectrumPage>();
         manager.add<AudioPage>();
         manager.add<RGBPage>();
-        manager.add<ShadersPage>();
         manager.add<JavaScriptPage>();
-        manager.add<BindingsPage>();
-        manager.add<ControlsPage>();
-        manager.add<ObjectsPage>();
+        manager.add<ProfilesPage>();
         manager.add<NativePage>();
         manager.add<MemoryScannerPage>();
         manager.add<MemoryWatchPage>();
-        manager.add<ValueBankPage>();
-        manager.add<ProfilesPage>();
         manager.add<DevicePage>();
         manager.add<InputPage>();
         manager.add<USBPage>();
-        manager.add<QRPCPage>();
         manager.add<FirmwarePage>();
-        manager.add<TimelinePage>();
         manager.add<PerformancePage>();
         manager.add<MatrixTimingPage>();
+        manager.add<QRPCPage>();
+        manager.add<TimelinePage>();
         manager.add<ShaderEditorPage>();
         manager.add<OpcodeEditorPage>();
         return manager;
