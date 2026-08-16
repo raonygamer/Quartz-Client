@@ -1,4 +1,5 @@
 #include "quartz/client/ui/Theme.hpp"
+#include "quartz/client/ui/I18n.hpp"
 #include "quartz/client/settings/VisualizerSettings.hpp"
 #include <algorithm>
 #include <array>
@@ -24,10 +25,11 @@ namespace quartz::client::ui
             {{0.55f, 0.58f, 0.62f, 1.0f}, {0.68f, 0.71f, 0.75f, 1.0f}, {0.42f, 0.45f, 0.49f, 1.0f}, {0.78f, 0.80f, 0.83f, 1.0f}, {0.043f, 0.043f, 0.046f, 1.0f}, {0.064f, 0.064f, 0.069f, 1.0f}},
             {{0.24f, 0.52f, 0.94f, 1.0f}, {0.34f, 0.64f, 1.00f, 1.0f}, {0.17f, 0.40f, 0.79f, 1.0f}, {0.45f, 0.72f, 1.00f, 1.0f}, {0.038f, 0.047f, 0.064f, 1.0f}, {0.054f, 0.067f, 0.090f, 1.0f}},
             {{0.22f, 0.72f, 0.48f, 1.0f}, {0.30f, 0.84f, 0.57f, 1.0f}, {0.15f, 0.57f, 0.37f, 1.0f}, {0.52f, 0.90f, 0.68f, 1.0f}, {0.038f, 0.055f, 0.047f, 1.0f}, {0.052f, 0.076f, 0.064f, 1.0f}},
-            {{1.00f, 0.34f, 0.62f, 1.0f}, {1.00f, 0.48f, 0.72f, 1.0f}, {0.86f, 0.22f, 0.49f, 1.0f}, {1.00f, 0.68f, 0.83f, 1.0f}, {0.072f, 0.040f, 0.056f, 1.0f}, {0.100f, 0.052f, 0.075f, 1.0f}},
-            {{0.91f, 0.25f, 0.51f, 1.0f}, {1.00f, 0.38f, 0.62f, 1.0f}, {0.73f, 0.15f, 0.39f, 1.0f}, {0.98f, 0.60f, 0.74f, 1.0f}, {0.061f, 0.035f, 0.047f, 1.0f}, {0.087f, 0.045f, 0.062f, 1.0f}},
-            {{0.93f, 0.70f, 0.20f, 1.0f}, {1.00f, 0.82f, 0.34f, 1.0f}, {0.77f, 0.55f, 0.10f, 1.0f}, {1.00f, 0.90f, 0.55f, 1.0f}, {0.058f, 0.050f, 0.031f, 1.0f}, {0.082f, 0.069f, 0.040f, 1.0f}},
-            {{0.64f, 0.35f, 0.91f, 1.0f}, {0.76f, 0.48f, 1.00f, 1.0f}, {0.50f, 0.24f, 0.76f, 1.0f}, {0.84f, 0.68f, 1.00f, 1.0f}, {0.051f, 0.039f, 0.066f, 1.0f}, {0.071f, 0.051f, 0.096f, 1.0f}}
+            // Canonical suspicious accents: #cf6090, #852140, #eda83b, #684d7f.
+            {{0.811765f, 0.376471f, 0.564706f, 1.0f}, {0.91f, 0.50f, 0.67f, 1.0f}, {0.68f, 0.26f, 0.45f, 1.0f}, {1.00f, 0.72f, 0.83f, 1.0f}, {0.071f, 0.040f, 0.055f, 1.0f}, {0.098f, 0.052f, 0.073f, 1.0f}},
+            {{0.521569f, 0.129412f, 0.250980f, 1.0f}, {0.66f, 0.22f, 0.36f, 1.0f}, {0.40f, 0.08f, 0.18f, 1.0f}, {0.85f, 0.44f, 0.57f, 1.0f}, {0.057f, 0.031f, 0.040f, 1.0f}, {0.081f, 0.039f, 0.052f, 1.0f}},
+            {{0.929412f, 0.658824f, 0.231373f, 1.0f}, {1.00f, 0.78f, 0.35f, 1.0f}, {0.76f, 0.51f, 0.13f, 1.0f}, {1.00f, 0.90f, 0.62f, 1.0f}, {0.057f, 0.049f, 0.030f, 1.0f}, {0.081f, 0.068f, 0.039f, 1.0f}},
+            {{0.407843f, 0.301961f, 0.498039f, 1.0f}, {0.55f, 0.42f, 0.66f, 1.0f}, {0.31f, 0.21f, 0.40f, 1.0f}, {0.72f, 0.62f, 0.82f, 1.0f}, {0.048f, 0.038f, 0.058f, 1.0f}, {0.068f, 0.050f, 0.084f, 1.0f}}
         }};
 
         ImVec4 alpha(ImVec4 color, const float value) noexcept { color.w = value; return color; }
@@ -166,7 +168,7 @@ namespace quartz::client::ui
         if (suspiciousTheme(current) && !settings.SuspiciousColorThemes) { settings.UiTheme = 0; current = Theme::QuartzCyan; changed = true; }
 
         ImGui::SetNextItemWidth(190.0f);
-        if (ImGui::BeginCombo("Theme", themeName(current)))
+        if (ImGui::BeginCombo(i18n::tr("appearance.theme"), themeName(current)))
         {
             for (int i = 0; i < static_cast<int>(Theme::Count); ++i)
             {
@@ -180,9 +182,9 @@ namespace quartz::client::ui
         }
 
         bool suspicious = settings.SuspiciousColorThemes;
-        if (ImGui::Checkbox("Enable suspicious color themes", &suspicious))
+        if (ImGui::Checkbox(i18n::tr("appearance.suspicious"), &suspicious))
         {
-            if (suspicious && !settings.SuspiciousColorThemes) ImGui::OpenPopup("Suspicious color themes");
+            if (suspicious && !settings.SuspiciousColorThemes) ImGui::OpenPopup(i18n::tr("appearance.suspiciousTitle"));
             else if (!suspicious)
             {
                 settings.SuspiciousColorThemes = false;
@@ -190,15 +192,15 @@ namespace quartz::client::ui
                 changed = true;
             }
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Unlocks Deviluke Pink, Kurosaki Pink, Yami Golden and Kirisaki Purple.");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", i18n::tr("appearance.suspiciousTooltip"));
 
-        if (ImGui::BeginPopupModal("Suspicious color themes", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        if (ImGui::BeginPopupModal(i18n::tr("appearance.suspiciousTitle"), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         {
-            ImGui::TextWrapped("Are you sure you want to enable those colors? YOU WILL NEVER BE ABLE TO GO BACK LOL... not really tho");
+            ImGui::TextWrapped("%s", i18n::tr("appearance.suspiciousWarning"));
             ImGui::Spacing();
-            if (ImGui::Button("Enable suspicious color themes")) { settings.SuspiciousColorThemes = true; changed = true; ImGui::CloseCurrentPopup(); }
+            if (ImGui::Button(i18n::tr("appearance.suspiciousEnable"))) { settings.SuspiciousColorThemes = true; changed = true; ImGui::CloseCurrentPopup(); }
             ImGui::SameLine();
-            if (ImGui::Button("I choose peace")) ImGui::CloseCurrentPopup();
+            if (ImGui::Button(i18n::tr("appearance.suspiciousCancel"))) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
 
