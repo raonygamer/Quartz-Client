@@ -54,7 +54,7 @@ namespace quartz::client::ui
             std::string FrozenValue;
             double LastRefresh = 0.0;
             double LastFreeze = 0.0;
-            std::array<char, 32> AddressText{};
+            std::array<char, 256> AddressText{};
             std::array<char, 256> ValueText{};
         };
 
@@ -64,12 +64,13 @@ namespace quartz::client::ui
         std::vector<WatchedValue> _watchList;
         std::uint64_t _nextWatchId = 1;
         pid_t _pid = 0;
+        std::array<char, 256> _processSearch{};
         int _type = static_cast<int>(MemoryScanValueType::I32);
         int _comparison = static_cast<int>(MemoryScanComparison::Exact);
         std::array<char, 256> _valueA{"100"};
         std::array<char, 256> _valueB{};
-        std::array<char, 32> _rangeStart{};
-        std::array<char, 32> _rangeEnd{};
+        std::array<char, 256> _rangeStart{};
+        std::array<char, 256> _rangeEnd{};
         std::array<char, 256> _scanWriteValue{};
         std::uintptr_t _scanWriteAddress = 0;
         bool _writableOnly = true;
