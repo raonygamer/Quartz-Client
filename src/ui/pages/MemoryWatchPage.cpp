@@ -90,7 +90,8 @@ namespace quartz::client::ui
                         if (ImGui::MenuItem(i18n::tr("re.captureRegistersNext")))
                         {
                             if (_watch.running()) _watch.stop(); std::string error;
-                            if (!probe.start(_pid, site, error)) _status = error; else char message[256]{}; std::snprintf(message,sizeof(message),i18n::tr("re.armedProbeAt"),runtimeFormatProcessAddress(_pid,site).c_str()); _status=message;
+                            if (!probe.start(_pid, site, error)) _status = error;
+                            else { char message[256]{}; std::snprintf(message,sizeof(message),i18n::tr("re.armedProbeAt"),runtimeFormatProcessAddress(_pid,site).c_str()); _status=message; }
                         }
                         ImGui::EndDisabled();
                     }
