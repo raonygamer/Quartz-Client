@@ -1,4 +1,5 @@
 #pragma once
+#include "quartz/client/native/NativeDisassembly.hpp"
 
 namespace quartz::client::ui
 {
