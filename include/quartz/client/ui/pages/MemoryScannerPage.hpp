@@ -13,7 +13,7 @@ namespace quartz::client::ui
     public:
         [[nodiscard]] std::string_view id() const noexcept override { return "memory-scanner"; }
         [[nodiscard]] std::string_view title() const noexcept override { return "Memory Scanner"; }
-        [[nodiscard]] PageSection section() const noexcept override { return PageSection::Runtime; }
+        [[nodiscard]] PageSection section() const noexcept override { return PageSection::ReverseEngineering; }
         void render(PageContext& context, PageManager& manager) override;
         bool addWatch(const pid_t pid, const std::uintptr_t address, const MemoryScanValueType type, std::size_t width = 0)
         {
