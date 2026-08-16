@@ -21,9 +21,9 @@ namespace quartz::client
 
         void syncEditors(ShaderEditorState& editor, const std::array<char, ShaderSourceCapacity>& vertexSource, const std::array<char, ShaderSourceCapacity>& fragmentSource)
         {
-            if (!editor.Initialized) initializeShaderEditors(editor, vertexSource.data(), fragmentSource.data());
-            editor.Vertex.SetText(vertexSource.data());
-            editor.Fragment.SetText(fragmentSource.data());
+            if (!editor.Initialized) { initializeShaderEditors(editor, vertexSource.data(), fragmentSource.data()); return; }
+            if (editor.Vertex.GetText() != std::string_view(vertexSource.data())) editor.Vertex.SetText(vertexSource.data());
+            if (editor.Fragment.GetText() != std::string_view(fragmentSource.data())) editor.Fragment.SetText(fragmentSource.data());
         }
     }
 
