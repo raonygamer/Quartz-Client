@@ -5,9 +5,9 @@
 #include "quartz/client/settings/RuntimeConfiguration.hpp"
 #include <algorithm>
 #include <atomic>
+#include <map>
 #include <memory>
 #include <mutex>
-#include <unordered_map>
 
 namespace quartz::client
 {
@@ -42,11 +42,12 @@ namespace quartz::client
             const std::uint8_t value = bytes[offset - 1]; return value == 0x90 || value == 0xCC || value == 0x00;
         }
 
-        void addCandidate(std::vector<RuntimeFunctionCandidate>& candidates, const std::uintptr_t address, const RuntimeFunctionCandidateSource source, const float confidence)
+        bool addCandidate(std::vector<RuntimeFunctionCandidate>& candidates, const std::uintptr_t address, const RuntimeFunctionCandidateSource source, const float confidence)
         {
             const auto it = std::ranges::find(candidates, address, &RuntimeFunctionCandidate::Address);
-            if (it == candidates.end()) candidates.push_back({address, source, confidence});
-            else if (confidence > it->Confidence) { it->Source = source; it->Confidence = confidence; }
+            if (it == candidates.end()) { candidates.push_back({address, source, confidence}); return true; }
+            if (confidence > it->Confidence) { it->Source = source; it->Confidence = confidence; return true; }
+            return false;
         }
 
         std::vector<RuntimeFunctionCandidate> scanChunk(const std::span<const std::uint8_t> bytes, const std::uintptr_t base)
@@ -98,24 +99,24 @@ namespace quartz::client
             std::lock_guard lock(EntriesMutex);
             for (const auto& existing : Entries)
             {
-                if (existing->Pid != pid) continue;
-                const std::uintptr_t margin = (existing->End - existing->Start) / 5;
-                if (!force && around >= existing->Start + std::min(margin, around - existing->Start) && around < existing->End - std::min(margin, existing->End - around)) return;
-                if (force && contains(*existing, pid, around)) existing->Cancelled = true;
+                if (existing->Pid != pid || !contains(*existing, pid, around)) continue;
+                if (!force)
+                {
+                    const std::uintptr_t span = existing->End - existing->Start, margin = span / 5;
+                    if (around - existing->Start >= margin && existing->End - around > margin) return;
+                    if (existing->Running) return;
+                }
+                else existing->Cancelled = true;
             }
             entry = std::make_shared<AnalysisEntry>(); entry->Pid = pid; entry->Start = start; entry->End = end; Entries.emplace_back(entry);
-            if (Entries.size() > 12)
-            {
-                for (auto it = Entries.begin(); it != Entries.end() && Entries.size() > 12;) { if (!(*it)->Running) it = Entries.erase(it); else ++it; }
-            }
+            if (Entries.size() > 12) for (auto it = Entries.begin(); it != Entries.end() && Entries.size() > 12;) { if (!(*it)->Running) it = Entries.erase(it); else ++it; }
         }
         async::globalThreadPool().submit([entry](const std::stop_token stop)
         {
             const std::uintptr_t total = entry->End - entry->Start; std::uintptr_t done = 0; publish(entry, {}, 0.0f, "analyzing function boundaries");
             for (std::uintptr_t address = entry->Start; address < entry->End && !stop.stop_requested() && !entry->Cancelled.load();)
             {
-                const std::size_t size = static_cast<std::size_t>(std::min<std::uintptr_t>(AnalysisReadChunk, entry->End - address)); std::vector<std::uint8_t> bytes(size); std::string error;
-                std::vector<RuntimeFunctionCandidate> candidates;
+                const std::size_t size = static_cast<std::size_t>(std::min<std::uintptr_t>(AnalysisReadChunk, entry->End - address)); std::vector<std::uint8_t> bytes(size); std::string error; std::vector<RuntimeFunctionCandidate> candidates;
                 if (readProcessMemoryBlock(entry->Pid, address, bytes, error)) candidates = scanChunk(bytes, address);
                 address += size; done += size; publish(entry, std::move(candidates), total ? static_cast<float>(static_cast<double>(done) / static_cast<double>(total)) : 1.0f, error.empty() ? "analyzing function boundaries" : "analysis skipped an unreadable chunk");
             }
@@ -125,37 +126,32 @@ namespace quartz::client
 
     RuntimeFunctionAnalysisSnapshot runtimeFunctionAnalysisSnapshot(const pid_t pid, const std::uintptr_t around)
     {
-        RuntimeFunctionAnalysisSnapshot snapshot; snapshot.Pid = pid;
-        std::shared_ptr<AnalysisEntry> entry;
+        RuntimeFunctionAnalysisSnapshot snapshot; snapshot.Pid = pid; std::shared_ptr<AnalysisEntry> entry;
         {
             std::lock_guard lock(EntriesMutex);
             for (auto it = Entries.rbegin(); it != Entries.rend(); ++it) if (contains(**it, pid, around)) { entry = *it; break; }
-            if (entry)
-            {
-                std::lock_guard entryLock(entry->Mutex); snapshot.RangeStart = entry->Start; snapshot.RangeEnd = entry->End; snapshot.Running = entry->Running; snapshot.Progress = entry->Progress; snapshot.Revision = entry->Revision; snapshot.Candidates = entry->Candidates; snapshot.Status = entry->Status;
-            }
-            for (const auto& [key, candidate] : ObservedTargets)
-            {
-                if (key.first != pid) continue; if (entry && (candidate.Address < entry->Start || candidate.Address >= entry->End)) continue;
-                addCandidate(snapshot.Candidates, candidate.Address, candidate.Source, candidate.Confidence);
-            }
+            if (entry) { std::lock_guard entryLock(entry->Mutex); snapshot.RangeStart = entry->Start; snapshot.RangeEnd = entry->End; snapshot.Running = entry->Running; snapshot.Progress = entry->Progress; snapshot.Revision = entry->Revision; snapshot.Candidates = entry->Candidates; snapshot.Status = entry->Status; }
+            for (const auto& [key, candidate] : ObservedTargets) { if (key.first != pid) continue; if (entry && (candidate.Address < entry->Start || candidate.Address >= entry->End)) continue; addCandidate(snapshot.Candidates, candidate.Address, candidate.Source, candidate.Confidence); }
         }
         std::ranges::sort(snapshot.Candidates, {}, &RuntimeFunctionCandidate::Address); return snapshot;
     }
 
     void runtimeObserveFunctionTarget(const pid_t pid, const std::uintptr_t address, const RuntimeFunctionCandidateSource source)
     {
-        if (pid <= 0 || address == 0) return; const float confidence = source == RuntimeFunctionCandidateSource::CallTarget ? 1.0f : 0.90f;
-        std::lock_guard lock(EntriesMutex); auto& candidate = ObservedTargets[{pid, address}]; candidate.Address = address; if (confidence >= candidate.Confidence) { candidate.Source = source; candidate.Confidence = confidence; }
-        for (const auto& entry : Entries) if (contains(*entry, pid, address)) { std::lock_guard entryLock(entry->Mutex); addCandidate(entry->Candidates, address, source, confidence); std::ranges::sort(entry->Candidates, {}, &RuntimeFunctionCandidate::Address); ++entry->Revision; }
+        if (pid <= 0 || address == 0) return; const float confidence = source == RuntimeFunctionCandidateSource::CallTarget ? 1.0f : 0.90f; std::lock_guard lock(EntriesMutex);
+        auto [observed, inserted] = ObservedTargets.try_emplace({pid, address}, RuntimeFunctionCandidate{address, source, confidence});
+        if (!inserted && confidence > observed->second.Confidence) { observed->second.Source = source; observed->second.Confidence = confidence; }
+        for (const auto& entry : Entries)
+        {
+            if (!contains(*entry, pid, address)) continue; std::lock_guard entryLock(entry->Mutex);
+            if (addCandidate(entry->Candidates, address, source, confidence)) { std::ranges::sort(entry->Candidates, {}, &RuntimeFunctionCandidate::Address); ++entry->Revision; }
+        }
     }
 
     void invalidateRuntimeFunctionAnalysis(const pid_t pid)
     {
-        std::lock_guard lock(EntriesMutex);
-        for (const auto& entry : Entries) if (pid == 0 || entry->Pid == pid) entry->Cancelled = true;
-        std::erase_if(Entries, [&](const auto& entry) { return pid == 0 || entry->Pid == pid; });
-        if (pid == 0) ObservedTargets.clear(); else std::erase_if(ObservedTargets, [&](const auto& item) { return item.first.first == pid; });
+        std::lock_guard lock(EntriesMutex); for (const auto& entry : Entries) if (pid == 0 || entry->Pid == pid) entry->Cancelled = true;
+        std::erase_if(Entries, [&](const auto& entry) { return pid == 0 || entry->Pid == pid; }); if (pid == 0) ObservedTargets.clear(); else std::erase_if(ObservedTargets, [&](const auto& item) { return item.first.first == pid; });
     }
 
     const char* runtimeFunctionCandidateSourceName(const RuntimeFunctionCandidateSource source) noexcept
