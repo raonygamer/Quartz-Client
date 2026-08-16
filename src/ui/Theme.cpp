@@ -2,6 +2,7 @@
 #include "quartz/client/settings/VisualizerSettings.hpp"
 #include <algorithm>
 #include <array>
+#include <fstream>
 #include <imgui.h>
 
 namespace quartz::client::ui
@@ -30,6 +31,7 @@ namespace quartz::client::ui
         }};
 
         ImVec4 alpha(ImVec4 color, const float value) noexcept { color.w = value; return color; }
+        std::filesystem::path themePath() { return settingsPath().parent_path() / "ui.theme.ini"; }
     }
 
     const char* themeName(const Theme theme) noexcept
@@ -50,6 +52,41 @@ namespace quartz::client::ui
     }
 
     bool suspiciousTheme(const Theme theme) noexcept { return theme >= Theme::DevilukePink && theme < Theme::Count; }
+
+    void loadThemePreferences(VisualizerSettings& settings) noexcept
+    {
+        try
+        {
+            std::ifstream file(themePath());
+            if (!file) return;
+            std::string line;
+            while (std::getline(file, line))
+            {
+                const std::size_t separator = line.find('=');
+                if (separator == std::string::npos) continue;
+                const std::string_view key(line.data(), separator);
+                const std::string_view value(line.data() + separator + 1, line.size() - separator - 1);
+                if (key == "Theme") parseNumber(value, settings.UiTheme);
+                else if (key == "Suspicious") parseBool(value, settings.SuspiciousColorThemes);
+            }
+            settings.UiTheme = std::clamp(settings.UiTheme, 0, static_cast<int>(Theme::Count) - 1);
+            if (suspiciousTheme(static_cast<Theme>(settings.UiTheme)) && !settings.SuspiciousColorThemes) settings.UiTheme = static_cast<int>(Theme::QuartzCyan);
+        }
+        catch (...) {}
+    }
+
+    void saveThemePreferences(const VisualizerSettings& settings) noexcept
+    {
+        try
+        {
+            std::error_code ec; std::filesystem::create_directories(themePath().parent_path(), ec);
+            std::ofstream file(themePath(), std::ios::trunc);
+            if (!file) return;
+            file << "Theme=" << settings.UiTheme << '\n';
+            file << "Suspicious=" << (settings.SuspiciousColorThemes ? "true" : "false") << '\n';
+        }
+        catch (...) {}
+    }
 
     void applyTheme(const Theme theme) noexcept
     {
@@ -165,7 +202,7 @@ namespace quartz::client::ui
             ImGui::EndPopup();
         }
 
-        if (changed) applyTheme(settings.UiTheme);
+        if (changed) { applyTheme(settings.UiTheme); saveThemePreferences(settings); }
         return changed;
     }
 }
