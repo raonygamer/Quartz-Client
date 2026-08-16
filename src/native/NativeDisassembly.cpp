@@ -5,6 +5,21 @@
 
 namespace quartz::client
 {
+    namespace
+    {
+        bool runAssemblerCommand(const std::string& command, std::string& output)
+        {
+            output.clear(); FILE* pipe = popen((command + " 2>&1").c_str(), "r"); if (!pipe) { output = "could not start assembler command"; return false; }
+            std::array<char, 1024> buffer{}; while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) && output.size() < 16 * 1024) output += buffer.data();
+            const int status = pclose(pipe); return status == 0;
+        }
+
+        void removeAssemblerFiles(const std::filesystem::path& base) noexcept
+        {
+            std::error_code ec; std::filesystem::remove(base.string() + ".s", ec); std::filesystem::remove(base.string() + ".o", ec); std::filesystem::remove(base.string() + ".elf", ec); std::filesystem::remove(base.string() + ".bin", ec);
+        }
+    }
+
     RuntimeX86Mode runtimeProcessX86Mode(const pid_t pid) noexcept
     {
         if (pid <= 0) return RuntimeX86Mode::X64;
@@ -66,5 +81,26 @@ namespace quartz::client
     bool runtimeDecodeProcessInstructionText(const pid_t pid, const std::span<const std::uint8_t> bytes, const std::uintptr_t address, std::string& text, std::size_t& length)
     {
         return runtimeDecodeProcessInstructionText(runtimeProcessX86Mode(pid), bytes, address, text, length);
+    }
+
+    bool runtimeAssembleInstructionText(const RuntimeX86Mode mode, const std::uintptr_t address, const std::string_view source, std::vector<std::uint8_t>& bytes, std::string& error)
+    {
+        bytes.clear(); error.clear(); if (source.empty()) { error = "assembly source is empty"; return false; }
+        if (!commandExists("as") || !commandExists("ld") || !commandExists("objcopy")) { error = "GNU binutils (as, ld and objcopy) are required for assembler mode"; return false; }
+        const auto id = std::to_string(static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count())) + "-" + std::to_string(static_cast<long long>(getpid()));
+        const std::filesystem::path base = std::filesystem::temp_directory_path() / ("quartz-asm-" + id); const auto sourcePath = base.string() + ".s", objectPath = base.string() + ".o", elfPath = base.string() + ".elf", binaryPath = base.string() + ".bin";
+        {
+            std::ofstream file(sourcePath, std::ios::binary | std::ios::trunc); if (!file) { error = "could not create temporary assembler source"; return false; }
+            file << ".intel_syntax noprefix\n.text\n.global _start\n_start:\n"; file.write(source.data(), static_cast<std::streamsize>(source.size())); file << '\n';
+            if (!file) { error = "could not write temporary assembler source"; removeAssemblerFiles(base); return false; }
+        }
+        std::string output; const std::string asMode = mode == RuntimeX86Mode::X86 ? "--32" : "--64"; const std::string ldMode = mode == RuntimeX86Mode::X86 ? "elf_i386" : "elf_x86_64";
+        if (!runAssemblerCommand("as " + asMode + " -o " + shellQuote(objectPath) + " " + shellQuote(sourcePath), output)) { error = output.empty() ? "assembler failed" : output; removeAssemblerFiles(base); return false; }
+        std::ostringstream baseAddress; baseAddress << "0x" << std::hex << std::uppercase << static_cast<unsigned long long>(address);
+        if (!runAssemblerCommand("ld -m " + ldMode + " -Ttext=" + baseAddress.str() + " -e _start -o " + shellQuote(elfPath) + " " + shellQuote(objectPath), output)) { error = output.empty() ? "linker failed" : output; removeAssemblerFiles(base); return false; }
+        if (!runAssemblerCommand("objcopy -O binary -j .text " + shellQuote(elfPath) + " " + shellQuote(binaryPath), output)) { error = output.empty() ? "objcopy failed" : output; removeAssemblerFiles(base); return false; }
+        std::error_code ec; const auto size = std::filesystem::file_size(binaryPath, ec); if (ec || size == 0 || size > 4096) { error = ec ? "could not read assembled output" : size == 0 ? "assembler produced no bytes" : "assembled patch exceeds 4096 bytes"; removeAssemblerFiles(base); return false; }
+        std::ifstream file(binaryPath, std::ios::binary); bytes.resize(static_cast<std::size_t>(size)); if (!file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) { bytes.clear(); error = "could not read assembled bytes"; removeAssemblerFiles(base); return false; }
+        removeAssemblerFiles(base); return true;
     }
 }
