@@ -22,4 +22,5 @@ namespace quartz::client
     bool runtimeDecodeProcessInstruction(RuntimeX86Mode mode, std::span<const std::uint8_t> bytes, std::uintptr_t address, RuntimeDecodedInstruction& instruction);
     bool runtimeDecodeProcessInstructionText(RuntimeX86Mode mode, std::span<const std::uint8_t> bytes, std::uintptr_t address, std::string& text, std::size_t& length);
     bool runtimeDecodeProcessInstructionText(pid_t pid, std::span<const std::uint8_t> bytes, std::uintptr_t address, std::string& text, std::size_t& length);
+    bool runtimeAssembleInstructionText(RuntimeX86Mode mode, std::uintptr_t address, std::string_view source, std::vector<std::uint8_t>& bytes, std::string& error);
 }
