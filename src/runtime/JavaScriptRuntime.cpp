@@ -48,7 +48,7 @@ namespace quartz::client
 
     JavaScriptRuntime::~JavaScriptRuntime()
     {
-        runtimeReloadAllWorkspaceScripts();
+        runtimeReloadAllWorkspaceScripts("shutdown");
         save();
     }
 
@@ -58,7 +58,7 @@ namespace quartz::client
         auto& script = _scripts.back();
         script.Id = _nextScriptId++;
         script.Order = static_cast<int>(_scripts.size() - 1);
-        std::snprintf(script.Name, sizeof(script.Name), "JavaScript %zu", _scripts.size());
+        std::snprintf(script.Name, sizeof(script.Name), "Script %zu", _scripts.size());
         ++_revision;
         return script;
     }
@@ -67,7 +67,7 @@ namespace quartz::client
     {
         if (index >= _scripts.size()) return;
         const std::uint64_t id = _scripts[index].Id;
-        runtimeResetWorkspaceScript(id);
+        runtimeResetWorkspaceScript(id, "removed");
         _scriptOutputs.erase(id);
         _scripts.erase(_scripts.begin() + static_cast<std::ptrdiff_t>(index));
         for (auto& profile : runtime.profiles()) std::erase(profile.ScriptIds, id);
@@ -195,6 +195,7 @@ namespace quartz::client
                 script.UpdateHz = std::clamp(script.UpdateHz, 0.5f, 500.0f);
                 script.TimeoutMs = std::clamp(script.TimeoutMs, 0.1f, 100.0f);
                 if (script.PersistentStateJson.empty()) script.PersistentStateJson = "{}";
+                script.LoadedFromConfig = true;
                 if (script.Id == 0) script.Id = _nextScriptId++;
                 else _nextScriptId = std::max(_nextScriptId, script.Id + 1);
                 _scripts.emplace_back(std::move(script));

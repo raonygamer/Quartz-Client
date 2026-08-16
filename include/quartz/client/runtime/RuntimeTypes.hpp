@@ -328,18 +328,52 @@ namespace quartz::client
         std::string Status = "running";
     };
 
+    enum class RuntimeScriptPropertyType : std::uint8_t
+    {
+        String, Boolean, Int32, UInt32, Float32, Float64, Shader, File, Directory, Key, Enum
+    };
+
+    struct RuntimeScriptProperty
+    {
+        std::string Id;
+        std::string Label;
+        std::string Group;
+        std::string Description;
+        RuntimeScriptPropertyType Type = RuntimeScriptPropertyType::String;
+        std::string StringValue;
+        std::string DefaultString;
+        double NumberValue = 0.0;
+        double DefaultNumber = 0.0;
+        double Min = 0.0;
+        double Max = 0.0;
+        double Step = 0.1;
+        bool BoolValue = false;
+        bool DefaultBool = false;
+        bool KeyIsNumber = false;
+        bool DefaultKeyIsNumber = false;
+        bool HasMin = false;
+        bool HasMax = false;
+        std::vector<std::string> EnumValues;
+        std::uint64_t Revision = 1;
+    };
+
     struct RuntimeScript
     {
         std::uint64_t Id = 0;
         bool Enabled = true;
         int Order = 0;
         char Group[64]{};
-        char Name[64] = "JavaScript";
+        char Name[64] = "Script";
+        std::string StableId;
         bool External = false;
         std::string Path;
         std::string Source = "// Quartz runtime script\n";
         std::string PersistentStateJson = "{}";
+        std::vector<RuntimeScriptProperty> Properties;
         bool HotReload = true;
+        bool LoadedFromConfig = false;
+        bool DefaultsApplied = false;
+        bool ReloadRequested = false;
         float UpdateHz = 60.0f;
         float TimeoutMs = 4.0f;
         double NextUpdate = 0.0;

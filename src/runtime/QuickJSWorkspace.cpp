@@ -9,6 +9,7 @@
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <unordered_map>
@@ -58,15 +59,13 @@ namespace quartz::client
         struct Instance : RuntimeQuickJSContext
         {
             JSContext* Context = nullptr;
-            JSValue Function = JS_UNDEFINED;
             JSValue Api = JS_UNDEFINED;
             JSValue SnapshotFunction = JS_UNDEFINED;
             std::uint64_t SourceHash = 0;
             std::filesystem::path MainPath;
-            std::filesystem::path CurrentDirectory;
             std::filesystem::file_time_type MainTime{};
             std::unordered_map<std::string, std::filesystem::file_time_type> DependencyTimes;
-            std::unordered_map<std::string, JSValue> Modules;
+            std::unordered_map<std::string, std::uint64_t> PropertyRevisions;
             std::vector<Subscription> Subscriptions;
             std::uint64_t NextSubscriptionId = 1;
             std::array<float, MatrixSize> PreviousKeys{};
@@ -78,6 +77,7 @@ namespace quartz::client
             bool ProcessesInitialized = false;
             double NextProcessPoll = 0.0;
             double LastBreakpointHitTime = -1.0;
+            bool ModuleLoaded = false;
             bool FirstExecution = true;
             bool Reloaded = false;
 
@@ -85,14 +85,15 @@ namespace quartz::client
             {
                 if (Script) runtimeCancelQuickJSSignatureScans(*Script);
                 if (!Context) return;
-                for (auto& [_, value] : Modules) JS_FreeValue(Context, value);
                 for (auto& subscription : Subscriptions) JS_FreeValue(Context, subscription.Callback);
                 JS_FreeValue(Context, SnapshotFunction);
-                JS_FreeValue(Context, Function);
                 JS_FreeValue(Context, Api);
                 JS_FreeContext(Context);
             }
         };
+
+        char* moduleNormalize(JSContext* ctx, const char* baseName, const char* moduleName, void* opaque);
+        JSModuleDef* moduleLoader(JSContext* ctx, const char* moduleName, void* opaque);
 
         struct Workspace
         {
@@ -108,6 +109,7 @@ namespace quartz::client
                 JS_SetMemoryLimit(Runtime, WorkspaceMemoryLimit);
                 JS_SetMaxStackSize(Runtime, WorkspaceStackLimit);
                 JS_SetCanBlock(Runtime, false);
+                JS_SetModuleLoaderFunc(Runtime, moduleNormalize, moduleLoader, this);
                 JS_SetInterruptHandler(Runtime, [](JSRuntime*, void* opaque)
                 {
                     auto* self = static_cast<Workspace*>(opaque);
@@ -277,44 +279,6 @@ namespace quartz::client
             return ok ? JS_TRUE : JS_ThrowInternalError(ctx, "%s", error.c_str());
         }
 
-        JSValue jsImport(JSContext* ctx, JSValueConst, const int argc, JSValueConst* argv)
-        {
-            if (argc < 1) return JS_ThrowTypeError(ctx, "q.import(path): path required");
-            auto* instance = static_cast<Instance*>(JS_GetContextOpaque(ctx));
-            const char* raw = JS_ToCString(ctx, argv[0]);
-            if (!raw) return JS_EXCEPTION;
-            std::filesystem::path requested(raw);
-            JS_FreeCString(ctx, raw);
-            std::filesystem::path path = requested.is_absolute() ? requested : instance->CurrentDirectory / requested;
-            std::error_code ec;
-            path = std::filesystem::weakly_canonical(path, ec);
-            if (ec) path = std::filesystem::absolute(path, ec);
-            if (path.extension() != ".js" && path.extension() != ".mjs") return JS_ThrowTypeError(ctx, "q.import only accepts .js/.mjs files");
-            const std::string key = path.string();
-            if (const auto it = instance->Modules.find(key); it != instance->Modules.end()) return JS_DupValue(ctx, it->second);
-            std::string source, readError;
-            if (!loadFile(path, source, readError)) return JS_ThrowReferenceError(ctx, "%s", readError.c_str());
-            instance->DependencyTimes[key] = fileTime(path);
-            std::string wrapped = "(function(q,exports,module){\n\"use strict\";\n" + source + "\n;return module.exports;\n})";
-            JSValue function = JS_Eval(ctx, wrapped.c_str(), wrapped.size(), key.c_str(), JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_STRICT);
-            if (JS_IsException(function)) return function;
-            JSValue exports = JS_NewObject(ctx);
-            JSValue module = JS_NewObject(ctx);
-            JS_SetPropertyStr(ctx, module, "exports", JS_DupValue(ctx, exports));
-            JSValue args[3]{JS_DupValue(ctx, instance->Api), JS_DupValue(ctx, exports), JS_DupValue(ctx, module)};
-            const auto previousDirectory = instance->CurrentDirectory;
-            instance->CurrentDirectory = path.parent_path();
-            JSValue result = JS_Call(ctx, function, JS_UNDEFINED, 3, args);
-            instance->CurrentDirectory = previousDirectory;
-            for (auto& argument : args) JS_FreeValue(ctx, argument);
-            JS_FreeValue(ctx, function);
-            JS_FreeValue(ctx, exports);
-            JS_FreeValue(ctx, module);
-            if (JS_IsException(result)) return result;
-            instance->Modules.emplace(key, JS_DupValue(ctx, result));
-            return result;
-        }
-
         Instance* createInstance(JavaScriptRuntime& javascript, RuntimeScript& script, const RuntimeSignalContext& signal, ShaderFramebuffer& shader, RuntimeControlOutput& output, const EvdevKeyboard& keyboard)
         {
             auto& runtime = workspace();
@@ -343,7 +307,6 @@ namespace quartz::client
             JS_SetPropertyStr(instance->Context, console, "warn", JS_NewCFunctionMagic(instance->Context, jsConsoleLog, "warn", 1, JS_CFUNC_generic_magic, 2));
             JS_SetPropertyStr(instance->Context, console, "error", JS_NewCFunctionMagic(instance->Context, jsConsoleLog, "error", 1, JS_CFUNC_generic_magic, 3));
             JS_SetPropertyStr(instance->Context, instance->Api, "console", console);
-            JS_SetPropertyStr(instance->Context, instance->Api, "import", JS_NewCFunction(instance->Context, jsImport, "import", 1));
             runtimeInstallQuickJSLowLevelApi(instance->Context, instance->Api);
             runtimeInstallQuickJSAsyncSignatureApi(instance->Context, instance->Api);
             JSValue events = JS_NewObject(instance->Context);
@@ -352,7 +315,7 @@ namespace quartz::client
             JS_SetPropertyStr(instance->Context, events, "emit", JS_NewCFunction(instance->Context, jsEventEmit, "emit", 2));
             JS_SetPropertyStr(instance->Context, instance->Api, "events", events);
             JS_DefinePropertyValueStr(instance->Context, instance->Api, "state", JS_NewObject(instance->Context), JS_PROP_ENUMERABLE);
-            JSValue storage = JS_ParseJSON(instance->Context, script.PersistentStateJson.c_str(), script.PersistentStateJson.size(), "q.storage");
+            JSValue storage = JS_ParseJSON(instance->Context, script.PersistentStateJson.c_str(), script.PersistentStateJson.size(), "Script.storage");
             if (JS_IsException(storage) || !JS_IsObject(storage))
             {
                 if (JS_IsException(storage)) { JSValue exception = JS_GetException(instance->Context); JS_FreeValue(instance->Context, exception); }
@@ -360,6 +323,8 @@ namespace quartz::client
                 storage = JS_NewObject(instance->Context);
             }
             JS_DefinePropertyValueStr(instance->Context, instance->Api, "storage", storage, JS_PROP_ENUMERABLE);
+            runtimeInstallQuickJSSDKNativeApi(instance->Context, instance->Api);
+            JSValue global = JS_GetGlobalObject(instance->Context); JSValue standardConsole = JS_GetPropertyStr(instance->Context, instance->Api, "console"); JS_SetPropertyStr(instance->Context, global, "console", standardConsole); JS_FreeValue(instance->Context, global);
             static constexpr std::string_view SnapshotSource = "(value=>{const seen=new WeakSet();return JSON.stringify(value,(key,item)=>{if(typeof item==='bigint')return '0x'+item.toString(16)+'n';if(typeof item==='function')return '[Function]';if(typeof item==='object'&&item!==null){if(seen.has(item))return '[Circular]';seen.add(item);}return item;},2);})";
             instance->SnapshotFunction = JS_Eval(instance->Context, SnapshotSource.data(), SnapshotSource.size(), "quartz-state-snapshot.js", JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_STRICT);
             if (JS_IsException(instance->SnapshotFunction)) { JSValue exception = JS_GetException(instance->Context); JS_FreeValue(instance->Context, exception); JS_FreeValue(instance->Context, instance->SnapshotFunction); instance->SnapshotFunction = JS_UNDEFINED; }
@@ -374,40 +339,73 @@ namespace quartz::client
             return false;
         }
 
+        bool typeScriptPath(const std::filesystem::path& path)
+        {
+            const auto extension = path.extension().string(); return extension == ".ts" || extension == ".mts" || extension == ".cts";
+        }
+
+        std::filesystem::path normalizedModulePath(const std::filesystem::path& base, const std::filesystem::path& requested)
+        {
+            std::filesystem::path path = requested.is_absolute() ? requested : base / requested; std::error_code ec;
+            if (!path.has_extension())
+            {
+                const std::filesystem::path candidates[] = {std::filesystem::path(path.string() + ".ts"), std::filesystem::path(path.string() + ".js"), path / "index.ts", path / "index.js"};
+                for (const auto& candidate : candidates) if (std::filesystem::is_regular_file(candidate, ec)) { path = candidate; break; }
+            }
+            auto canonical = std::filesystem::weakly_canonical(path, ec); return ec ? path.lexically_normal() : canonical;
+        }
+
+        int nativeModuleInit(JSContext* ctx, JSModuleDef* module)
+        {
+            auto* instance = static_cast<Instance*>(JS_GetContextOpaque(ctx)); if (!instance) return -1; return JS_SetModuleExport(ctx, module, "api", JS_DupValue(ctx, instance->Api));
+        }
+
+        char* moduleNormalize(JSContext* ctx, const char* baseName, const char* moduleName, void*)
+        {
+            const std::string_view requested = moduleName ? moduleName : "";
+            if (requested == "@quartz/client" || requested == "@quartz/native") return js_strdup(ctx, moduleName);
+            if (requested.empty()) { JS_ThrowReferenceError(ctx, "empty module specifier"); return nullptr; }
+            const std::filesystem::path requestPath(requested); if (!requestPath.is_absolute() && !requested.starts_with("./") && !requested.starts_with("../")) { JS_ThrowReferenceError(ctx, "unsupported package module '%s'", moduleName); return nullptr; }
+            const std::string_view base = baseName ? baseName : ""; if (base.starts_with("@quartz/")) { JS_ThrowReferenceError(ctx, "relative import '%s' is not valid from %s", moduleName, baseName); return nullptr; }
+            const std::filesystem::path basePath(base); const auto resolved = normalizedModulePath(basePath.empty() ? runtimeQuickJSScriptDirectory() : basePath.parent_path(), requestPath); const std::string value = resolved.string(); return js_strdup(ctx, value.c_str());
+        }
+
+        JSModuleDef* moduleLoader(JSContext* ctx, const char* moduleName, void*)
+        {
+            auto* instance = static_cast<Instance*>(JS_GetContextOpaque(ctx)); if (!instance) { JS_ThrowInternalError(ctx, "Quartz module loaded without a script context"); return nullptr; }
+            if (std::string_view(moduleName) == "@quartz/native")
+            {
+                JSModuleDef* module = JS_NewCModule(ctx, moduleName, nativeModuleInit); if (!module) return nullptr; if (JS_AddModuleExport(ctx, module, "api") < 0) return nullptr; return module;
+            }
+            std::string source, compiled, error;
+            if (std::string_view(moduleName) == "@quartz/client") source.assign(runtimeQuickJSSDKModuleSource());
+            else
+            {
+                const std::filesystem::path path(moduleName); if (!loadFile(path, source, error)) { JS_ThrowReferenceError(ctx, "%s", error.c_str()); return nullptr; }
+                instance->DependencyTimes[path.string()] = fileTime(path);
+                if (typeScriptPath(path) && !runtimeTranspileTypeScript(source, compiled, error)) { JS_ThrowSyntaxError(ctx, "%s", error.c_str()); return nullptr; }
+                if (typeScriptPath(path)) source.swap(compiled);
+            }
+            JSValue value = JS_Eval(ctx, source.data(), source.size(), moduleName, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+            if (JS_IsException(value)) return nullptr; JSModuleDef* module = static_cast<JSModuleDef*>(JS_VALUE_GET_PTR(value)); JS_FreeValue(ctx, value); return module;
+        }
+
         bool compile(Instance& instance, RuntimeScript& script, const std::string& source, const std::filesystem::path& filename, std::string& error)
         {
-            const auto hash = hashText(source);
-            if (instance.SourceHash == hash && JS_IsFunction(instance.Context, instance.Function)) return true;
-            JS_FreeValue(instance.Context, instance.Function);
-            instance.Function = JS_UNDEFINED;
-            instance.SourceHash = hash;
-            for (auto& [_, value] : instance.Modules) JS_FreeValue(instance.Context, value);
-            instance.Modules.clear();
-            instance.DependencyTimes.clear();
-            instance.MainPath = filename;
-            instance.MainTime = filename.empty() ? std::filesystem::file_time_type::min() : fileTime(filename);
-            instance.CurrentDirectory = filename.empty() ? runtimeQuickJSScriptDirectory() : filename.parent_path();
-            std::string wrapped = "(function(q){\n\"use strict\";\n" + source + "\n})";
-            auto& runtime = workspace();
-            runtime.begin(script.TimeoutMs);
-            JSValue function = JS_Eval(instance.Context, wrapped.c_str(), wrapped.size(), filename.empty() ? "quartz-runtime.js" : filename.string().c_str(), JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_STRICT);
-            runtime.end();
-            if (JS_IsException(function))
+            const auto hash = hashText(source); if (instance.SourceHash == hash && instance.ModuleLoaded) return true;
+            std::string compiled = source; const std::filesystem::path modulePath = filename.empty() ? runtimeQuickJSScriptDirectory() / ("inline-" + std::to_string(script.Id) + ".ts") : filename;
+            if ((filename.empty() || typeScriptPath(filename)) && !runtimeTranspileTypeScript(source, compiled, error)) { error = "TypeScript: " + error; return false; }
+            instance.SourceHash = hash; instance.DependencyTimes.clear(); instance.MainPath = modulePath; instance.MainTime = filename.empty() ? std::filesystem::file_time_type::min() : fileTime(filename);
+            auto& runtime = workspace(); runtime.begin(script.TimeoutMs);
+            JSValue module = JS_Eval(instance.Context, compiled.data(), compiled.size(), modulePath.string().c_str(), JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+            if (JS_IsException(module))
             {
-                if (runtime.Execution.Interrupted)
-                {
-                    JSValue exception = JS_GetException(instance.Context);
-                    JS_FreeValue(instance.Context, exception);
-                    ++script.TimeoutCount;
-                    error = "QuickJS compile timed out";
-                }
-                else error = exceptionText(instance.Context);
-                return false;
+                runtime.end(); if (runtime.Execution.Interrupted) { JSValue exception = JS_GetException(instance.Context); JS_FreeValue(instance.Context, exception); ++script.TimeoutCount; error = "QuickJS compile timed out"; } else error = exceptionText(instance.Context); return false;
             }
-            if (!JS_IsFunction(instance.Context, function)) { JS_FreeValue(instance.Context, function); error = "QuickJS source did not compile to a function"; return false; }
-            instance.Function = function;
-            ++script.CompileCount;
-            return true;
+            if (JS_ResolveModule(instance.Context, module) < 0) { error = exceptionText(instance.Context); JS_FreeValue(instance.Context, module); runtime.end(); return false; }
+            JSValue result = JS_EvalFunction(instance.Context, module); runtime.end();
+            if (JS_IsException(result)) { if (runtime.Execution.Interrupted) { JSValue exception = JS_GetException(instance.Context); JS_FreeValue(instance.Context, exception); ++script.TimeoutCount; error = "QuickJS module initialization timed out"; } else error = exceptionText(instance.Context); JS_FreeValue(instance.Context, result); return false; }
+            JS_FreeValue(instance.Context, result); instance.ModuleLoaded = true; ++script.CompileCount; return true;
         }
 
         JSValue registerObject(JSContext* ctx, const user_regs_struct& regs)
@@ -421,9 +419,16 @@ namespace quartz::client
             return object;
         }
 
-        bool dispatchBuiltInEvents(Instance& instance, const RuntimeSignalContext& signal, std::string& error)
+        bool dispatchBuiltInEvents(Instance& instance, const RuntimeSignalContext& signal, const bool emitTick, std::string& error)
         {
-            if (wantsEvent(instance, "tick"))
+            if (wantsEvent(instance, "__quartz.frame"))
+            {
+                JSValue event = makeEvent(instance.Context, "__quartz.frame", signal.Time);
+                JS_SetPropertyStr(instance.Context, event, "deltaTime", JS_NewFloat64(instance.Context, signal.DeltaTime));
+                if (!dispatchEvent(instance, "__quartz.frame", event, error)) { JS_FreeValue(instance.Context, event); return false; }
+                JS_FreeValue(instance.Context, event);
+            }
+            if (emitTick && wantsEvent(instance, "tick"))
             {
                 JSValue event = makeEvent(instance.Context, "tick", signal.Time);
                 JS_SetPropertyStr(instance.Context, event, "deltaTime", JS_NewFloat64(instance.Context, signal.DeltaTime));
@@ -552,6 +557,25 @@ namespace quartz::client
                     JS_FreeValue(instance.Context, event); scan.CompletionDelivered = true;
                 }
             }
+            if (instance.Script)
+            {
+                for (const auto& property : instance.Script->Properties)
+                {
+                    auto [it, inserted] = instance.PropertyRevisions.try_emplace(property.Id, property.Revision); if (inserted || it->second == property.Revision) continue; it->second = property.Revision;
+                    if (!wantsEvent(instance, "property.changed")) continue;
+                    JSValue event = makeEvent(instance.Context, "property.changed", signal.Time); JS_SetPropertyStr(instance.Context, event, "id", JS_NewString(instance.Context, property.Id.c_str()));
+                    switch (property.Type)
+                    {
+                    case RuntimeScriptPropertyType::Boolean: JS_SetPropertyStr(instance.Context, event, "value", JS_NewBool(instance.Context, property.BoolValue)); break;
+                    case RuntimeScriptPropertyType::Int32: JS_SetPropertyStr(instance.Context, event, "value", JS_NewInt32(instance.Context, static_cast<std::int32_t>(property.NumberValue))); break;
+                    case RuntimeScriptPropertyType::UInt32: JS_SetPropertyStr(instance.Context, event, "value", JS_NewUint32(instance.Context, static_cast<std::uint32_t>(property.NumberValue))); break;
+                    case RuntimeScriptPropertyType::Float32: case RuntimeScriptPropertyType::Float64: JS_SetPropertyStr(instance.Context, event, "value", JS_NewFloat64(instance.Context, property.NumberValue)); break;
+                    case RuntimeScriptPropertyType::Key: JS_SetPropertyStr(instance.Context, event, "value", property.KeyIsNumber ? JS_NewInt32(instance.Context, static_cast<std::int32_t>(property.NumberValue)) : JS_NewString(instance.Context, property.StringValue.c_str())); break;
+                    default: JS_SetPropertyStr(instance.Context, event, "value", JS_NewString(instance.Context, property.StringValue.c_str())); break;
+                    }
+                    if (!dispatchEvent(instance, "property.changed", event, error)) { JS_FreeValue(instance.Context, event); return false; } JS_FreeValue(instance.Context, event);
+                }
+            }
             return true;
         }
 
@@ -564,12 +588,34 @@ namespace quartz::client
             JS_FreeValue(instance.Context, result);
         }
 
+        void syncPropertyStorage(Instance& instance, const RuntimeScript& script)
+        {
+            JSValue storage = JS_GetPropertyStr(instance.Context, instance.Api, "storage"); if (!JS_IsObject(storage)) { JS_FreeValue(instance.Context, storage); return; }
+            JSValue properties = JS_GetPropertyStr(instance.Context, storage, "__quartzProperties");
+            if (!JS_IsObject(properties)) { JS_FreeValue(instance.Context, properties); properties = JS_NewObject(instance.Context); JS_SetPropertyStr(instance.Context, storage, "__quartzProperties", JS_DupValue(instance.Context, properties)); }
+            for (const auto& property : script.Properties)
+            {
+                JSValue value = JS_UNDEFINED;
+                switch (property.Type)
+                {
+                case RuntimeScriptPropertyType::Boolean: value = JS_NewBool(instance.Context, property.BoolValue); break;
+                case RuntimeScriptPropertyType::Int32: value = JS_NewInt32(instance.Context, static_cast<std::int32_t>(property.NumberValue)); break;
+                case RuntimeScriptPropertyType::UInt32: value = JS_NewUint32(instance.Context, static_cast<std::uint32_t>(property.NumberValue)); break;
+                case RuntimeScriptPropertyType::Float32: case RuntimeScriptPropertyType::Float64: value = JS_NewFloat64(instance.Context, property.NumberValue); break;
+                case RuntimeScriptPropertyType::Key: value = property.KeyIsNumber ? JS_NewInt32(instance.Context, static_cast<std::int32_t>(property.NumberValue)) : JS_NewString(instance.Context, property.StringValue.c_str()); break;
+                default: value = JS_NewString(instance.Context, property.StringValue.c_str()); break;
+                }
+                JS_SetPropertyStr(instance.Context, properties, property.Id.c_str(), value);
+            }
+            JS_FreeValue(instance.Context, properties); JS_FreeValue(instance.Context, storage);
+        }
+
         bool persistStorage(Instance& instance, RuntimeScript& script, JavaScriptRuntime& javascript, std::string& error)
         {
             JSValue storage = JS_GetPropertyStr(instance.Context, instance.Api, "storage");
             JSValue json = JS_JSONStringify(instance.Context, storage, JS_UNDEFINED, JS_UNDEFINED);
             JS_FreeValue(instance.Context, storage);
-            if (JS_IsException(json)) { error = "q.storage must contain only JSON-serializable values: " + exceptionText(instance.Context); return false; }
+            if (JS_IsException(json)) { error = "Script.storage must contain only JSON-serializable values: " + exceptionText(instance.Context); return false; }
             const char* text = JS_ToCString(instance.Context, json);
             if (!text) { JS_FreeValue(instance.Context, json); error = exceptionText(instance.Context); return false; }
             if (script.PersistentStateJson != text) { script.PersistentStateJson = text; javascript.markChanged(); }
@@ -578,130 +624,97 @@ namespace quartz::client
             return true;
         }
 
-        bool evaluate(JavaScriptRuntime& javascript, RuntimeScript& script, const RuntimeSignalContext& signal, ShaderFramebuffer& shader, RuntimeControlOutput& output, const EvdevKeyboard& keyboard)
+        void disposeInstance(Instance& instance, const std::string_view reason) noexcept
         {
-            auto& runtime = workspace();
-            const bool watchExternal = javascript.settings().ExternalHotReload && script.HotReload;
-            auto existing = runtime.Instances.find(script.Id);
-            if (existing != runtime.Instances.end() && watchExternal && dependenciesChanged(*existing->second)) { javascript.clearOutput(script.Id); runtime.Instances.erase(existing); ++script.ReloadCount; existing = runtime.Instances.end(); }
-            bool reuseExternal = false;
-            std::string source;
-            std::filesystem::path filename;
+            if (!instance.Context || !wantsEvent(instance, "script.dispose")) return; std::string error; const double time = instance.SignalContext ? instance.SignalContext->Time : 0.0;
+            JSValue event = makeEvent(instance.Context, "script.dispose", time); JS_SetPropertyStr(instance.Context, event, "reason", JS_NewStringLen(instance.Context, reason.data(), reason.size())); dispatchEvent(instance, "script.dispose", event, error); JS_FreeValue(instance.Context, event);
+        }
+
+        void eraseInstance(Workspace& runtime, const std::uint64_t id, const std::string_view reason)
+        {
+            const auto it = runtime.Instances.find(id); if (it == runtime.Instances.end()) return; disposeInstance(*it->second, reason); runtime.Instances.erase(it);
+        }
+
+        bool dispatchInitialize(Instance& instance, RuntimeScript& script, const RuntimeSignalContext& signal, std::string& error)
+        {
+            for (const auto& property : script.Properties) instance.PropertyRevisions[property.Id] = property.Revision;
+            if (wantsEvent(instance, "script.initialize"))
+            {
+                JSValue event = makeEvent(instance.Context, "script.initialize", signal.Time); if (!dispatchEvent(instance, "script.initialize", event, error)) { JS_FreeValue(instance.Context, event); return false; } JS_FreeValue(instance.Context, event);
+            }
+            const char* type = instance.Reloaded ? "script.reload" : "script.loaded";
+            if (wantsEvent(instance, type))
+            {
+                JSValue event = makeEvent(instance.Context, type, signal.Time); JS_SetPropertyStr(instance.Context, event, "id", JS_NewBigUint64(instance.Context, script.Id)); JS_SetPropertyStr(instance.Context, event, "name", JS_NewString(instance.Context, script.Name));
+                if (!dispatchEvent(instance, type, event, error)) { JS_FreeValue(instance.Context, event); return false; } JS_FreeValue(instance.Context, event);
+            }
+            instance.FirstExecution = false; return true;
+        }
+
+        bool evaluate(JavaScriptRuntime& javascript, RuntimeScript& script, const RuntimeSignalContext& signal, ShaderFramebuffer& shader, RuntimeControlOutput& output, const EvdevKeyboard& keyboard, const bool emitTick)
+        {
+            auto& runtime = workspace(); const bool watchExternal = javascript.settings().ExternalHotReload && script.HotReload; auto existing = runtime.Instances.find(script.Id);
+            if (existing != runtime.Instances.end() && watchExternal && dependenciesChanged(*existing->second)) { javascript.clearOutput(script.Id); disposeInstance(*existing->second, "reload"); runtime.Instances.erase(existing); ++script.ReloadCount; existing = runtime.Instances.end(); }
+            bool reuseExternal = false; std::string source; std::filesystem::path filename;
             if (script.External)
             {
-                filename = script.Path;
-                if (filename.is_relative()) filename = runtimeQuickJSScriptDirectory() / filename;
-                existing = runtime.Instances.find(script.Id);
-                if (existing != runtime.Instances.end() && watchExternal && (existing->second->MainPath != filename || existing->second->MainTime != fileTime(filename))) { javascript.clearOutput(script.Id); runtime.Instances.erase(existing); ++script.ReloadCount; existing = runtime.Instances.end(); }
-                reuseExternal = existing != runtime.Instances.end() && JS_IsFunction(existing->second->Context, existing->second->Function);
-                if (!reuseExternal)
-                {
-                    std::string readError;
-                    if (!loadFile(filename, source, readError)) { script.Status = readError; appendLog(script, signal.Time, RuntimeScriptLogLevel::Error, readError); return false; }
-                }
+                filename = script.Path; if (filename.is_relative()) filename = runtimeQuickJSScriptDirectory() / filename; existing = runtime.Instances.find(script.Id);
+                if (existing != runtime.Instances.end() && watchExternal && (existing->second->MainPath != filename || existing->second->MainTime != fileTime(filename))) { javascript.clearOutput(script.Id); disposeInstance(*existing->second, "reload"); runtime.Instances.erase(existing); ++script.ReloadCount; existing = runtime.Instances.end(); }
+                reuseExternal = existing != runtime.Instances.end() && existing->second->ModuleLoaded;
+                if (!reuseExternal) { std::string readError; if (!loadFile(filename, source, readError)) { script.Status = readError; appendLog(script, signal.Time, RuntimeScriptLogLevel::Error, readError); return false; } }
             }
             else source = script.Source;
-            Instance* instance = createInstance(javascript, script, signal, shader, output, keyboard);
-            if (!instance) { script.Status = "could not create QuickJS runtime context"; return false; }
-            instance->JavaScript = &javascript;
-            instance->Script = &script;
-            instance->SignalContext = &signal;
-            instance->Keyboard = &keyboard;
-            instance->Shader = &shader;
-            instance->Output = &output;
-            std::string error;
-            if (!reuseExternal && !compile(*instance, script, source, filename, error)) { script.Status = std::move(error); return false; }
-            JS_SetPropertyStr(instance->Context, instance->Api, "time", JS_NewFloat64(instance->Context, signal.Time));
-            JS_SetPropertyStr(instance->Context, instance->Api, "deltaTime", JS_NewFloat64(instance->Context, signal.DeltaTime));
-            JS_SetPropertyStr(instance->Context, instance->Api, "id", JS_NewBigUint64(instance->Context, script.Id));
-            JS_SetPropertyStr(instance->Context, instance->Api, "name", JS_NewString(instance->Context, script.Name));
-            const auto started = std::chrono::steady_clock::now();
-            runtime.begin(script.TimeoutMs);
-            if (!dispatchBuiltInEvents(*instance, signal, error))
+            Instance* instance = createInstance(javascript, script, signal, shader, output, keyboard); if (!instance) { script.Status = "could not create QuickJS runtime context"; return false; }
+            instance->JavaScript = &javascript; instance->Script = &script; instance->SignalContext = &signal; instance->Keyboard = &keyboard; instance->Shader = &shader; instance->Output = &output;
+            JS_SetPropertyStr(instance->Context, instance->Api, "time", JS_NewFloat64(instance->Context, signal.Time)); JS_SetPropertyStr(instance->Context, instance->Api, "deltaTime", JS_NewFloat64(instance->Context, signal.DeltaTime)); JS_SetPropertyStr(instance->Context, instance->Api, "id", JS_NewBigUint64(instance->Context, script.Id)); JS_SetPropertyStr(instance->Context, instance->Api, "name", JS_NewString(instance->Context, script.Name));
+            std::string error; const bool wasLoaded = instance->ModuleLoaded; if (!reuseExternal && !compile(*instance, script, source, filename, error)) { script.Status = std::move(error); return false; }
+            const auto started = std::chrono::steady_clock::now(); runtime.begin(script.TimeoutMs);
+            if (!wasLoaded && instance->ModuleLoaded && !dispatchInitialize(*instance, script, signal, error)) { runtime.end(); script.Status = std::move(error); return false; }
+            if (!dispatchBuiltInEvents(*instance, signal, emitTick, error)) { runtime.end(); script.LastMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count(); script.Status = std::move(error); return false; }
+            if (emitTick) ++script.RunCount; syncPropertyStorage(*instance, script); snapshotState(*instance, script); if (!persistStorage(*instance, script, javascript, error)) { runtime.end(); script.Status = std::move(error); return false; }
+            runtime.end(); script.LastMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count(); if (runtime.Execution.Interrupted) { ++script.TimeoutCount; script.Status = "QuickJS execution timed out after " + std::to_string(script.TimeoutMs) + " ms"; return false; }
+            script.Dependencies.clear(); for (const auto& [path, _] : instance->DependencyTimes) script.Dependencies.push_back(path); std::ranges::sort(script.Dependencies); script.Status = "running"; return true;
+        }
+
+        void pumpJobs(Workspace& runtime)
+        {
+            for (int count = 0; count < 1024 && runtime.Runtime && JS_IsJobPending(runtime.Runtime); ++count)
             {
-                runtime.end();
-                script.LastMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-                script.Status = std::move(error);
-                return false;
+                JSContext* ctx = nullptr; runtime.begin(8.0f); const int result = JS_ExecutePendingJob(runtime.Runtime, &ctx); const bool interrupted = runtime.Execution.Interrupted; runtime.end(); if (result >= 0) continue;
+                if (!ctx) continue; auto* instance = static_cast<Instance*>(JS_GetContextOpaque(ctx)); const std::string error = interrupted ? "QuickJS async job timed out" : exceptionText(ctx);
+                if (instance && instance->Script) { instance->Script->Status = error; appendLog(*instance->Script, instance->SignalContext ? instance->SignalContext->Time : 0.0, RuntimeScriptLogLevel::Error, error); if (interrupted) ++instance->Script->TimeoutCount; }
             }
-            JSValue argument = JS_DupValue(instance->Context, instance->Api);
-            JSValue result = JS_Call(instance->Context, instance->Function, JS_UNDEFINED, 1, &argument);
-            JS_FreeValue(instance->Context, argument);
-            ++script.RunCount;
-            if (JS_IsException(result))
-            {
-                runtime.end();
-                script.LastMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-                if (runtime.Execution.Interrupted)
-                {
-                    JSValue exception = JS_GetException(instance->Context); JS_FreeValue(instance->Context, exception); ++script.TimeoutCount;
-                    script.Status = "QuickJS execution timed out after " + std::to_string(script.TimeoutMs) + " ms";
-                }
-                else script.Status = exceptionText(instance->Context);
-                return false;
-            }
-            JS_FreeValue(instance->Context, result);
-            if (instance->FirstExecution)
-            {
-                const char* type = instance->Reloaded ? "script.reload" : "script.loaded";
-                if (wantsEvent(*instance, type))
-                {
-                    JSValue event = makeEvent(instance->Context, type, signal.Time);
-                    JS_SetPropertyStr(instance->Context, event, "id", JS_NewBigUint64(instance->Context, script.Id));
-                    JS_SetPropertyStr(instance->Context, event, "name", JS_NewString(instance->Context, script.Name));
-                    if (!dispatchEvent(*instance, type, event, error)) { JS_FreeValue(instance->Context, event); runtime.end(); script.Status = std::move(error); return false; }
-                    JS_FreeValue(instance->Context, event);
-                }
-                instance->FirstExecution = false;
-            }
-            snapshotState(*instance, script);
-            if (!persistStorage(*instance, script, javascript, error)) { runtime.end(); script.Status = std::move(error); return false; }
-            runtime.end();
-            script.LastMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-            if (runtime.Execution.Interrupted) { ++script.TimeoutCount; script.Status = "QuickJS execution timed out after " + std::to_string(script.TimeoutMs) + " ms"; return false; }
-            script.Dependencies.clear();
-            for (const auto& [path, _] : instance->DependencyTimes) script.Dependencies.push_back(path);
-            std::ranges::sort(script.Dependencies);
-            script.Status = "running";
-            return true;
         }
     }
 
     const RuntimeControlOutput& runtimeEvaluateWorkspaceScripts(JavaScriptRuntime& javascript, const RuntimeSignalContext& context, ShaderFramebuffer& shader, const EvdevKeyboard& keyboard)
     {
-        std::vector<RuntimeScript*> order;
-        order.reserve(javascript.scripts().size());
-        for (auto& script : javascript.scripts()) order.push_back(&script);
+        auto& runtime = workspace(); std::vector<RuntimeScript*> order; order.reserve(javascript.scripts().size()); for (auto& script : javascript.scripts()) order.push_back(&script);
         std::ranges::stable_sort(order, [](const RuntimeScript* a, const RuntimeScript* b) { if (a->Order != b->Order) return a->Order < b->Order; return a->Id < b->Id; });
         for (RuntimeScript* script : order)
         {
             if (!script->Enabled)
             {
-                if (script->Status != "disabled") { runtimeResetWorkspaceScript(script->Id); script->Status = "disabled"; }
-                javascript.clearOutput(script->Id);
-                continue;
+                if (script->Status != "disabled") { runtimeResetWorkspaceScript(script->Id, "disabled"); script->Status = "disabled"; } javascript.clearOutput(script->Id); continue;
             }
-            if (context.Time < script->NextUpdate) continue;
-            const float updateHz = std::clamp(script->UpdateHz, 0.5f, 500.0f);
-            script->NextUpdate = context.Time + 1.0 / updateHz;
-            evaluate(javascript, *script, context, shader, javascript.outputFor(script->Id), keyboard);
+            const bool emitTick = context.Time >= script->NextUpdate;
+            if (emitTick) { const float updateHz = std::clamp(script->UpdateHz, 0.5f, 500.0f); script->NextUpdate = context.Time + 1.0 / updateHz; }
+            evaluate(javascript, *script, context, shader, javascript.outputFor(script->Id), keyboard, emitTick);
+            if (script->ReloadRequested) { script->ReloadRequested = false; runtimeResetWorkspaceScript(script->Id, "reload"); javascript.clearOutput(script->Id); ++script->ReloadCount; }
         }
-        javascript.rebuildOutput();
-        return javascript.output();
+        pumpJobs(runtime);
+        for (RuntimeScript* script : order) if (script->ReloadRequested) { script->ReloadRequested = false; runtimeResetWorkspaceScript(script->Id, "reload"); javascript.clearOutput(script->Id); ++script->ReloadCount; }
+        javascript.rebuildOutput(); return javascript.output();
     }
 
-    void runtimeResetWorkspaceScript(const std::uint64_t scriptId) noexcept
+    void runtimeResetWorkspaceScript(const std::uint64_t scriptId, const std::string_view reason) noexcept
     {
-        auto& runtime = workspace();
-        runtime.Instances.erase(scriptId);
-        if (runtime.Runtime) JS_RunGC(runtime.Runtime);
+        auto& runtime = workspace(); eraseInstance(runtime, scriptId, reason); if (runtime.Runtime) JS_RunGC(runtime.Runtime);
     }
 
-    void runtimeReloadAllWorkspaceScripts() noexcept
+    void runtimeReloadAllWorkspaceScripts(const std::string_view reason) noexcept
     {
-        auto& runtime = workspace();
-        runtime.Instances.clear();
-        if (runtime.Runtime) JS_RunGC(runtime.Runtime);
+        auto& runtime = workspace(); std::vector<std::uint64_t> ids; ids.reserve(runtime.Instances.size()); for (const auto& [id, _] : runtime.Instances) ids.push_back(id); for (const auto id : ids) eraseInstance(runtime, id, reason); if (runtime.Runtime) JS_RunGC(runtime.Runtime);
     }
 
     std::filesystem::path runtimeQuickJSScriptDirectory()

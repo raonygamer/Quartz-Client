@@ -122,7 +122,7 @@ namespace quartz::client::ui
         {
             std::filesystem::path path = script.Path;
             std::error_code ec;
-            if (path.empty() || std::filesystem::is_directory(path, ec)) path = runtimeQuickJSScriptDirectory() / ("script-" + std::to_string(script.Id) + ".js");
+            if (path.empty() || std::filesystem::is_directory(path, ec)) path = runtimeQuickJSScriptDirectory() / ("script-" + std::to_string(script.Id) + ".ts");
             if (path.is_relative()) path = runtimeQuickJSScriptDirectory() / path;
             std::filesystem::create_directories(path.parent_path(), ec); ec.clear();
             if (!std::filesystem::exists(path, ec))
@@ -134,13 +134,52 @@ namespace quartz::client::ui
             script.Path = path.string(); error.clear(); return true;
         }
 
+        bool drawScriptProperty(RuntimeScriptProperty& property)
+        {
+            const char* label = property.Label.empty() ? property.Id.c_str() : property.Label.c_str(); bool changed = false;
+            ImGui::PushID(property.Id.c_str());
+            switch (property.Type)
+            {
+            case RuntimeScriptPropertyType::Boolean: changed = ImGui::Checkbox(label, &property.BoolValue); break;
+            case RuntimeScriptPropertyType::Int32:
+            case RuntimeScriptPropertyType::UInt32:
+            case RuntimeScriptPropertyType::Float32:
+            case RuntimeScriptPropertyType::Float64:
+            {
+                double value = property.NumberValue; const double* min = property.HasMin ? &property.Min : nullptr; const double* max = property.HasMax ? &property.Max : nullptr; const char* format = property.Type == RuntimeScriptPropertyType::Int32 || property.Type == RuntimeScriptPropertyType::UInt32 ? "%.0f" : "%.3f";
+                ImGui::SetNextItemWidth(260.0f); if (ImGui::DragScalar(label, ImGuiDataType_Double, &value, static_cast<float>(property.Step), min, max, format)) { if (property.Type == RuntimeScriptPropertyType::Int32 || property.Type == RuntimeScriptPropertyType::UInt32) value = std::round(value); if (property.Type == RuntimeScriptPropertyType::UInt32) value = std::max(value, 0.0); property.NumberValue = value; changed = true; } break;
+            }
+            case RuntimeScriptPropertyType::Enum:
+                if (ImGui::BeginCombo(label, property.StringValue.c_str())) { for (const auto& value : property.EnumValues) { const bool selected = property.StringValue == value; if (ImGui::Selectable(value.c_str(), selected)) { property.StringValue = value; changed = true; } if (selected) ImGui::SetItemDefaultFocus(); } ImGui::EndCombo(); } break;
+            default:
+            {
+                char value[1024]{}; std::snprintf(value, sizeof(value), "%s", property.StringValue.c_str()); ImGui::SetNextItemWidth(-80.0f); if (ImGui::InputText(label, value, sizeof(value))) { property.StringValue = value; property.KeyIsNumber = false; changed = true; } break;
+            }
+            }
+            if (!property.Description.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", property.Description.c_str());
+            ImGui::SameLine(); if (ImGui::SmallButton("Reset")) { property.StringValue = property.DefaultString; property.NumberValue = property.DefaultNumber; property.BoolValue = property.DefaultBool; property.KeyIsNumber = property.DefaultKeyIsNumber; changed = true; }
+            if (changed) ++property.Revision; ImGui::PopID(); return changed;
+        }
+
+        bool drawScriptProperties(RuntimeScript& script)
+        {
+            if (script.Properties.empty()) return false; bool changed = false; std::string group;
+            ImGui::SeparatorText("Properties");
+            for (auto& property : script.Properties)
+            {
+                if (property.Group != group) { group = property.Group; if (!group.empty()) ImGui::TextDisabled("%s", group.c_str()); }
+                changed |= drawScriptProperty(property);
+            }
+            return changed;
+        }
+
         void drawRuntimeIndicator(const RuntimeScript& script)
         {
             const float pulse = 0.62f + 0.38f * static_cast<float>((std::sin(ImGui::GetTime() * 3.6) + 1.0) * 0.5);
             const bool running = script.Enabled && script.Status.starts_with("running"); const bool failed = script.Enabled && !script.Status.empty() && !running && script.Status != "disabled";
             const ImVec4 color = running ? ImVec4(0.18f, 0.86f, 0.95f, pulse) : failed ? ImVec4(0.95f, 0.30f, 0.28f, 0.92f) : ImVec4(0.42f, 0.45f, 0.50f, 0.75f);
-            const ImVec2 position = ImGui::GetCursorScreenPos(); const float side = ImGui::GetTextLineHeight() * 0.72f; ImGui::Dummy(ImVec2(side, side)); ImGui::GetWindowDrawList()->AddRectFilled(position, ImVec2(position.x + side, position.y + side), ImGui::ColorConvertFloat4ToU32(color), 2.0f);
-            ImGui::SameLine(); ImGui::TextUnformatted(running ? "running" : failed ? "error / waiting" : script.Enabled ? "waiting" : "disabled");
+            const float rowHeight = ImGui::GetTextLineHeight(); const float side = rowHeight * 0.72f; ImGui::Dummy(ImVec2(side, rowHeight)); const ImVec2 min = ImGui::GetItemRectMin(); const ImVec2 max = ImGui::GetItemRectMax(); const float y = min.y + (max.y - min.y - side) * 0.5f;
+            ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(min.x, y), ImVec2(min.x + side, y + side), ImGui::ColorConvertFloat4ToU32(color), 2.0f); ImGui::SameLine(); ImGui::TextUnformatted(running ? "running" : failed ? "error / waiting" : script.Enabled ? "waiting" : "disabled");
         }
 
         const ImVec4& consoleColor(const RuntimeScriptLogLevel level)
@@ -159,7 +198,7 @@ namespace quartz::client::ui
         ImGui::TextWrapped("Quartz scripts are moving to a TypeScript-first SDK. External TypeScript and JavaScript sources stay visible here alongside runtime state, diagnostics and console output.");
 
         if (ImGui::Button("+ Inline script")) { auto& script = javascript.add(); script.Source = "// Quartz script\n"; }
-        ImGui::SameLine(); if (ImGui::Button("+ External script")) { auto& script = javascript.add(); script.External = true; script.Path = (runtimeQuickJSScriptDirectory() / "script.js").string(); }
+        ImGui::SameLine(); if (ImGui::Button("+ External script")) { auto& script = javascript.add(); script.External = true; script.Path = (runtimeQuickJSScriptDirectory() / "script.ts").string(); }
         ImGui::SameLine(); if (ImGui::Button("Reload all")) { runtimeReloadAllWorkspaceScripts(); javascript.clearOutputs(); for (auto& script : javascript.scripts()) ++script.ReloadCount; status = "all script contexts reloaded"; }
         ImGui::SameLine(); if (ImGui::Button("Save @quartz/client types")) { std::string error; status = runtimeSaveQuickJSTypeDeclarations(error) ? "saved " + runtimeQuickJSTypeDeclarationsPath().string() : error; }
         ImGui::SameLine(); if (ImGui::Button("Save runtime")) status = javascript.save() ? "saved " + javascript.path().string() : "could not save JavaScript runtime";
@@ -195,10 +234,11 @@ namespace quartz::client::ui
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Reload")) { runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; }
-                ImGui::SameLine(); if (ImGui::SmallButton("Reset persistent storage")) { script.PersistentStateJson = "{}"; runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; localChanged = true; }
+                ImGui::SameLine(); if (ImGui::SmallButton("Reset persistent storage")) { script.PersistentStateJson = "{}"; script.Properties.clear(); runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; localChanged = true; }
                 ImGui::SameLine(); if (ImGui::SmallButton("Remove")) erase = i;
                 ImGui::SetNextItemWidth(160.0f); localChanged |= ImGui::DragFloat("Update Hz", &script.UpdateHz, 0.5f, 0.5f, 500.0f, "%.1f"); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); localChanged |= ImGui::DragFloat("Timeout", &script.TimeoutMs, 0.1f, 0.1f, 100.0f, "%.1f ms"); ImGui::SameLine(); localChanged |= ImGui::Checkbox("Hot reload##script", &script.HotReload);
                 ImGui::SetNextItemWidth(180.0f); localChanged |= ImGui::InputText("Group", script.Group, sizeof(script.Group)); ImGui::SameLine(); ImGui::SetNextItemWidth(80.0f); localChanged |= ImGui::InputInt("Order", &script.Order);
+                localChanged |= drawScriptProperties(script);
                 if (ImGui::BeginTabBar("##JavaScriptRuntimeTabs"))
                 {
                     if (ImGui::BeginTabItem("Editor"))
