@@ -29,3 +29,4 @@ text = text[:start] + text[end:]
 path.write_text(text)
 
 print("Navigation inset and Runtime API cleanup applied")
+# Validation trigger.
