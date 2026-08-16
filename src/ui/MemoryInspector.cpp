@@ -1,4 +1,5 @@
 #include "quartz/client/ui/MemoryInspector.hpp"
+#include "quartz/client/ui/AddressInput.hpp"
 #include "quartz/client/ui/SignatureMaker.hpp"
 #include "quartz/client/Model.hpp"
 #include "quartz/client/native/ExecutionProbe.hpp"
@@ -24,7 +25,7 @@ namespace quartz::client
             std::uintptr_t LastAddress = 0;
             int LastReadSize = 0;
             std::uintptr_t AddressTextValue = std::numeric_limits<std::uintptr_t>::max();
-            std::array<char, 32> AddressText{};
+            std::array<char, 256> AddressText{};
             std::vector<std::uintptr_t> DisassemblyLines;
             std::map<std::pair<pid_t, std::uintptr_t>, DisassemblyMarker> Markers;
             std::uintptr_t SyncedAddress = 0;
@@ -41,17 +42,6 @@ namespace quartz::client
         };
 
         EnhancedMemoryInspectorState& enhancedMemoryInspectorState() { static EnhancedMemoryInspectorState state; return state; }
-
-        bool parseInspectorAddress(const char* text, std::uintptr_t& address)
-        {
-            if (!text || !*text) return false;
-            std::string_view value(text); int base = 10; bool negative = false;
-            if (value.front() == '+') value.remove_prefix(1); else if (value.front() == '-') { negative = true; value.remove_prefix(1); }
-            if (negative || value.empty()) return false;
-            if (value.starts_with("0x") || value.starts_with("0X")) { value.remove_prefix(2); base = 16; }
-            if (value.empty()) return false;
-            const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), address, base); return ec == std::errc{} && ptr == value.data() + value.size();
-        }
 
         void syncInspectorAddressText(RuntimeMemoryInspectorState& state)
         {
@@ -220,13 +210,13 @@ namespace quartz::client
 
         ImGui::SeparatorText("Memory / disassembly");
         int pidValue = static_cast<int>(state.Pid); ImGui::SetNextItemWidth(105.0f); if (ImGui::InputInt("PID##memory2", &pidValue)) { state.Pid = static_cast<pid_t>(std::max(pidValue, 0)); ui.LastPid = 0; } ImGui::SameLine();
-        ImGui::SetNextItemWidth(190.0f); const bool addressEnter = ImGui::InputText("Address##memory2", ui.AddressText.data(), ui.AddressText.size(), ImGuiInputTextFlags_EnterReturnsTrue); ImGui::SameLine();
+        const bool addressEnter = ui::drawAddressInput("Address##memory2", ui.AddressText.data(), ui.AddressText.size(), state.Pid, 260.0f, ImGuiInputTextFlags_EnterReturnsTrue); ImGui::SameLine();
         ImGui::SetNextItemWidth(105.0f); if (ImGui::InputInt("Bytes##memory2", &state.ReadSize)) state.ReadSize = std::clamp(state.ReadSize, 1, 4096); ImGui::SameLine();
         const bool readPressed = ImGui::Button("Read / disassemble");
         if (addressEnter || readPressed)
         {
-            std::uintptr_t address = 0;
-            if (!parseInspectorAddress(ui.AddressText.data(), address)) state.Status = "invalid memory address";
+            std::uintptr_t address = 0; std::string error;
+            if (!ui::evaluateAddressExpression(state.Pid, ui.AddressText.data(), address, error) || address == 0) state.Status = error.empty() ? "invalid memory address" : error;
             else { state.Address = address; ui.AddressTextValue = address; refreshEnhancedRuntimeMemoryInspector(state); }
         }
         ImGui::SameLine(); ImGui::TextDisabled("%s", runtimeX86ModeName(runtimeProcessX86Mode(state.Pid)));
