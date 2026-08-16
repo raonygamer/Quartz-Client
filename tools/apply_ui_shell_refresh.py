@@ -84,10 +84,15 @@ if '        drawPermanentHeader(usb);' not in text:
     raise RuntimeError("drawPermanentHeader call not found")
 text = text.replace('        drawPermanentHeader(usb);', '        drawPermanentHeader(settings, framebuffer);', 1)
 
+draw_ui = text.find('    void drawUi')
+if draw_ui < 0:
+    raise RuntimeError("drawUi not found after header migration")
+prefix, body = text[:draw_ui], text[draw_ui:]
 body_pattern = re.compile(r'        static const VisualizerSettings defaults\{\};.*?        pageManager\.render\(context\);', re.S)
-text, count = body_pattern.subn('        pageManager.render(context);', text, count=1)
+body, count = body_pattern.subn('        pageManager.render(context);', body, count=1)
 if count != 1:
-    raise RuntimeError(f"Expected one legacy global-control block, replaced {count}")
+    raise RuntimeError(f"Expected one legacy global-control block inside drawUi, replaced {count}")
+text = prefix + body
 
 path.write_text(text)
 print("Updated", path)
