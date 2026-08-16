@@ -85,7 +85,7 @@ namespace quartz::client::ui
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 7.0f);
         if (ImGui::BeginChild("PageNavigation", ImVec2(NavigationWidth, available.y), ImGuiChildFlags_Borders))
         {
-            ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
+            ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.035f, 0.5f));
             ImGui::Dummy({0.0f, 3.0f});
             for (const PageSection section : Sections)
             {

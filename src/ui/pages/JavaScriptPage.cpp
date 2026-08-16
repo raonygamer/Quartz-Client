@@ -142,19 +142,6 @@ namespace quartz::client::ui
         ImGui::SetNextItemWidth(100.0f); if (ImGui::BeginCombo("Key##jsReload", preview)) { for (const auto& key : Keys) { const bool selected = key.Key == settings.ReloadHotkeyKey; if (ImGui::Selectable(key.Name, selected)) { settings.ReloadHotkeyKey = key.Key; changed = true; } if (selected) ImGui::SetItemDefaultFocus(); } ImGui::EndCombo(); }
         ImGui::SameLine(); ImGui::TextDisabled("evdev globally; GLFW fallback"); if (changed) javascript.markChanged();
 
-        if (ImGui::CollapsingHeader("Runtime API", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            ImGui::BulletText("q.process.list/find/alive/modules/regions");
-            ImGui::BulletText("q.memory.read/write/readBytes/writeBytes");
-            ImGui::BulletText("q.signature.scan/status/cancel/list (async)  |  q.signature.find (sync)  |  q.disassembly.decode");
-            ImGui::BulletText("q.breakpoint.arm/hit/running/cancel");
-            ImGui::BulletText("q.input.keyDown/shortcut/capsLock/scrollLock");
-            ImGui::BulletText("q.events.subscribe/unsubscribe/emit  |  q.console.log/info/warn/error/debug");
-            ImGui::BulletText("q.runtime.*  |  q.state (context lifetime)  |  q.storage (persistent JSON)");
-            ImGui::BulletText("q.import(path)  |  q.loop(count, callback)  |  q.log(...)");
-            ImGui::TextDisabled("Built-in events include tick/input/process/shader/breakpoint plus signature.found, signature.not-found, signature.cancelled, signature.error and signature.finished.");
-        }
-
         ImGui::SeparatorText("Scripts"); std::optional<std::size_t> erase;
         for (std::size_t i = 0; i < javascript.scripts().size(); ++i)
         {
