@@ -14,141 +14,33 @@ namespace quartz::client::ui::i18n
     {
         struct Entry { std::string_view Key; const char* English; const char* Portuguese; };
         constexpr auto Catalog = std::to_array<Entry>({
-            {"nav.section.visual", "VISUAL", "VISUAL"},
-            {"nav.section.scripting", "SCRIPTING", "SCRIPTS"},
-            {"nav.section.reverseEngineering", "REVERSE ENGINEERING", "ENGENHARIA REVERSA"},
-            {"nav.section.device", "DEVICE", "DISPOSITIVO"},
-            {"nav.section.diagnostics", "DIAGNOSTICS", "DIAGNÓSTICOS"},
-            {"nav.section.other", "OTHER", "OUTROS"},
-            {"nav.visualizer", "Visualizer", "Visualizador"},
-            {"nav.shaders", "Shaders", "Sombreadores"},
-            {"nav.spectrum", "Spectrum", "Espectro"},
-            {"nav.audio", "Audio", "Áudio"},
-            {"nav.rgb", "RGB", "RGB"},
-            {"nav.javascript", "Scripts", "Scripts"},
-            {"nav.profiles", "Profiles", "Perfis"},
-            {"nav.native", "Workspace", "Área de Trabalho"},
-            {"nav.memory-scanner", "Memory Scanner", "Scanner de Memória"},
-            {"nav.memory-watch", "Memory Watch", "Monitor de Memória"},
-            {"nav.device", "Device", "Dispositivo"},
-            {"nav.input", "Input", "Entrada"},
-            {"nav.usb", "USB", "USB"},
-            {"nav.firmware", "Firmware", "Firmware"},
-            {"nav.performance", "Performance", "Desempenho"},
-            {"nav.matrix-timing", "Matrix Timing", "Timing da Matriz"},
-            {"nav.qrpc", "QRPC", "QRPC"},
-            {"nav.timeline", "Timeline", "Linha do Tempo"},
+            {"nav.section.visual","VISUAL","VISUAL"},{"nav.section.scripting","SCRIPTING","SCRIPTS"},{"nav.section.reverseEngineering","REVERSE ENGINEERING","ENGENHARIA REVERSA"},{"nav.section.device","DEVICE","DISPOSITIVO"},{"nav.section.diagnostics","DIAGNOSTICS","DIAGNÓSTICOS"},{"nav.section.other","OTHER","OUTROS"},
+            {"nav.visualizer","Visualizer","Visualizador"},{"nav.shaders","Shaders","Sombreadores"},{"nav.spectrum","Spectrum","Espectro"},{"nav.audio","Audio","Áudio"},{"nav.rgb","RGB","RGB"},{"nav.javascript","Scripts","Scripts"},{"nav.profiles","Profiles","Perfis"},{"nav.native","Workspace","Área de Trabalho"},{"nav.memory-scanner","Memory Scanner","Scanner de Memória"},{"nav.memory-watch","Memory Watch","Monitor de Memória"},{"nav.device","Device","Dispositivo"},{"nav.input","Input","Entrada"},{"nav.usb","USB","USB"},{"nav.firmware","Firmware","Firmware"},{"nav.performance","Performance","Desempenho"},{"nav.matrix-timing","Matrix Timing","Timing da Matriz"},{"nav.qrpc","QRPC","QRPC"},{"nav.timeline","Timeline","Linha do Tempo"},
 
-            {"header.byline", "Made by Raony Reis, not affiliated with Redragon", "Feito por Raony Reis, sem afiliação com a Redragon"},
-            {"header.keyboard", "Keyboard", "Teclado"},
-            {"header.appearance", "Appearance", "Aparência"},
-            {"header.configuration", "Configuration", "Configuração"},
-            {"header.theme", "Theme", "Tema"},
-            {"header.terminate", "Terminate", "Encerrar"},
-            {"header.terminateTooltip", "Exit Quartz completely. The normal window close button only hides the window.", "Fecha o Quartz completamente. O botão normal de fechar apenas oculta a janela."},
+            {"header.byline","Made by Raony Reis, not affiliated with Redragon","Feito por Raony Reis, sem afiliação com a Redragon"},{"header.keyboard","Keyboard","Teclado"},{"header.appearance","Appearance","Aparência"},{"header.configuration","Configuration","Configuração"},{"header.theme","Theme","Tema"},{"header.terminate","Terminate","Encerrar"},{"header.terminateTooltip","Exit Quartz completely. The normal window close button only hides the window.","Fecha o Quartz completamente. O botão normal de fechar apenas oculta a janela."},
 
-            {"appearance.theme", "Theme", "Tema"},
-            {"theme.quartzCyan", "Quartz Cyan", "Quartz Ciano"},
-            {"theme.graphite", "Graphite", "Grafite"},
-            {"theme.oceanBlue", "Ocean Blue", "Azul Oceano"},
-            {"theme.emerald", "Emerald", "Esmeralda"},
-            {"theme.devilukePink", "Deviluke Pink", "Deviluke Rosa"},
-            {"theme.kurosakiPink", "Kurosaki Pink", "Kurosaki Rosa"},
-            {"theme.yamiGolden", "Yami Golden", "Yami Dourado"},
-            {"theme.kirisakiPurple", "Kirisaki Purple", "Kirisaki Roxo"},
-            {"appearance.language", "Language", "Idioma"},
-            {"appearance.cornerRounding", "Corner rounding", "Cantos arredondados"},
-            {"appearance.suspicious", "Enable suspicious color themes", "Ativar temas de cores suspeitos"},
-            {"appearance.suspiciousTooltip", "Unlocks Deviluke Pink, Kurosaki Pink, Yami Golden and Kirisaki Purple.", "Libera Deviluke Rosa, Kurosaki Rosa, Yami Dourado e Kirisaki Roxo."},
-            {"appearance.suspiciousTitle", "Suspicious color themes", "Temas de cores suspeitos"},
-            {"appearance.suspiciousWarning", "These themes are intentionally a little questionable: louder colors, anime silhouettes, and absolutely zero attempt to look corporate. Nothing here changes firmware behavior or unlocks anything dangerous; this only changes Quartz's appearance. If you're okay with your reverse-engineering tool looking slightly less employable, carry on.", "Esses temas são intencionalmente meio suspeitos: cores mais chamativas, silhuetas de anime e zero esforço para parecer software corporativo. Nada aqui muda o comportamento do firmware nem libera nada perigoso; isso só altera a aparência do Quartz. Se você aceita que sua ferramenta de engenharia reversa fique um pouco menos empregável, manda ver."},
-            {"appearance.suspiciousEnable", "Enable questionable colors", "Ativar cores questionáveis"},
-            {"appearance.suspiciousCancel", "Keep Quartz respectable", "Manter o Quartz respeitável"},
-            {"appearance.globalBrightness", "Global brightness", "Brilho global"},
-            {"appearance.previewInterpolation", "Preview interpolation", "Interpolação da prévia"},
-            {"appearance.previewInterpolationTooltip", "Preview-only spatial color mixing. It never changes framebuffer data sent over USB.", "Mistura espacial de cores apenas na prévia. Nunca altera o framebuffer enviado por USB."},
-            {"appearance.reset", "Reset appearance", "Redefinir aparência"},
-            {"keyboardPreview.title", "Keyboard Preview", "Prévia do Teclado"},
+            {"appearance.theme","Theme","Tema"},{"theme.quartzCyan","Quartz Cyan","Quartz Ciano"},{"theme.graphite","Graphite","Grafite"},{"theme.oceanBlue","Ocean Blue","Azul Oceano"},{"theme.emerald","Emerald","Esmeralda"},{"theme.devilukePink","Deviluke Pink","Deviluke Rosa"},{"theme.kurosakiPink","Kurosaki Pink","Kurosaki Rosa"},{"theme.yamiGolden","Yami Golden","Yami Dourado"},{"theme.kirisakiPurple","Kirisaki Purple","Kirisaki Roxo"},
+            {"appearance.language","Language","Idioma"},{"appearance.cornerRounding","Corner rounding","Cantos arredondados"},{"appearance.suspicious","Enable suspicious color themes","Ativar temas de cores suspeitos"},{"appearance.suspiciousTooltip","Unlocks Deviluke Pink, Kurosaki Pink, Yami Golden and Kirisaki Purple.","Libera Deviluke Rosa, Kurosaki Rosa, Yami Dourado e Kirisaki Roxo."},{"appearance.suspiciousTitle","Suspicious color themes","Temas de cores suspeitos"},{"appearance.suspiciousWarning","These themes are intentionally a little questionable: louder colors, anime silhouettes, and absolutely zero attempt to look corporate. Nothing here changes firmware behavior or unlocks anything dangerous; this only changes Quartz's appearance. If you're okay with your reverse-engineering tool looking slightly less employable, carry on.","Esses temas são intencionalmente meio suspeitos: cores mais chamativas, silhuetas de anime e zero esforço para parecer software corporativo. Nada aqui muda o comportamento do firmware nem libera nada perigoso; isso só altera a aparência do Quartz. Se você aceita que sua ferramenta de engenharia reversa fique um pouco menos empregável, manda ver."},{"appearance.suspiciousEnable","Enable questionable colors","Ativar cores questionáveis"},{"appearance.suspiciousCancel","Keep Quartz respectable","Manter o Quartz respeitável"},{"appearance.globalBrightness","Global brightness","Brilho global"},{"appearance.previewInterpolation","Preview interpolation","Interpolação da prévia"},{"appearance.previewInterpolationTooltip","Preview-only spatial color mixing. It never changes framebuffer data sent over USB.","Mistura espacial de cores apenas na prévia. Nunca altera o framebuffer enviado por USB."},{"appearance.reset","Reset appearance","Redefinir aparência"},{"keyboardPreview.title","Keyboard Preview","Prévia do Teclado"},
 
-            {"configuration.patternScanning", "Pattern scanning", "Escaneamento de padrões"},
-            {"configuration.signatureScanChunk", "Signature scan read chunk (bytes)", "Bloco de leitura do scan de assinatura (bytes)"},
-            {"configuration.signatureScanChunkTooltip", "Maximum target-process memory copied per libhat-backed signature scan chunk. Quartz clamps this to 64 KiB–64 MiB and aligns it to 8 bytes. Larger chunks reduce process-memory read overhead, but use more temporary memory and make cancellation less granular.", "Máximo de memória do processo alvo copiada por bloco de scan de assinatura usando libhat. O Quartz limita entre 64 KiB e 64 MiB e alinha o valor em 8 bytes. Blocos maiores reduzem o overhead das leituras de memória, mas usam mais memória temporária e deixam o cancelamento menos granular."},
-            {"configuration.signatureScanChunkValue", "Current: %.2f MiB (%zu bytes), aligned to %zu bytes", "Atual: %.2f MiB (%zu bytes), alinhado em %zu bytes"},
-            {"configuration.signatureScanChunkTradeoff", "4 MiB is the default. libhat scans the supplied span directly with its selected vectorized backend; the practical tradeoff here is target-memory read overhead versus temporary buffer size and cancellation latency, not a small-buffer limit inside libhat.", "4 MiB é o padrão. O libhat varre diretamente o intervalo fornecido usando o backend vetorizado selecionado; o compromisso prático aqui é overhead das leituras da memória alvo contra tamanho do buffer temporário e latência de cancelamento, não um limite de buffer pequeno dentro do libhat."},
-            {"configuration.newScansOnly", "Changes apply to newly started scans; running scans keep the chunk size they started with.", "As alterações se aplicam a novos scans; scans em andamento mantêm o tamanho de bloco com que foram iniciados."},
-            {"configuration.reset", "Reset configuration", "Redefinir configuração"},
+            {"configuration.patternScanning","Pattern scanning","Escaneamento de padrões"},{"configuration.signatureScanChunk","Signature scan read chunk (bytes)","Bloco de leitura do scan de assinatura (bytes)"},{"configuration.signatureScanChunkTooltip","Maximum target-process memory copied per libhat-backed signature scan chunk. Quartz clamps this to 64 KiB–64 MiB and aligns it to 8 bytes. Larger chunks reduce process-memory read overhead, but use more temporary memory and make cancellation less granular.","Máximo de memória do processo alvo copiada por bloco de scan de assinatura usando libhat. O Quartz limita entre 64 KiB e 64 MiB e alinha o valor em 8 bytes. Blocos maiores reduzem o overhead das leituras de memória, mas usam mais memória temporária e deixam o cancelamento menos granular."},{"configuration.signatureScanChunkValue","Current: %.2f MiB (%zu bytes), aligned to %zu bytes","Atual: %.2f MiB (%zu bytes), alinhado em %zu bytes"},{"configuration.signatureScanChunkTradeoff","4 MiB is the default. libhat scans the supplied span directly with its selected vectorized backend; the practical tradeoff here is target-memory read overhead versus temporary buffer size and cancellation latency, not a small-buffer limit inside libhat.","4 MiB é o padrão. O libhat varre diretamente o intervalo fornecido usando o backend vetorizado selecionado; o compromisso prático aqui é overhead das leituras da memória alvo contra tamanho do buffer temporário e latência de cancelamento, não um limite de buffer pequeno dentro do libhat."},{"configuration.newScansOnly","Changes apply to newly started scans; running scans keep the chunk size they started with.","As alterações se aplicam a novos scans; scans em andamento mantêm o tamanho de bloco com que foram iniciados."},{"configuration.reset","Reset configuration","Redefinir configuração"},
+            {"configuration.disassembler","Disassembler","Desmontador"},{"configuration.disassemblerDescription","Slow refresh defaults keep process-memory reads out of the hot UI path. Set a rate to 0 Hz to disable automatic refresh.","As taxas baixas padrão mantêm leituras da memória do processo fora do caminho quente da UI. Use 0 Hz para desativar a atualização automática."},{"configuration.disassemblyRefresh","Disassembly refresh","Atualização da desmontagem"},{"configuration.rawRefresh","Raw bytes refresh","Atualização dos bytes brutos"},{"configuration.functionHeuristics","Background function heuristics","Heurísticas de função em segundo plano"},{"configuration.functionHeuristicsTooltip","Runs low-priority local function-boundary analysis on Quartz's shared thread pool. The disassembler never waits for it.","Executa análise local de limites de função com baixa prioridade no pool de threads compartilhado do Quartz. O desmontador nunca espera por ela."},{"configuration.functionWindow","Function analysis window","Janela de análise de funções"},{"configuration.functionWindowHint","Local window around the current disassembly address. It is clamped and page-aligned when saved.","Janela local ao redor do endereço atual da desmontagem. O valor é limitado e alinhado à página ao salvar."},
+            {"configuration.assemblerTweaks","Assembler Tweaks","Ajustes do Montador"},{"configuration.assemblerDescription","Controls how in-place patches are prepared. Quartz always previews the final byte span before a process write.","Controla como patches no local são preparados. O Quartz sempre mostra a prévia do intervalo final de bytes antes de escrever no processo."},{"configuration.fillNops","Fill remaining bytes with NOPs","Preencher bytes restantes com NOPs"},{"configuration.wholeInstructions","Keep selections on whole instructions","Manter seleções em instruções inteiras"},{"configuration.consumeFollowing","Allow patches to consume following instructions","Permitir que patches consumam instruções seguintes"},{"configuration.consumeFollowingTooltip","If assembled code is larger than the selected span, Quartz may extend the patch over complete following instructions. Disabled by default.","Se o código montado for maior que o intervalo selecionado, o Quartz pode estender o patch sobre instruções seguintes completas. Desativado por padrão."},{"configuration.verifyBeforeWrite","Verify original bytes before writing","Verificar bytes originais antes de escrever"},{"configuration.requireConfirmation","Require write confirmation","Exigir confirmação antes de escrever"},{"configuration.redisassemble","Re-disassemble immediately after patch","Desmontar novamente imediatamente após o patch"},{"configuration.keepOriginal","Keep original bytes for Restore","Manter bytes originais para Restaurar"},
 
-            {"common.refresh", "Refresh", "Atualizar"},
-            {"common.refreshProcesses", "Refresh processes", "Atualizar processos"},
-            {"common.process", "Process", "Processo"},
-            {"common.selectProcess", "<select process>", "<selecionar processo>"},
-            {"common.processSearchHint", "Find PID, process name, title, executable path or command line...", "Buscar PID, nome do processo, título, executável ou linha de comando..."},
-            {"common.noProcessMatches", "No process matches the filter.", "Nenhum processo corresponde ao filtro."},
-            {"common.copy", "Copy", "Copiar"},
-            {"common.cancel", "Cancel", "Cancelar"},
-            {"common.close", "Close", "Fechar"},
-            {"common.reset", "Reset", "Redefinir"},
-            {"common.select", "Select", "Selecionar"},
-            {"common.open", "Open", "Abrir"},
-            {"common.edit", "Edit...", "Editar..."},
+            {"common.refresh","Refresh","Atualizar"},{"common.refreshProcesses","Refresh processes","Atualizar processos"},{"common.process","Process","Processo"},{"common.selectProcess","<select process>","<selecionar processo>"},{"common.processSearchHint","Find PID, process name, title, executable path or command line...","Buscar PID, nome do processo, título, executável ou linha de comando..."},{"common.noProcessMatches","No process matches the filter.","Nenhum processo corresponde ao filtro."},{"common.copy","Copy","Copiar"},{"common.cancel","Cancel","Cancelar"},{"common.close","Close","Fechar"},{"common.reset","Reset","Redefinir"},{"common.select","Select","Selecionar"},{"common.open","Open","Abrir"},{"common.edit","Edit...","Editar..."},{"common.connected","connected","conectado"},{"common.disconnected","disconnected","desconectado"},{"common.on","on","ligado"},{"common.off","off","desligado"},{"common.enabled","Enabled","Ativado"},{"common.disabled","Disabled","Desativado"},{"common.status","Status","Status"},{"common.clear","Clear","Limpar"},{"common.copyAll","Copy all","Copiar tudo"},
 
-            {"shaders.description", "Shader catalog, external source files, hot reload, compilation and reflected material parameters live here. Opening a file keeps Quartz bound to it; importing copies a fragment shader into the Quartz catalog.", "Catálogo de sombreadores, arquivos externos, recarga automática, compilação e parâmetros de material refletidos ficam aqui. Abrir um arquivo mantém o Quartz vinculado a ele; importar copia um sombreador de fragmento para o catálogo do Quartz."},
-            {"shaders.current", "Current shader", "Sombreador atual"},
-            {"shaders.catalog", "Catalog", "Catálogo"},
-            {"shaders.customExternal", "Custom / external", "Personalizado / externo"},
-            {"shaders.refreshCatalog", "Refresh catalog", "Atualizar catálogo"},
-            {"shaders.compileCurrent", "Compile current", "Compilar atual"},
-            {"shaders.saveDefaults", "Save as Quartz defaults", "Salvar como padrão do Quartz"},
-            {"shaders.restoreDefault", "Restore default", "Restaurar padrão"},
-            {"shaders.externalFiles", "External files", "Arquivos externos"},
-            {"shaders.vertexFile", "Vertex file", "Arquivo de vértices"},
-            {"shaders.fragmentFile", "Fragment file", "Arquivo de fragmento"},
-            {"shaders.importCatalog", "Import to catalog", "Importar para o catálogo"},
-            {"shaders.hotReload", "Hot reload external changes", "Recarregar alterações externas"},
-            {"shaders.hotReloadHint", "200 ms debounce/poll; external edits compile automatically", "debounce/poll de 200 ms; edições externas compilam automaticamente"},
-            {"shaders.renderSurface", "Render surface", "Superfície de renderização"},
-            {"shaders.framebufferSize", "Framebuffer size", "Tamanho do framebuffer"},
-            {"shaders.regenerate", "Regenerate", "Regenerar"},
-            {"shaders.downsample", "Downsample", "Redução de amostragem"},
-            {"shaders.crossfade", "Crossfade", "Transição"},
-            {"shaders.recompileChange", "Recompile on editor text change", "Recompilar ao alterar o texto do editor"},
-            {"shaders.keyUniforms", "Key-state uniforms", "Uniformes de estado das teclas"},
-            {"shaders.capsColor", "Caps Lock fixed color", "Cor fixa do Caps Lock"},
-            {"shaders.scrollColor", "Scroll Lock fixed color", "Cor fixa do Scroll Lock"},
-            {"shaders.materialParameters", "Material parameters", "Parâmetros de material"},
+            {"visualizer.description","Live output. Detailed spectrum/audio tuning, shader management and RGB diagnostics live on their dedicated pages.","Saída ao vivo. Ajustes detalhados de espectro/áudio, gerenciamento de sombreadores e diagnósticos RGB ficam em suas páginas dedicadas."},{"visualizer.output","Output","Saída"},{"visualizer.enabled","Enabled","Ativado"},{"visualizer.sendFramebuffer","Send framebuffer","Enviar framebuffer"},{"visualizer.frameRate","Frame rate","Taxa de quadros"},{"visualizer.rgbWave","RGB wave","Onda RGB"},{"visualizer.solid","Solid","Sólido"},{"visualizer.shader","Shader","Sombreador"},{"visualizer.outputMode","Output mode","Modo de saída"},{"visualizer.waveSpeed","Wave speed","Velocidade da onda"},{"visualizer.solidColor","Solid color","Cor sólida"},{"visualizer.openShaders","Shaders...","Sombreadores..."},{"visualizer.openSpectrum","Spectrum...","Espectro..."},{"visualizer.openAudio","Audio...","Áudio..."},{"visualizer.openRgb","RGB diagnostics...","Diagnósticos RGB..."},{"visualizer.keyboardPreview","Keyboard preview","Prévia do teclado"},{"visualizer.frameStats","Frames sent %llu   dropped %llu   USB %s","Quadros enviados %llu   perdidos %llu   USB %s"},{"visualizer.shaderName","Shader: %s","Sombreador: %s"},{"visualizer.blackOut","Black out","Apagar LEDs"},
 
-            {"re.workspaceDescription", "Native reverse-engineering workspace. Memory, disassembly, watches and signatures share addresses directly so you can move through a process without copy/pasting hexadecimal values between unrelated tools.", "Área de trabalho de engenharia reversa nativa. Memória, desmontagem, monitores e assinaturas compartilham endereços diretamente para navegar pelo processo sem copiar e colar valores hexadecimais entre ferramentas."},
-            {"re.memoryDisassembly", "Memory / disassembly", "Memória / desmontagem"},
-            {"re.memoryScanner", "Memory Scanner...", "Scanner de Memória..."},
-            {"re.memoryWatch", "Memory Watch...", "Monitor de Memória..."},
-            {"re.signatureFromAddress", "Signature from address", "Assinatura do endereço"},
-            {"re.manualWatch", "Manual watch", "Monitor manual"},
-            {"re.signatures", "Signatures", "Assinaturas"},
-            {"re.signatureSearch", "Search", "Buscar"},
-            {"re.objectExperiments", "Object experiments", "Experimentos com Objetos"},
-            {"re.signatureMaker", "Signature Maker", "Gerador de Assinatura"},
-            {"re.makeSignature", "Make signature", "Gerar assinatura"},
-            {"re.copySignature", "Copy signature", "Copiar assinatura"},
-            {"re.signatureUnique", "Unique match", "Correspondência única"},
-            {"re.signatureConflict", "Conflicting matches", "Correspondências conflitantes"},
-            {"re.signatureAddress", "Target address", "Endereço alvo"},
-            {"re.signatureBytes", "Instruction bytes", "Bytes das instruções"},
-            {"re.signatureStatus", "Status", "Status"},
-            {"re.signatureDescription", "Build a signature from decoded instructions. Relocation-sensitive operands are wildcarded automatically and libhat extends the pattern until the target is unique.", "Gera uma assinatura a partir das instruções decodificadas. Operandos sensíveis a relocação recebem curingas automaticamente e o libhat estende o padrão até o alvo ser único."},
-            {"re.signatureMinimumInstructions", "Minimum instructions", "Instruções mínimas"},
-            {"re.signatureMaximumInstructions", "Maximum instructions", "Instruções máximas"},
-            {"re.signatureMatches", "Matches", "Correspondências"},
-            {"re.inspect", "Inspect", "Inspecionar"},
+            {"spectrum.analysisGraph","Analysis graph","Gráfico de análise"},{"spectrum.mappedGraph","Mapped graph","Gráfico mapeado"},{"spectrum.framebufferPreview","Framebuffer preview","Prévia do framebuffer"},{"spectrum.fftAnalysis","FFT / log-frequency analysis","Análise FFT / frequência logarítmica"},{"spectrum.mappedColumns","Mapped 16 columns","16 colunas mapeadas"},{"spectrum.smoothedOutput","Smoothed output","Saída suavizada"},{"spectrum.keyboardFramebuffer","Keyboard framebuffer","Framebuffer do teclado"},{"spectrum.previewInterpolation","Preview interpolation %.0f%% (visual only)","Interpolação da prévia %.0f%% (somente visual)"},
 
-            {"usb.description", "USB connection, transport health and low-level transfer diagnostics live here.", "Conexão USB, saúde do transporte e diagnósticos de baixo nível ficam aqui."},
-            {"usb.connection", "Connection", "Conexão"},
-            {"usb.connected", "Connected", "Conectado"},
-            {"usb.disconnected", "Disconnected", "Desconectado"},
-            {"usb.connect", "Connect", "Conectar"},
-            {"usb.disconnect", "Disconnect", "Desconectar"},
-            {"usb.autoReconnect", "Auto reconnect", "Reconectar automaticamente"},
-            {"usb.deviceFirmware", "Device %04X:%04X | firmware %s", "Dispositivo %04X:%04X | firmware %s"},
-            {"usb.frames", "Frames sent %llu   dropped/busy %llu", "Frames enviados %llu   perdidos/ocupados %llu"}
+            {"shaders.description","Shader catalog, external source files, hot reload, compilation and reflected material parameters live here. Opening a file keeps Quartz bound to it; importing copies a fragment shader into the Quartz catalog.","Catálogo de sombreadores, arquivos externos, recarga automática, compilação e parâmetros de material refletidos ficam aqui. Abrir um arquivo mantém o Quartz vinculado a ele; importar copia um sombreador de fragmento para o catálogo do Quartz."},{"shaders.current","Current shader","Sombreador atual"},{"shaders.catalog","Catalog","Catálogo"},{"shaders.customExternal","Custom / external","Personalizado / externo"},{"shaders.refreshCatalog","Refresh catalog","Atualizar catálogo"},{"shaders.compileCurrent","Compile current","Compilar atual"},{"shaders.saveDefaults","Save as Quartz defaults","Salvar como padrão do Quartz"},{"shaders.restoreDefault","Restore default","Restaurar padrão"},{"shaders.externalFiles","External files","Arquivos externos"},{"shaders.vertexFile","Vertex file","Arquivo de vértices"},{"shaders.fragmentFile","Fragment file","Arquivo de fragmento"},{"shaders.importCatalog","Import to catalog","Importar para o catálogo"},{"shaders.hotReload","Hot reload external changes","Recarregar alterações externas"},{"shaders.hotReloadHint","200 ms debounce/poll; external edits compile automatically","debounce/poll de 200 ms; edições externas compilam automaticamente"},{"shaders.renderSurface","Render surface","Superfície de renderização"},{"shaders.framebufferSize","Framebuffer size","Tamanho do framebuffer"},{"shaders.regenerate","Regenerate","Regenerar"},{"shaders.downsample","Downsample","Redução de amostragem"},{"shaders.crossfade","Crossfade","Transição"},{"shaders.recompileChange","Recompile on editor text change","Recompilar ao alterar o texto do editor"},{"shaders.keyUniforms","Key-state uniforms","Uniformes de estado das teclas"},{"shaders.capsColor","Caps Lock fixed color","Cor fixa do Caps Lock"},{"shaders.scrollColor","Scroll Lock fixed color","Cor fixa do Scroll Lock"},{"shaders.materialParameters","Material parameters","Parâmetros de material"},
+
+            {"re.workspaceDescription","Native reverse-engineering workspace. Memory, disassembly, watches and signatures share addresses directly so you can move through a process without copy/pasting hexadecimal values between unrelated tools.","Área de trabalho de engenharia reversa nativa. Memória, desmontagem, monitores e assinaturas compartilham endereços diretamente para navegar pelo processo sem copiar e colar valores hexadecimais entre ferramentas."},{"re.memoryDisassembly","Memory / disassembly","Memória / desmontagem"},{"re.memoryScanner","Memory Scanner...","Scanner de Memória..."},{"re.memoryWatch","Memory Watch...","Monitor de Memória..."},{"re.signatureFromAddress","Signature from address","Assinatura do endereço"},{"re.manualWatch","Manual watch","Monitor manual"},{"re.signatures","Signatures","Assinaturas"},{"re.signatureSearch","Search","Buscar"},{"re.objectExperiments","Object experiments","Experimentos com Objetos"},{"re.signatureMaker","Signature Maker","Gerador de Assinatura"},{"re.makeSignature","Make signature","Gerar assinatura"},{"re.copySignature","Copy signature","Copiar assinatura"},{"re.signatureUnique","Unique match","Correspondência única"},{"re.signatureConflict","Conflicting matches","Correspondências conflitantes"},{"re.signatureAddress","Target address","Endereço alvo"},{"re.signatureBytes","Instruction bytes","Bytes das instruções"},{"re.signatureStatus","Status","Status"},{"re.signatureDescription","Build a signature from decoded instructions. Relocation-sensitive operands are wildcarded automatically and libhat extends the pattern until the target is unique.","Gera uma assinatura a partir das instruções decodificadas. Operandos sensíveis a relocação recebem curingas automaticamente e o libhat estende o padrão até o alvo ser único."},{"re.signatureMinimumInstructions","Minimum instructions","Instruções mínimas"},{"re.signatureMaximumInstructions","Maximum instructions","Instruções máximas"},{"re.signatureMatches","Matches","Correspondências"},{"re.inspect","Inspect","Inspecionar"},
+
+            {"device.identity","Identity","Identidade"},{"device.product","Product: %s","Produto: %s"},{"device.firmware","Firmware: %s","Firmware: %s"},{"device.packetHeader","Packet header: %zu B   framebuffer payload: %zu B   full frame packet: %zu B","Cabeçalho do pacote: %zu B   payload do framebuffer: %zu B   pacote completo: %zu B"},{"device.logicalFramebuffer","Logical framebuffer: %zux%zu = %zu cells   active RGB area: %zux%zu","Framebuffer lógico: %zux%zu = %zu células   área RGB ativa: %zux%zu"},{"device.sessionOutput","Session / output","Sessão / saída"},{"device.uptimeCpu","Client uptime: %.1f s   App CPU: %.2f%%","Tempo ativo do cliente: %.1f s   CPU do app: %.2f%%"},{"device.txStats","TX frames: %llu   dropped/busy: %llu   RX packets: %llu","Quadros TX: %llu   perdidos/ocupados: %llu   pacotes RX: %llu"},{"device.outputMode","Output mode: %s   target: %d Hz   estimated framebuffer TX: %.1f KiB/s","Modo de saída: %s   alvo: %d Hz   TX estimado do framebuffer: %.1f KiB/s"},{"device.brightness","Brightness: %.0f%%   live-preview interpolation: %.0f%%","Brilho: %.0f%%   interpolação da prévia ao vivo: %.0f%%"},{"device.hostInput","Host input / window","Entrada do host / janela"},{"device.inputDevice","Input device: %s","Dispositivo de entrada: %s"},{"device.locks","Caps Lock: %s   Scroll Lock: %s","Caps Lock: %s   Scroll Lock: %s"},{"device.closeHint","Closing the GLFW window hides it. Ctrl + Alt + Shift + Q restores it globally. Use Terminate in the permanent header to actually exit.","Fechar a janela GLFW apenas a oculta. Ctrl + Alt + Shift + Q restaura globalmente. Use Encerrar no cabeçalho permanente para realmente sair."},{"device.runtimeFiles","Runtime files","Arquivos de runtime"},{"device.settingsFile","Settings: %s","Configurações: %s"},{"device.vertexFile","Vertex shader: %s","Sombreador de vértices: %s"},{"device.fragmentFile","Fragment shader: %s","Sombreador de fragmento: %s"},{"device.materialFile","Material parameters: %s","Parâmetros de material: %s"},{"device.bindingsFile","Runtime bindings: %s","Bindings de runtime: %s"},
+
+            {"performance.waiting","Waiting for PerformanceResponse...","Aguardando PerformanceResponse..."},{"matrix.waiting","Waiting for MatrixTimingProbeResult...","Aguardando MatrixTimingProbeResult..."},
+
+            {"usb.description","USB connection, transport health and low-level transfer diagnostics live here.","Conexão USB, saúde do transporte e diagnósticos de baixo nível ficam aqui."},{"usb.connection","Connection","Conexão"},{"usb.connected","Connected","Conectado"},{"usb.disconnected","Disconnected","Desconectado"},{"usb.connect","Connect","Conectar"},{"usb.disconnect","Disconnect","Desconectar"},{"usb.autoReconnect","Auto reconnect","Reconectar automaticamente"},{"usb.deviceFirmware","Device %04X:%04X | firmware %s","Dispositivo %04X:%04X | firmware %s"},{"usb.frames","Frames sent %llu   dropped/busy %llu","Frames enviados %llu   perdidos/ocupados %llu"}
         });
 
         Language CurrentLanguage = Language::English;
@@ -159,75 +51,33 @@ namespace quartz::client::ui::i18n
 
     const char* languageName(const Language value) noexcept
     {
-        switch (value)
-        {
-        case Language::English: return "English";
-        case Language::PortugueseBrazil: return "Português (Brasil)";
-        case Language::Count: break;
-        }
-        return "English";
+        switch (value) { case Language::English:return "English"; case Language::PortugueseBrazil:return "Português (Brasil)"; case Language::Count:break; } return "English";
     }
 
     const char* tr(const std::string_view key) noexcept
     {
-        for (const auto& entry : Catalog)
-        {
-            if (entry.Key != key) continue;
-            return CurrentLanguage == Language::PortugueseBrazil ? entry.Portuguese : entry.English;
-        }
-        thread_local std::string fallback; fallback.assign(key); return fallback.c_str();
+        for (const auto& entry:Catalog) { if (entry.Key!=key) continue; return CurrentLanguage==Language::PortugueseBrazil?entry.Portuguese:entry.English; } thread_local std::string fallback; fallback.assign(key); return fallback.c_str();
     }
 
-    void setLanguage(const Language value) noexcept { CurrentLanguage = value >= Language::English && value < Language::Count ? value : Language::English; }
+    void setLanguage(const Language value) noexcept { CurrentLanguage=value>=Language::English&&value<Language::Count?value:Language::English; }
 
     void loadLanguagePreference() noexcept
     {
         try
         {
-            std::ifstream file(languagePath());
-            if (file)
-            {
-                std::string line;
-                while (std::getline(file, line))
-                {
-                    if (!line.starts_with("Language=")) continue;
-                    int value = 0;
-                    if (parseNumber(std::string_view(line).substr(9), value)) setLanguage(static_cast<Language>(value));
-                    return;
-                }
-            }
-            if (const char* locale = std::getenv("LC_ALL"); locale && std::string_view(locale).starts_with("pt")) CurrentLanguage = Language::PortugueseBrazil;
-            else if (const char* locale = std::getenv("LANG"); locale && std::string_view(locale).starts_with("pt")) CurrentLanguage = Language::PortugueseBrazil;
+            std::ifstream file(languagePath()); if (file) { std::string line; while (std::getline(file,line)) { if (!line.starts_with("Language=")) continue; int value=0; if (parseNumber(std::string_view(line).substr(9),value)) setLanguage(static_cast<Language>(value)); return; } }
+            if (const char* locale=std::getenv("LC_ALL");locale&&std::string_view(locale).starts_with("pt")) CurrentLanguage=Language::PortugueseBrazil; else if (const char* locale=std::getenv("LANG");locale&&std::string_view(locale).starts_with("pt")) CurrentLanguage=Language::PortugueseBrazil;
         }
         catch (...) {}
     }
 
     void saveLanguagePreference() noexcept
     {
-        try
-        {
-            std::error_code ec; std::filesystem::create_directories(languagePath().parent_path(), ec);
-            std::ofstream file(languagePath(), std::ios::trunc);
-            if (file) file << "Language=" << static_cast<int>(CurrentLanguage) << '\n';
-        }
-        catch (...) {}
+        try { std::error_code ec; std::filesystem::create_directories(languagePath().parent_path(),ec); std::ofstream file(languagePath(),std::ios::trunc); if (file) file << "Language=" << static_cast<int>(CurrentLanguage) << '\n'; } catch (...) {}
     }
 
     bool drawLanguageSelector()
     {
-        bool changed = false;
-        ImGui::SetNextItemWidth(190.0f);
-        if (ImGui::BeginCombo(tr("appearance.language"), languageName(CurrentLanguage)))
-        {
-            for (int i = 0; i < static_cast<int>(Language::Count); ++i)
-            {
-                const Language candidate = static_cast<Language>(i);
-                const bool selected = candidate == CurrentLanguage;
-                if (ImGui::Selectable(languageName(candidate), selected)) { CurrentLanguage = candidate; saveLanguagePreference(); changed = true; }
-                if (selected) ImGui::SetItemDefaultFocus();
-            }
-            ImGui::EndCombo();
-        }
-        return changed;
+        bool changed=false; ImGui::SetNextItemWidth(190.0f); if (ImGui::BeginCombo(tr("appearance.language"),languageName(CurrentLanguage))) { for (int i=0;i<static_cast<int>(Language::Count);++i) { const Language candidate=static_cast<Language>(i); const bool selected=candidate==CurrentLanguage; if (ImGui::Selectable(languageName(candidate),selected)) { CurrentLanguage=candidate; saveLanguagePreference(); changed=true; } if (selected) ImGui::SetItemDefaultFocus(); } ImGui::EndCombo(); } return changed;
     }
 }
