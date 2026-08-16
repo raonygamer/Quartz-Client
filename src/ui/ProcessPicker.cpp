@@ -60,8 +60,9 @@ namespace quartz::client::ui
             ImGui::EndCombo();
         }
         ImGui::SameLine();
+        const bool linkedStyle = linked;
         const ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
-        if (linked) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x,accent.y,accent.z,0.28f)); ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(accent.x,accent.y,accent.z,0.48f)); }
+        if (linkedStyle) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(accent.x,accent.y,accent.z,0.28f)); ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(accent.x,accent.y,accent.z,0.48f)); }
         if (ImGui::SmallButton(linked ? i18n::tr("common.processLinked") : i18n::tr("common.processLocal")))
         {
             linked = !linked;
@@ -71,7 +72,7 @@ namespace quartz::client::ui
                 else if (pid > 0) SharedProcessPid = pid;
             }
         }
-        if (linked) ImGui::PopStyleColor(2);
+        if (linkedStyle) ImGui::PopStyleColor(2);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", i18n::tr("common.processLinkTooltip"));
         ImGui::PopID(); return changed;
     }
