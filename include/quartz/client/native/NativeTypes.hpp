@@ -65,9 +65,16 @@ namespace quartz::client
     struct RuntimeProcessModule
     {
         std::uintptr_t Base = 0;
+        std::uintptr_t MappingBase = 0;
         std::uintptr_t End = 0;
         std::string Name;
         std::string Path;
+
+        bool contains(const std::uintptr_t address) const noexcept
+        {
+            const std::uintptr_t start = MappingBase ? MappingBase : Base;
+            return address >= start && address < End;
+        }
     };
 
     struct RuntimeProcessRegion
