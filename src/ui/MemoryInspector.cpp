@@ -239,9 +239,11 @@ namespace quartz::client
             const auto regions = enumerateRuntimeRegions(pid);
             const auto region = std::ranges::find_if(regions, [&](const RuntimeProcessRegion& value) { return value.Readable && focus >= value.Base && focus < value.End; });
             if (region == regions.end() || region->End <= region->Base) return false;
-            regionBase = region->Base; regionEnd = region->End;
+            const std::size_t index = static_cast<std::size_t>(region - regions.begin()); regionBase = region->Base; regionEnd = region->End;
+            for (std::size_t i=index;i>0;--i) { const auto& previous=regions[i-1]; if (!previous.Readable||previous.End!=regionBase) break; regionBase=previous.Base; }
+            for (std::size_t i=index+1;i<regions.size();++i) { const auto& next=regions[i]; if (!next.Readable||next.Base!=regionEnd) break; regionEnd=next.End; }
             const std::size_t desired = static_cast<std::size_t>(std::clamp<std::uint64_t>(static_cast<std::uint64_t>(std::max(viewportBytes,16)) * 3ULL, 96ULL, 4096ULL));
-            const std::uintptr_t before = static_cast<std::uintptr_t>(desired / 3);
+            const std::uintptr_t before = static_cast<std::uintptr_t>(desired / 2);
             base = focus > regionBase + before ? focus - before : regionBase;
             std::uintptr_t end = base + desired; if (end < base || end > regionEnd) end = regionEnd;
             if (static_cast<std::size_t>(end - base) < desired && end == regionEnd && regionEnd - regionBase > desired) base = regionEnd - desired;
@@ -501,23 +503,25 @@ namespace quartz::client
             const float s=4.0f; draw->AddTriangleFilled(tip,ImVec2(tip.x+s*1.6f,tip.y-s),ImVec2(tip.x+s*1.6f,tip.y+s),color);
         }
 
-        float branchDockX(RuntimeMemoryInspectorState& state, const std::size_t row, const ImVec2 min, const ImVec2 max)
+        float branchDockX(RuntimeMemoryInspectorState& state, const std::size_t row, const ImVec2 min, const float gutterLeft)
         {
-            const std::string text=state.Disassembly.GetLineText(row); const float textWidth=ImGui::CalcTextSize(text.c_str()).x; return std::clamp(min.x+8.0f+textWidth+8.0f,min.x+130.0f,max.x-18.0f);
+            const std::string text=state.Disassembly.GetLineText(row); const float textWidth=ImGui::CalcTextSize(text.c_str()).x; const float minimum=min.x+24.0f,maximum=std::max(minimum,gutterLeft-8.0f); return std::clamp(min.x+8.0f+textWidth+8.0f,minimum,maximum);
         }
 
         void drawBranchLanes(RuntimeMemoryInspectorState& state, const ImVec2 min, const ImVec2 max)
         {
-            auto& ui = enhancedMemoryInspectorState(); if (ui.Instructions.empty() || ui.DisplayLineAddresses.empty()) return; const float lineHeight = std::max(state.Disassembly.GetLineHeight(), ImGui::GetTextLineHeight()); const std::size_t firstRow = state.Disassembly.GetFirstVisibleRow(), lastRow = state.Disassembly.GetLastVisibleRow(); auto* draw = ImGui::GetWindowDrawList();
-            const float top=min.y+3.0f,bottom=max.y-3.0f; draw->PushClipRect(ImVec2(min.x+1.0f,min.y+1.0f),ImVec2(max.x-1.0f,max.y-1.0f),true); std::size_t branchIndex=0;
+            auto& ui = enhancedMemoryInspectorState(); if (ui.Instructions.empty() || ui.DisplayLineAddresses.empty()) return; const float lineHeight=std::max(state.Disassembly.GetLineHeight(),ImGui::GetTextLineHeight()); const std::size_t firstRow=state.Disassembly.GetFirstVisibleRow(),lastRow=state.Disassembly.GetLastVisibleRow(); auto* draw=ImGui::GetWindowDrawList();
+            constexpr std::size_t LaneCount=7; constexpr float GutterWidth=84.0f,RightInset=18.0f,RowYOffset=1.8f; const float gutterRight=max.x-RightInset,gutterLeft=std::max(min.x+120.0f,gutterRight-GutterWidth); if (gutterRight<=gutterLeft+20.0f) return;
+            const float top=min.y+8.0f,bottom=max.y-8.0f,laneStart=gutterLeft+10.0f,laneSpacing=(gutterRight-gutterLeft-20.0f)/static_cast<float>(LaneCount-1); draw->PushClipRect(ImVec2(min.x+1.0f,min.y+1.0f),ImVec2(max.x-1.0f,max.y-1.0f),true); draw->AddRectFilled(ImVec2(gutterLeft,min.y+1.0f),ImVec2(gutterRight+4.0f,max.y-1.0f),IM_COL32(0,0,0,150)); draw->AddLine(ImVec2(gutterLeft,min.y+1.0f),ImVec2(gutterLeft,max.y-1.0f),IM_COL32(255,255,255,18),1.0f); std::size_t branchIndex=0;
+            const auto rowY=[&](const std::size_t row) { return std::clamp(min.y+(static_cast<float>(row)-static_cast<float>(firstRow)+0.5f)*lineHeight+RowYOffset,top,bottom); };
             for (std::size_t i=0;i<ui.Instructions.size();++i)
             {
                 const auto& instruction=ui.Instructions[i]; if (instruction.Decoded.Branch==RuntimeBranchKind::None||instruction.Decoded.Branch==RuntimeBranchKind::Return||!instruction.Decoded.Target) continue;
-                const std::size_t sourceRow=instruction.DisplayLine; const auto targetIt=ui.DisplayLineByAddress.find(*instruction.Decoded.Target); const bool targetKnown=targetIt!=ui.DisplayLineByAddress.end(); const std::size_t targetRow=targetKnown?targetIt->second:0;
+                const std::size_t route=branchIndex++; const std::size_t sourceRow=instruction.DisplayLine; const auto targetIt=ui.DisplayLineByAddress.find(*instruction.Decoded.Target); const bool targetKnown=targetIt!=ui.DisplayLineByAddress.end(); const std::size_t targetRow=targetKnown?targetIt->second:0;
                 const bool sourceVisible=sourceRow>=firstRow&&sourceRow<=lastRow,targetVisible=targetKnown&&targetRow>=firstRow&&targetRow<=lastRow; const bool sourceAbove=sourceRow<firstRow,sourceBelow=sourceRow>lastRow; const bool targetAbove=targetKnown?targetRow<firstRow:*instruction.Decoded.Target<instruction.Address,targetBelow=targetKnown?targetRow>lastRow:*instruction.Decoded.Target>instruction.Address;
-                if (!sourceVisible&&!targetVisible&&!((sourceAbove&&targetBelow)||(sourceBelow&&targetAbove))) { ++branchIndex; continue; }
-                const float sourceY=sourceVisible?min.y+(static_cast<float>(sourceRow)-static_cast<float>(firstRow)+0.5f)*lineHeight:sourceAbove?top:bottom; const float targetY=targetVisible?min.y+(static_cast<float>(targetRow)-static_cast<float>(firstRow)+0.5f)*lineHeight:targetAbove?top:bottom;
-                const float sourceDock=sourceVisible?branchDockX(state,sourceRow,min,max):min.x+130.0f; const float targetDock=targetVisible?branchDockX(state,targetRow,min,max):sourceDock; const float desiredLane=std::max(sourceDock,targetDock)+10.0f+static_cast<float>(branchIndex%6)*7.0f; const float laneX=std::clamp(desiredLane,min.x+145.0f,max.x-9.0f); ++branchIndex;
+                if (!sourceVisible&&!targetVisible&&!((sourceAbove&&targetBelow)||(sourceBelow&&targetAbove))) continue;
+                const float sourceY=sourceVisible?rowY(sourceRow):sourceAbove?top:bottom,targetY=targetVisible?rowY(targetRow):targetAbove?top:bottom; const float laneX=laneStart+static_cast<float>(route%LaneCount)*laneSpacing;
+                const float sourceDock=sourceVisible?branchDockX(state,sourceRow,min,gutterLeft):gutterLeft-8.0f,targetDock=targetVisible?branchDockX(state,targetRow,min,gutterLeft):sourceDock;
                 float targetAlpha=0.85f,fallAlpha=0.65f; std::optional<bool> captured;
                 if (instruction.Decoded.Branch==RuntimeBranchKind::Conditional&&ui.HasCapturedHit&&ui.CapturedHit.Pid==state.Pid&&ui.CapturedHit.Address==instruction.Address)
                 {
@@ -529,7 +533,10 @@ namespace quartz::client
                 if (targetVisible) { draw->AddLine(ImVec2(laneX,targetY),ImVec2(targetDock,targetY),targetColor,1.7f); drawLeftArrowHead(draw,ImVec2(targetDock,targetY),targetColor); } else drawVerticalArrowHead(draw,ImVec2(laneX,targetY),targetBelow,targetColor);
                 if (instruction.Decoded.Branch==RuntimeBranchKind::Conditional&&sourceVisible&&i+1<ui.Instructions.size())
                 {
-                    const std::size_t fallRow=ui.Instructions[i+1].DisplayLine; if (fallRow>=firstRow&&fallRow<=lastRow) { const float fallY=min.y+(static_cast<float>(fallRow)-static_cast<float>(firstRow)+0.5f)*lineHeight; const float fallDock=branchDockX(state,fallRow,min,max); const float failX=std::clamp(std::max(sourceDock,fallDock)+7.0f,min.x+140.0f,max.x-9.0f); const ImU32 failColor=ImGui::ColorConvertFloat4ToU32(ImVec4(0.95f,0.34f,0.34f,fallAlpha)); draw->AddLine(ImVec2(sourceDock,sourceY),ImVec2(failX,sourceY),failColor,1.5f); draw->AddLine(ImVec2(failX,sourceY),ImVec2(failX,fallY),failColor,1.5f); draw->AddLine(ImVec2(failX,fallY),ImVec2(fallDock,fallY),failColor,1.5f); drawLeftArrowHead(draw,ImVec2(fallDock,fallY),failColor); }
+                    const std::size_t fallRow=ui.Instructions[i+1].DisplayLine; if (fallRow>=firstRow&&fallRow<=lastRow)
+                    {
+                        const float fallY=rowY(fallRow),fallDock=branchDockX(state,fallRow,min,gutterLeft),failLaneX=laneStart+static_cast<float>((route+LaneCount/2)%LaneCount)*laneSpacing; const ImU32 failColor=ImGui::ColorConvertFloat4ToU32(ImVec4(0.95f,0.34f,0.34f,fallAlpha)); draw->AddLine(ImVec2(sourceDock,sourceY),ImVec2(failLaneX,sourceY),failColor,1.5f); draw->AddLine(ImVec2(failLaneX,sourceY),ImVec2(failLaneX,fallY),failColor,1.5f); draw->AddLine(ImVec2(failLaneX,fallY),ImVec2(fallDock,fallY),failColor,1.5f); drawLeftArrowHead(draw,ImVec2(fallDock,fallY),failColor);
+                    }
                 }
             }
             draw->PopClipRect();
@@ -586,6 +593,9 @@ namespace quartz::client
         const bool addressEnter = ui::drawAddressInput("Address##memory2", ui.AddressText.data(), ui.AddressText.size(), state.Pid, 260.0f, ImGuiInputTextFlags_EnterReturnsTrue); ImGui::SameLine(); ImGui::SetNextItemWidth(105.0f); if (ImGui::InputInt("Bytes##memory2", &state.ReadSize)) state.ReadSize = std::clamp(state.ReadSize,16,4096); ImGui::SameLine(); const bool readPressed = ImGui::Button(ui::i18n::tr("re.readDisassemble"));
         if (addressEnter || readPressed) { std::uintptr_t address = 0; std::string error; if (!ui::evaluateAddressExpression(state.Pid, ui.AddressText.data(), address, error) || address == 0) state.Status = error.empty() ? "invalid memory address" : error; else navigateInspector(state,address,true); }
         ImGui::SameLine(); if (state.Pid>0) ImGui::TextDisabled("%s", runtimeX86ModeName(runtimeProcessX86Mode(state.Pid))); if (ImGui::SmallButton(ui::i18n::tr("common.refresh"))) { if (refreshDisassemblyBytes(state,true,false)) refreshRawBytes(state); } ImGui::SameLine(); ImGui::Checkbox(ui::i18n::tr("re.synchronizeAddress"), &ui.SynchronizeAddress); if (ui.SynchronizeAddress && ui.SyncedAddress) { ImGui::SameLine(); ImGui::TextDisabled(ui::i18n::tr("re.syncedAddress"), runtimeFormatProcessAddress(state.Pid, ui.SyncedAddress).c_str()); }
+        const auto& io=ImGui::GetIO();
+        if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_G,false)) { std::snprintf(ui.GoToText.data(),ui.GoToText.size(),"%s",ui.AddressText.data()); ImGui::OpenPopup("##DisassemblyGoToPopup"); }
+        if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z,false)) navigateBack(state); else if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y,false)) navigateForward(state);
         if (ImGui::BeginPopup("##DisassemblyGoToPopup"))
         {
             ImGui::TextUnformatted(ui::i18n::tr("re.goToAddress")); const bool enter=ui::drawAddressInput("##DisassemblyGoToAddress",ui.GoToText.data(),ui.GoToText.size(),state.Pid,300.0f,ImGuiInputTextFlags_EnterReturnsTrue); if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere(-1); ImGui::SameLine(); const bool go=ImGui::Button(ui::i18n::tr("re.go"));
@@ -621,28 +631,25 @@ namespace quartz::client
             ImGui::Separator(); auto marker = ui.Markers.find(key); if (marker == ui.Markers.end()) { if (ImGui::MenuItem(ui::i18n::tr("re.addBookmark"))) { ui.Markers.emplace(key,DisassemblyMarker{}); ui.DisassemblyDirty = true; } } else { ImGui::SeparatorText(ui::i18n::tr("re.bookmark")); if (ImGui::InputText(ui::i18n::tr("re.tag"),marker->second.Tag.data(),marker->second.Tag.size())) ui.DisassemblyDirty = true; if (ImGui::ColorEdit4(ui::i18n::tr("re.color"),&marker->second.Color.x,ImGuiColorEditFlags_AlphaBar)) { applyDisassemblyMarkers(state); ui.DisassemblyDirty = true; } if (ImGui::MenuItem(ui::i18n::tr("re.removeBookmark"))) { ui.Markers.erase(marker); ui.DisassemblyDirty = true; } }
         });
         state.Disassembly.Render("##memory-disassembly", ImVec2(-1.0f,390.0f), ImGuiChildFlags_Borders); const ImVec2 disassemblyMin = ImGui::GetItemRectMin(), disassemblyMax = ImGui::GetItemRectMax(); drawBranchLanes(state,disassemblyMin,disassemblyMax);
-        const bool disassemblyHovered = ImGui::IsMouseHoveringRect(disassemblyMin,disassemblyMax); const auto& io=ImGui::GetIO();
-        if (!io.WantTextInput && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_G,false)) { std::snprintf(ui.GoToText.data(),ui.GoToText.size(),"%s",ui.AddressText.data()); ImGui::OpenPopup("##DisassemblyGoToPopup"); }
-        if (disassemblyHovered && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z,false)) navigateBack(state); else if (disassemblyHovered && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y,false)) navigateForward(state);
+        const bool disassemblyHovered = ImGui::IsMouseHoveringRect(disassemblyMin,disassemblyMax);
         bool followedTarget=false;
         if (disassemblyHovered && io.KeyCtrl && state.Disassembly.IsMousePosOverTextArea(ImGui::GetMousePos()) && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         {
-            const auto pos=state.Disassembly.GetDocPosAtMousePos(ImGui::GetMousePos()); if (const auto index=instructionIndexForDisplayLine(ui,pos.line))
-            {
-                const auto& instruction=ui.Instructions[*index]; if (instruction.Decoded.Target)
-                {
-                    const std::string line=state.Disassembly.GetLineText(pos.line); const auto space=instruction.Decoded.Text.find_first_of(" \t"); const std::string mnemonic=instruction.Decoded.Text.substr(0,space); const auto mnemonicPos=line.find(mnemonic); const auto targetStart=mnemonicPos==std::string::npos?std::string::npos:line.find_first_not_of(" \t",mnemonicPos+mnemonic.size());
-                    if (targetStart!=std::string::npos&&pos.index>=targetStart) { navigateInspector(state,*instruction.Decoded.Target,true); followedTarget=true; }
-                }
-            }
+            const auto pos=state.Disassembly.GetDocPosAtMousePos(ImGui::GetMousePos()); if (const auto index=instructionIndexForDisplayLine(ui,pos.line)) { const auto& instruction=ui.Instructions[*index]; if (instruction.Decoded.Target) { navigateInspector(state,*instruction.Decoded.Target,true); followedTarget=true; } }
         }
         if (!followedTarget && ui.SynchronizeAddress && state.Disassembly.IsMousePosOverTextArea(ImGui::GetMousePos()) && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { const auto pos = state.Disassembly.GetDocPosAtMousePos(ImGui::GetMousePos()); if (pos.line < ui.DisplayLineAddresses.size() && ui.DisplayLineAddresses[pos.line]) { ui.SyncedAddress = ui.DisplayLineAddresses[pos.line]; applyDisassemblyMarkers(state); } }
-        if (!followedTarget && !ui.DisplayLineAddresses.empty() && now-ui.LastDisassemblyWindowShift>=0.12)
+        if (!followedTarget && !ui.DisplayLineAddresses.empty() && ui.BufferSize && now-ui.LastDisassemblyWindowShift>=0.10)
         {
             const std::size_t first=state.Disassembly.GetFirstVisibleRow(),last=state.Disassembly.GetLastVisibleRow(); if (last>=first)
             {
-                const std::size_t visible=last-first+1,margin=std::max<std::size_t>(4,visible*3/4); const bool needUp=first<margin&&ui.BufferBase>ui.BufferRegionBase; const bool needDown=last+margin>=ui.DisplayLineAddresses.size()&&ui.BufferBase+ui.BufferSize<ui.BufferRegionEnd;
-                if (needUp||needDown) if (const auto anchor=displayAddressNearRow(ui,(first+last)/2)) { ui.LastDisassemblyWindowShift=now; setInspectorAddress(state,*anchor,*anchor,TextEditor::Scroll::alignMiddle); }
+                const auto focus=displayAddressNearRow(ui,(first+last)/2); if (focus&&*focus>=ui.BufferBase&&*focus<ui.BufferBase+ui.BufferSize)
+                {
+                    const double position=static_cast<double>(*focus-ui.BufferBase)/static_cast<double>(ui.BufferSize); const bool needUp=position<0.38&&ui.BufferBase>ui.BufferRegionBase,needDown=position>0.62&&ui.BufferBase+ui.BufferSize<ui.BufferRegionEnd;
+                    if (needUp||needDown)
+                    {
+                        const auto topAnchor=displayAddressNearRow(ui,first); ui.LastDisassemblyWindowShift=now; setInspectorAddress(state,*focus,topAnchor?topAnchor:focus,topAnchor?TextEditor::Scroll::alignTop:TextEditor::Scroll::alignMiddle);
+                    }
+                }
             }
         }
         if (ui.DisassemblyDirty) rebuildDisassembly(state);
