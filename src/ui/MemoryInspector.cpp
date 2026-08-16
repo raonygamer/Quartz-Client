@@ -229,7 +229,7 @@ namespace quartz::client
         std::string functionName(EnhancedMemoryInspectorState& ui, const pid_t pid, const std::span<const RuntimeProcessModule> modules, const RuntimeFunctionCandidate& candidate)
         {
             if (const auto it = ui.FunctionNames.find({pid, candidate.Address}); it != ui.FunctionNames.end() && it->second[0]) return it->second.data();
-            std::uintptr_t offset = candidate.Address; for (const auto& module : modules) if (candidate.Address >= module.Base && candidate.Address < module.End) { offset = candidate.Address - module.Base; break; }
+            std::uintptr_t offset = candidate.Address; for (const auto& module : modules) if (module.contains(candidate.Address)) { offset = candidate.Address - module.Base; break; }
             std::ostringstream out; out << "fn_" << std::hex << std::uppercase << static_cast<unsigned long long>(offset); return out.str();
         }
 
@@ -265,7 +265,7 @@ namespace quartz::client
 
         void rebuildDisassembly(RuntimeMemoryInspectorState& state)
         {
-            auto& ui = enhancedMemoryInspectorState(); const RuntimeX86Mode mode = runtimeProcessX86Mode(state.Pid); const auto modules = enumerateRuntimeModules(state.Pid); auto analysis = runtimeFunctionAnalysisSnapshot(state.Pid, state.Address); ui.FunctionAnalysis = analysis; ui.FunctionRevision = analysis.Revision;
+            auto& ui = enhancedMemoryInspectorState(); const RuntimeX86Mode mode = runtimeProcessX86Mode(state.Pid); const auto modules = runtimeProcessModules(state.Pid); auto analysis = runtimeFunctionAnalysisSnapshot(state.Pid, state.Address); ui.FunctionAnalysis = analysis; ui.FunctionRevision = analysis.Revision;
             std::ostringstream disassembly; ui.Instructions.clear(); ui.DisplayLineAddresses.clear(); ui.DisplayLineByAddress.clear(); std::size_t offset = 0;
             while (offset < state.Original.size())
             {
@@ -356,7 +356,7 @@ namespace quartz::client
 
         std::string decodedPreview(const RuntimeX86Mode mode, const std::uintptr_t address, const std::span<const std::uint8_t> bytes, const pid_t pid)
         {
-            const auto modules = enumerateRuntimeModules(pid); std::ostringstream out; std::size_t offset = 0;
+            const auto modules = runtimeProcessModules(pid); std::ostringstream out; std::size_t offset = 0;
             while (offset < bytes.size())
             {
                 RuntimeDecodedInstruction decoded; if (!runtimeDecodeProcessInstruction(mode, bytes.subspan(offset), address + offset, decoded) || !decoded.Length) { out << runtimeFormatProcessAddress(modules, address + offset) << "  db 0x" << std::hex << std::uppercase << static_cast<unsigned>(bytes[offset]) << '\n'; ++offset; continue; }
@@ -415,7 +415,7 @@ namespace quartz::client
         {
             auto& ui = enhancedMemoryInspectorState(); auto& assembler = ui.Assembler; configureAssemblerEditor(assembler);
             if (!assembler.Active) { ImGui::TextDisabled("%s",ui::i18n::tr("re.assemblerEmpty")); return; }
-            const auto modules = enumerateRuntimeModules(state.Pid); ImGui::Text(ui::i18n::tr("re.patchAt"), runtimeFormatProcessAddress(modules, assembler.Address).c_str(), assembler.Span); ImGui::SameLine(); if (assembler.NopMode) ImGui::TextColored(ImVec4(0.95f,0.72f,0.28f,1.0f), "%s",ui::i18n::tr("re.nopMode"));
+            const auto modules = runtimeProcessModules(state.Pid); ImGui::Text(ui::i18n::tr("re.patchAt"), runtimeFormatProcessAddress(modules, assembler.Address).c_str(), assembler.Span); ImGui::SameLine(); if (assembler.NopMode) ImGui::TextColored(ImVec4(0.95f,0.72f,0.28f,1.0f), "%s",ui::i18n::tr("re.nopMode"));
             if (assembler.Editor.Render("##AssemblerEditor", ImVec2(-1.0f, 118.0f), ImGuiChildFlags_Borders)) { assembler.NopMode = false; assembler.Dirty = true; assembler.LastEdit = runtimeSteadySeconds(); assembler.ConfirmArmed = false; }
             const double now = runtimeSteadySeconds(); if (assembler.Dirty && (assembler.LastEdit == 0.0 || now - assembler.LastEdit >= 0.25)) rebuildAssemblerPreview(state);
             if (assembler.PreviewValid)
@@ -442,7 +442,7 @@ namespace quartz::client
         void drawRegisterSnapshot(RuntimeMemoryInspectorState& state)
         {
             auto& ui = enhancedMemoryInspectorState(); if (!ui.HasCapturedHit || ui.CapturedHit.Pid != state.Pid || !ui.CapturedHit.HasRegisters) { ImGui::TextDisabled("%s",ui::i18n::tr("re.noRegisterCapture")); return; }
-            const RuntimeX86Mode mode = runtimeProcessX86Mode(state.Pid); const auto registers = registerValues(ui.CapturedHit, mode); const auto modules = enumerateRuntimeModules(state.Pid); ImGui::TextDisabled(ui::i18n::tr("re.capturedAt"), runtimeFormatProcessAddress(modules, ui.CapturedHit.Address).c_str(), ui.CapturedHit.Tid, mode == RuntimeX86Mode::X86 ? "32-bit" : "64-bit");
+            const RuntimeX86Mode mode = runtimeProcessX86Mode(state.Pid); const auto registers = registerValues(ui.CapturedHit, mode); const auto modules = runtimeProcessModules(state.Pid); ImGui::TextDisabled(ui::i18n::tr("re.capturedAt"), runtimeFormatProcessAddress(modules, ui.CapturedHit.Address).c_str(), ui.CapturedHit.Tid, mode == RuntimeX86Mode::X86 ? "32-bit" : "64-bit");
             if (!ImGui::BeginTable("ExecutionProbeRegisters", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollY, ImVec2(0.0f, 235.0f))) return;
             ImGui::TableSetupColumn(ui::i18n::tr("re.register"), ImGuiTableColumnFlags_WidthFixed, 90.0f); ImGui::TableSetupColumn(ui::i18n::tr("re.value")); ImGui::TableSetupColumn(ui::i18n::tr("re.register"), ImGuiTableColumnFlags_WidthFixed, 90.0f); ImGui::TableSetupColumn(ui::i18n::tr("re.value")); ImGui::TableHeadersRow();
             for (std::size_t pair = 0; pair < (registers.size() + 1) / 2; ++pair)
@@ -463,7 +463,7 @@ namespace quartz::client
         {
             auto& ui = enhancedMemoryInspectorState(); editor.SetTextHoverCallback([&state,&ui,&editor,mappedLines](TextEditor::PopupData& data)
             {
-                const std::string token = tokenAt(editor, data.pos); bool rendered = false; const auto modules = enumerateRuntimeModules(state.Pid);
+                const std::string token = tokenAt(editor, data.pos); bool rendered = false; const auto modules = runtimeProcessModules(state.Pid);
                 if (!token.empty() && knownRegister(token))
                 {
                     rendered = true; ImGui::TextUnformatted(upper(token).c_str()); ImGui::Separator();
@@ -503,48 +503,92 @@ namespace quartz::client
             const float s=4.0f; draw->AddTriangleFilled(tip,ImVec2(tip.x+s*1.6f,tip.y-s),ImVec2(tip.x+s*1.6f,tip.y+s),color);
         }
 
-        float branchDockX(RuntimeMemoryInspectorState& state, const std::size_t row, const ImVec2 min, const float gutterLeft)
+        float pointSegmentDistanceSquared(const ImVec2 point, const ImVec2 a, const ImVec2 b)
         {
-            const std::string text=state.Disassembly.GetLineText(row); const float textWidth=ImGui::CalcTextSize(text.c_str()).x; const float minimum=min.x+24.0f,maximum=std::max(minimum,gutterLeft-8.0f); return std::clamp(min.x+8.0f+textWidth+8.0f,minimum,maximum);
+            const float vx=b.x-a.x,vy=b.y-a.y,wx=point.x-a.x,wy=point.y-a.y,length=vx*vx+vy*vy; if (length<=0.0001f) return wx*wx+wy*wy; const float t=std::clamp((wx*vx+wy*vy)/length,0.0f,1.0f),dx=point.x-(a.x+t*vx),dy=point.y-(a.y+t*vy); return dx*dx+dy*dy;
+        }
+
+        float branchLineEndX(RuntimeMemoryInspectorState& state, const std::size_t row)
+        {
+            const std::string text=state.Disassembly.GetLineText(row); return state.Disassembly.GetDocPosScreenPos(TextEditor::DocPos(row,text.size())).x;
+        }
+
+        float branchRowCenterY(RuntimeMemoryInspectorState& state, const std::size_t row)
+        {
+            return state.Disassembly.GetDocPosScreenPos(TextEditor::DocPos(row,0)).y+state.Disassembly.GetLineHeight()*0.5f;
         }
 
         void drawBranchLanes(RuntimeMemoryInspectorState& state, const ImVec2 min, const ImVec2 max)
         {
-            auto& ui = enhancedMemoryInspectorState(); if (ui.Instructions.empty() || ui.DisplayLineAddresses.empty()) return; const float lineHeight=std::max(state.Disassembly.GetLineHeight(),ImGui::GetTextLineHeight()); const std::size_t firstRow=state.Disassembly.GetFirstVisibleRow(),lastRow=state.Disassembly.GetLastVisibleRow(); auto* draw=ImGui::GetWindowDrawList();
-            constexpr std::size_t LaneCount=7; constexpr float GutterWidth=84.0f,RightInset=18.0f,RowYOffset=1.8f; const float gutterRight=max.x-RightInset,gutterLeft=std::max(min.x+120.0f,gutterRight-GutterWidth); if (gutterRight<=gutterLeft+20.0f) return;
-            const float top=min.y+8.0f,bottom=max.y-8.0f,laneStart=gutterLeft+10.0f,laneSpacing=(gutterRight-gutterLeft-20.0f)/static_cast<float>(LaneCount-1); draw->PushClipRect(ImVec2(min.x+1.0f,min.y+1.0f),ImVec2(max.x-1.0f,max.y-1.0f),true); draw->AddRectFilled(ImVec2(gutterLeft,min.y+1.0f),ImVec2(gutterRight+4.0f,max.y-1.0f),IM_COL32(0,0,0,150)); draw->AddLine(ImVec2(gutterLeft,min.y+1.0f),ImVec2(gutterLeft,max.y-1.0f),IM_COL32(255,255,255,18),1.0f); std::size_t branchIndex=0;
-            const auto rowY=[&](const std::size_t row) { return std::clamp(min.y+(static_cast<float>(row)-static_cast<float>(firstRow)+0.5f)*lineHeight+RowYOffset,top,bottom); };
+            struct Route
+            {
+                std::size_t SourceRow=0,TargetRow=0;
+                bool SourceVisible=false,TargetVisible=false,TargetBelow=false,SourceDot=true;
+                float SourceY=0.0f,TargetY=0.0f,SourceDock=0.0f,TargetDock=0.0f,DesiredLane=0.0f,LaneX=0.0f;
+                ImU32 Color=0;
+            };
+            struct Reservation { float X=0.0f,Y0=0.0f,Y1=0.0f; };
+
+            auto& ui=enhancedMemoryInspectorState(); if (ui.Instructions.empty()||ui.DisplayLineAddresses.empty()) return; const std::size_t firstRow=state.Disassembly.GetFirstVisibleRow(),lastRow=state.Disassembly.GetLastVisibleRow(); if (lastRow<firstRow) return;
+            const float top=min.y+5.0f,bottom=max.y-8.0f,right=max.x-8.0f,dockGap=7.0f,routeGap=11.0f,laneStep=8.0f; if (bottom<=top||right<=min.x+20.0f) return;
+            std::vector<Route> routes; routes.reserve(ui.Instructions.size()*2);
+
+            const auto addRoute=[&](const std::size_t sourceRow,const std::optional<std::size_t> targetRow,const bool targetBelow,const ImU32 color,const bool sourceDot=true)
+            {
+                const bool sourceVisible=sourceRow>=firstRow&&sourceRow<=lastRow,targetVisible=targetRow&&*targetRow>=firstRow&&*targetRow<=lastRow; const bool sourceAbove=sourceRow<firstRow,sourceBelow=sourceRow>lastRow,targetAbove=targetRow?*targetRow<firstRow:!targetBelow;
+                if (!sourceVisible&&!targetVisible&&!((sourceAbove&&targetBelow)||(sourceBelow&&targetAbove))) return;
+                Route route; route.SourceRow=sourceRow; route.TargetRow=targetRow.value_or(targetBelow?lastRow:firstRow); route.SourceVisible=sourceVisible; route.TargetVisible=targetVisible; route.TargetBelow=targetBelow; route.SourceDot=sourceDot; route.Color=color;
+                route.SourceY=sourceVisible?branchRowCenterY(state,sourceRow):(sourceAbove?top:bottom); route.TargetY=targetVisible?branchRowCenterY(state,*targetRow):(targetBelow?bottom:top); route.SourceY=std::clamp(route.SourceY,top,bottom); route.TargetY=std::clamp(route.TargetY,top,bottom);
+                route.SourceDock=sourceVisible?branchLineEndX(state,sourceRow)+dockGap:min.x+20.0f; route.TargetDock=targetVisible?branchLineEndX(state,*targetRow)+dockGap:route.SourceDock;
+                const std::size_t scanBegin=std::max(firstRow,std::min(sourceRow,targetRow.value_or(targetBelow?lastRow:firstRow))),scanEnd=std::min(lastRow,std::max(sourceRow,targetRow.value_or(targetBelow?lastRow:firstRow))); float desired=std::max(route.SourceDock,route.TargetDock)+routeGap;
+                for (std::size_t row=scanBegin;row<=scanEnd&&row<state.Disassembly.GetLineCount();++row) desired=std::max(desired,branchLineEndX(state,row)+routeGap);
+                route.DesiredLane=std::min(desired,right); route.LaneX=route.DesiredLane; routes.emplace_back(route);
+            };
+
             for (std::size_t i=0;i<ui.Instructions.size();++i)
             {
                 const auto& instruction=ui.Instructions[i]; if (instruction.Decoded.Branch==RuntimeBranchKind::None||instruction.Decoded.Branch==RuntimeBranchKind::Return||!instruction.Decoded.Target) continue;
-                const std::size_t route=branchIndex++; const std::size_t sourceRow=instruction.DisplayLine; const auto targetIt=ui.DisplayLineByAddress.find(*instruction.Decoded.Target); const bool targetKnown=targetIt!=ui.DisplayLineByAddress.end(); const std::size_t targetRow=targetKnown?targetIt->second:0;
-                const bool sourceVisible=sourceRow>=firstRow&&sourceRow<=lastRow,targetVisible=targetKnown&&targetRow>=firstRow&&targetRow<=lastRow; const bool sourceAbove=sourceRow<firstRow,sourceBelow=sourceRow>lastRow; const bool targetAbove=targetKnown?targetRow<firstRow:*instruction.Decoded.Target<instruction.Address,targetBelow=targetKnown?targetRow>lastRow:*instruction.Decoded.Target>instruction.Address;
-                if (!sourceVisible&&!targetVisible&&!((sourceAbove&&targetBelow)||(sourceBelow&&targetAbove))) continue;
-                const float sourceY=sourceVisible?rowY(sourceRow):sourceAbove?top:bottom,targetY=targetVisible?rowY(targetRow):targetAbove?top:bottom; const float laneX=laneStart+static_cast<float>(route%LaneCount)*laneSpacing;
-                const float sourceDock=sourceVisible?branchDockX(state,sourceRow,min,gutterLeft):gutterLeft-8.0f,targetDock=targetVisible?branchDockX(state,targetRow,min,gutterLeft):sourceDock;
+                const auto targetIt=ui.DisplayLineByAddress.find(*instruction.Decoded.Target); const std::optional<std::size_t> targetRow=targetIt==ui.DisplayLineByAddress.end()?std::nullopt:std::optional<std::size_t>(targetIt->second); const bool targetBelow=targetRow?*targetRow>instruction.DisplayLine:*instruction.Decoded.Target>instruction.Address;
                 float targetAlpha=0.85f,fallAlpha=0.65f; std::optional<bool> captured;
                 if (instruction.Decoded.Branch==RuntimeBranchKind::Conditional&&ui.HasCapturedHit&&ui.CapturedHit.Pid==state.Pid&&ui.CapturedHit.Address==instruction.Address)
                 {
                     const auto space=instruction.Decoded.Text.find_first_of(" \t"); captured=branchCondition(instruction.Decoded.Text.substr(0,space),ui.CapturedHit.Registers.eflags); if (captured) { targetAlpha=*captured?1.0f:0.24f; fallAlpha=*captured?0.24f:1.0f; }
                 }
-                const ImU32 targetColor=instruction.Decoded.Branch==RuntimeBranchKind::Conditional?ImGui::ColorConvertFloat4ToU32(ImVec4(0.28f,0.88f,0.48f,targetAlpha)):instruction.Decoded.Branch==RuntimeBranchKind::Call?ImGui::ColorConvertFloat4ToU32(ImVec4(0.68f,0.48f,0.95f,0.85f)):ImGui::ColorConvertFloat4ToU32(ImVec4(0.32f,0.68f,0.96f,0.85f));
-                if (sourceVisible) { draw->AddCircleFilled(ImVec2(sourceDock,sourceY),2.5f,targetColor); draw->AddLine(ImVec2(sourceDock,sourceY),ImVec2(laneX,sourceY),targetColor,1.7f); } else draw->AddLine(ImVec2(laneX,sourceY),ImVec2(laneX,sourceY+(sourceAbove?5.0f:-5.0f)),targetColor,1.7f);
-                draw->AddLine(ImVec2(laneX,sourceY),ImVec2(laneX,targetY),targetColor,1.7f);
-                if (targetVisible) { draw->AddLine(ImVec2(laneX,targetY),ImVec2(targetDock,targetY),targetColor,1.7f); drawLeftArrowHead(draw,ImVec2(targetDock,targetY),targetColor); } else drawVerticalArrowHead(draw,ImVec2(laneX,targetY),targetBelow,targetColor);
-                if (instruction.Decoded.Branch==RuntimeBranchKind::Conditional&&sourceVisible&&i+1<ui.Instructions.size())
+                const ImU32 targetColor=instruction.Decoded.Branch==RuntimeBranchKind::Conditional?ImGui::ColorConvertFloat4ToU32(ImVec4(0.28f,0.88f,0.48f,targetAlpha)):instruction.Decoded.Branch==RuntimeBranchKind::Call?ImGui::ColorConvertFloat4ToU32(ImVec4(0.68f,0.48f,0.95f,0.85f)):ImGui::ColorConvertFloat4ToU32(ImVec4(0.32f,0.68f,0.96f,0.85f)); addRoute(instruction.DisplayLine,targetRow,targetBelow,targetColor,true);
+                if (instruction.Decoded.Branch==RuntimeBranchKind::Conditional&&i+1<ui.Instructions.size()) addRoute(instruction.DisplayLine,ui.Instructions[i+1].DisplayLine,true,ImGui::ColorConvertFloat4ToU32(ImVec4(0.95f,0.34f,0.34f,fallAlpha)),false);
+            }
+            if (routes.empty()) return;
+
+            std::vector<std::size_t> order(routes.size()); for (std::size_t i=0;i<order.size();++i) order[i]=i; std::ranges::sort(order,[&](const std::size_t a,const std::size_t b) { return std::abs(routes[a].TargetY-routes[a].SourceY)<std::abs(routes[b].TargetY-routes[b].SourceY); }); std::vector<Reservation> reservations; reservations.reserve(routes.size());
+            for (const std::size_t index:order)
+            {
+                auto& route=routes[index]; const float y0=std::min(route.SourceY,route.TargetY)-2.0f,y1=std::max(route.SourceY,route.TargetY)+2.0f; float best=route.DesiredLane; int bestConflicts=std::numeric_limits<int>::max();
+                for (float candidate=route.DesiredLane;candidate<=right+0.1f;candidate+=laneStep)
                 {
-                    const std::size_t fallRow=ui.Instructions[i+1].DisplayLine; if (fallRow>=firstRow&&fallRow<=lastRow)
-                    {
-                        const float fallY=rowY(fallRow),fallDock=branchDockX(state,fallRow,min,gutterLeft),failLaneX=laneStart+static_cast<float>((route+LaneCount/2)%LaneCount)*laneSpacing; const ImU32 failColor=ImGui::ColorConvertFloat4ToU32(ImVec4(0.95f,0.34f,0.34f,fallAlpha)); draw->AddLine(ImVec2(sourceDock,sourceY),ImVec2(failLaneX,sourceY),failColor,1.5f); draw->AddLine(ImVec2(failLaneX,sourceY),ImVec2(failLaneX,fallY),failColor,1.5f); draw->AddLine(ImVec2(failLaneX,fallY),ImVec2(fallDock,fallY),failColor,1.5f); drawLeftArrowHead(draw,ImVec2(fallDock,fallY),failColor);
-                    }
+                    int conflicts=0; for (const auto& reservation:reservations) if (!(y1<reservation.Y0||y0>reservation.Y1)&&std::abs(candidate-reservation.X)<laneStep*0.75f) ++conflicts; if (conflicts<bestConflicts) { best=candidate; bestConflicts=conflicts; } if (conflicts==0) break;
                 }
+                route.LaneX=std::min(best,right); reservations.push_back({route.LaneX,y0,y1});
+            }
+
+            const ImVec2 mouse=ImGui::GetMousePos(); const float hoverDistance2=36.0f; auto* draw=ImGui::GetWindowDrawList(); draw->PushClipRect(ImVec2(min.x+1.0f,min.y+1.0f),ImVec2(max.x-1.0f,max.y-1.0f),true);
+            const auto hovered=[&](const Route& route)
+            {
+                if (!ImGui::IsMouseHoveringRect(min,max)) return false; if (route.SourceVisible&&pointSegmentDistanceSquared(mouse,{route.SourceDock,route.SourceY},{route.LaneX,route.SourceY})<=hoverDistance2) return true; if (pointSegmentDistanceSquared(mouse,{route.LaneX,route.SourceY},{route.LaneX,route.TargetY})<=hoverDistance2) return true; return route.TargetVisible&&pointSegmentDistanceSquared(mouse,{route.LaneX,route.TargetY},{route.TargetDock,route.TargetY})<=hoverDistance2;
+            };
+            const auto drawSegments=[&](const Route& route,const ImU32 color,const float width)
+            {
+                if (route.SourceVisible) draw->AddLine({route.SourceDock,route.SourceY},{route.LaneX,route.SourceY},color,width); draw->AddLine({route.LaneX,route.SourceY},{route.LaneX,route.TargetY},color,width); if (route.TargetVisible) draw->AddLine({route.LaneX,route.TargetY},{route.TargetDock,route.TargetY},color,width);
+            };
+            for (const auto& route:routes)
+            {
+                const bool hot=hovered(route); if (hot) drawSegments(route,IM_COL32(255,255,255,70),5.0f); const ImU32 color=hot?IM_COL32(255,255,255,245):route.Color; drawSegments(route,color,hot?2.2f:1.6f); if (route.SourceVisible&&route.SourceDot) draw->AddCircleFilled({route.SourceDock,route.SourceY},hot?3.0f:2.4f,color); if (route.TargetVisible) drawLeftArrowHead(draw,{route.TargetDock,route.TargetY},color); else drawVerticalArrowHead(draw,{route.LaneX,route.TargetY},route.TargetBelow,color);
             }
             draw->PopClipRect();
         }
 
         void drawBookmarks(RuntimeMemoryInspectorState& state)
         {
-            auto& ui = enhancedMemoryInspectorState(); const auto modules = enumerateRuntimeModules(state.Pid); bool any = false; std::optional<std::pair<pid_t,std::uintptr_t>> erase;
+            auto& ui = enhancedMemoryInspectorState(); const auto modules = runtimeProcessModules(state.Pid); bool any = false; std::optional<std::pair<pid_t,std::uintptr_t>> erase;
             for (auto& [key, marker] : ui.Markers)
             {
                 if (key.first != state.Pid) continue; any = true; ImGui::PushID(reinterpret_cast<void*>(key.second)); const std::string address = runtimeFormatProcessAddress(modules, key.second); ImGui::ColorButton("##bookmark-color", marker.Color, ImGuiColorEditFlags_NoTooltip, ImVec2(ImGui::GetTextLineHeight(),ImGui::GetTextLineHeight())); ImGui::SameLine(); ImGui::Text("%s  %s", marker.Tag.data(), address.c_str()); ImGui::SameLine(); if (ImGui::SmallButton(ui::i18n::tr("re.go"))) ui.PendingInspectorAddress = key.second; ImGui::SameLine(); if (ImGui::SmallButton(ui::i18n::tr("common.copy"))) ImGui::SetClipboardText(address.c_str()); ImGui::SameLine(); if (ImGui::SmallButton(ui::i18n::tr("re.remove"))) erase = key; ImGui::PopID();
@@ -610,7 +654,7 @@ namespace quartz::client
 
         installAssemblyHover(state, state.Disassembly, true); state.Disassembly.SetTextContextMenuCallback([&](TextEditor::PopupData& data)
         {
-            auto index = instructionIndexForDisplayLine(ui, data.pos.line); const auto modules = enumerateRuntimeModules(state.Pid);
+            auto index = instructionIndexForDisplayLine(ui, data.pos.line); const auto modules = runtimeProcessModules(state.Pid);
             if (!index)
             {
                 const std::string line=state.Disassembly.GetLineText(data.pos.line); for (std::size_t i=0;i<ui.Instructions.size();++i) { const std::string prefix=runtimeFormatProcessAddress(modules,ui.Instructions[i].Address)+"  "; if (line.starts_with(prefix)) { index=i; break; } }
@@ -658,7 +702,7 @@ namespace quartz::client
         {
             if (ImGui::BeginTabItem(ui::i18n::tr("re.rawBytes")))
             {
-                if (configuration.RawBytesRefreshHz > 0.0f && now - ui.LastRawRefresh >= 1.0 / configuration.RawBytesRefreshHz) refreshRawBytes(state); ImGui::TextDisabled(ui::i18n::tr("re.rawBytesDescription"), configuration.RawBytesRefreshHz); const auto modules = enumerateRuntimeModules(state.Pid); const auto bytes = std::span<const std::uint8_t>(ui.RawBytes.empty() ? state.Original : ui.RawBytes);
+                if (configuration.RawBytesRefreshHz > 0.0f && now - ui.LastRawRefresh >= 1.0 / configuration.RawBytesRefreshHz) refreshRawBytes(state); ImGui::TextDisabled(ui::i18n::tr("re.rawBytesDescription"), configuration.RawBytesRefreshHz); const auto modules = runtimeProcessModules(state.Pid); const auto bytes = std::span<const std::uint8_t>(ui.RawBytes.empty() ? state.Original : ui.RawBytes);
                 if (ImGui::BeginChild("##GroupedRawMemory",ImVec2(0.0f,235.0f),ImGuiChildFlags_Borders,ImGuiWindowFlags_HorizontalScrollbar))
                 {
                     const int lines = static_cast<int>((bytes.size()+15)/16); ImGuiListClipper clipper; clipper.Begin(lines); while (clipper.Step()) for (int line=clipper.DisplayStart;line<clipper.DisplayEnd;++line) { const std::size_t offset=static_cast<std::size_t>(line)*16,count=std::min<std::size_t>(16,bytes.size()-offset); const std::uintptr_t address=ui.BufferBase+offset; const bool active=ui.SynchronizeAddress&&ui.SyncedAddress>=address&&ui.SyncedAddress<address+count; const std::string text=groupedBytesLine(bytes,ui.BufferBase,offset,count,modules); ImGui::PushID(line); if (ImGui::Selectable("##raw-line",active,ImGuiSelectableFlags_AllowOverlap,ImVec2(0.0f,ImGui::GetTextLineHeight()))&&ui.SynchronizeAddress) { ui.SyncedAddress=address; applyDisassemblyMarkers(state); } ImGui::SameLine(); ImGui::TextUnformatted(text.c_str()); if (ImGui::BeginPopupContextItem("RawLineContext")) { if (ImGui::MenuItem(ui::i18n::tr("re.useInspectorBase"))) ui.PendingInspectorAddress=address; if (ImGui::MenuItem(ui::i18n::tr("re.copyModuleAddress"))) { const std::string value=runtimeFormatProcessAddress(modules,address); ImGui::SetClipboardText(value.c_str()); } if (ImGui::MenuItem(ui::i18n::tr("re.copyByteGroup"))) { const std::string value=runtimeFormatHexBytes(bytes.subspan(offset,count)); ImGui::SetClipboardText(value.c_str()); } ImGui::EndPopup(); } ImGui::PopID(); }
