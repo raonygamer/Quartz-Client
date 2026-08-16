@@ -298,6 +298,36 @@ namespace quartz::client
         std::vector<std::string> Provenance;
     };
 
+    enum class RuntimeScriptLogLevel : std::uint8_t { Debug, Info, Warning, Error };
+
+    struct RuntimeScriptLogEntry
+    {
+        double Time = 0.0;
+        RuntimeScriptLogLevel Level = RuntimeScriptLogLevel::Info;
+        std::string Text;
+    };
+
+    struct RuntimeScriptSignatureScan
+    {
+        std::uint64_t Id = 0;
+        pid_t Pid = 0;
+        bool ExecutableOnly = true;
+        std::string Pattern;
+        std::shared_ptr<SignatureScanState> State;
+        bool CompletionDelivered = false;
+        bool Finished = false;
+        bool Found = false;
+        bool Cancelled = false;
+        std::uintptr_t MatchAddress = 0;
+        std::uint64_t ScannedBytes = 0;
+        std::uint64_t TotalBytes = 0;
+        float Progress = 0.0f;
+        double AverageMiBs = 0.0;
+        double DurationSeconds = 0.0;
+        std::string Error;
+        std::string Status = "running";
+    };
+
     struct RuntimeScript
     {
         std::uint64_t Id = 0;
@@ -321,6 +351,10 @@ namespace quartz::client
         std::uint64_t TimeoutCount = 0;
         std::string LastLog;
         std::string Status;
+        std::vector<RuntimeScriptLogEntry> Console;
+        std::string StateSnapshot = "{}";
+        std::uint64_t NextSignatureScanId = 1;
+        std::vector<RuntimeScriptSignatureScan> SignatureScans;
         std::vector<std::string> Dependencies;
     };
 

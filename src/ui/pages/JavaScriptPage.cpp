@@ -4,6 +4,8 @@
 #include "quartz/client/runtime/JavaScriptRuntime.hpp"
 #include "quartz/client/runtime/QuickJS.hpp"
 #include <TextEditor.h>
+#include <cmath>
+#include <fstream>
 #include <memory>
 #include <unordered_map>
 
@@ -27,7 +29,7 @@ namespace quartz::client::ui
                 value.stringEscape = '\\';
                 value.keywords = {"async","await","break","case","catch","class","const","continue","debugger","default","delete","do","else","export","extends","finally","for","from","function","get","if","import","in","instanceof","let","new","of","return","set","static","super","switch","this","throw","try","typeof","var","void","while","with","yield"};
                 value.declarations = {"true","false","null","undefined","legacy","binding","raw","text","address","bank","control","triggered","graph","re"};
-                value.identifiers = {"q","Math","JSON","BigInt","Number","String","Boolean","Array","Object","Map","Set","WeakMap","WeakSet","Date","RegExp","Promise","Error","TypeError","NaN","Infinity","process","memory","signature","disassembly","breakpoint","input","events","runtime","state","storage","list","find","alive","modules","regions","read","write","readBytes","writeBytes","decode","arm","cancel","running","hit","keyDown","shortcut","capsLock","scrollLock","subscribe","unsubscribe","emit","shader","shaderPreset","brightness","sendFramebuffer","baseColorMode","material","currentShader","previousShader","clear","loop","log"};
+                value.identifiers = {"q","Math","JSON","BigInt","Number","String","Boolean","Array","Object","Map","Set","WeakMap","WeakSet","Date","RegExp","Promise","Error","TypeError","NaN","Infinity","process","memory","signature","disassembly","breakpoint","input","events","runtime","state","storage","list","find","alive","modules","regions","read","write","readBytes","writeBytes","decode","arm","cancel","running","hit","keyDown","shortcut","capsLock","scrollLock","subscribe","unsubscribe","emit","scan","status","console","debug","info","warn","error","shader","shaderPreset","brightness","sendFramebuffer","baseColorMode","material","currentShader","previousShader","clear","loop","log"};
                 value.isPunctuation = [](const ImWchar c) { return std::string_view("[]{}().,;:+-*/%<>=!&|^~?").find(static_cast<char>(c)) != std::string_view::npos; };
                 value.getIdentifier = [](TextEditor::Iterator start, const TextEditor::Iterator end)
                 {
@@ -83,6 +85,37 @@ namespace quartz::client::ui
             return state;
         }
 
+        bool materializeExternal(RuntimeScript& script, std::string& error)
+        {
+            std::filesystem::path path = script.Path;
+            std::error_code ec;
+            if (path.empty() || std::filesystem::is_directory(path, ec)) path = runtimeQuickJSScriptDirectory() / ("script-" + std::to_string(script.Id) + ".js");
+            if (path.is_relative()) path = runtimeQuickJSScriptDirectory() / path;
+            std::filesystem::create_directories(path.parent_path(), ec); ec.clear();
+            if (!std::filesystem::exists(path, ec))
+            {
+                try { std::ofstream file(path, std::ios::binary | std::ios::trunc); if (!file) { error = "could not create " + path.string(); return false; } file.write(script.Source.data(), static_cast<std::streamsize>(script.Source.size())); if (!file) { error = "could not write " + path.string(); return false; } }
+                catch (const std::exception& exception) { error = "could not create external script: " + std::string(exception.what()); return false; }
+            }
+            if (!std::filesystem::is_regular_file(path, ec)) { error = "external script path is not a regular file: " + path.string(); return false; }
+            script.Path = path.string(); error.clear(); return true;
+        }
+
+        void drawRuntimeIndicator(const RuntimeScript& script)
+        {
+            const float pulse = 0.62f + 0.38f * static_cast<float>((std::sin(ImGui::GetTime() * 3.6) + 1.0) * 0.5);
+            const bool running = script.Enabled && script.Status.starts_with("running"); const bool failed = script.Enabled && !script.Status.empty() && !running && script.Status != "disabled";
+            const ImVec4 color = running ? ImVec4(0.18f, 0.86f, 0.95f, pulse) : failed ? ImVec4(0.95f, 0.30f, 0.28f, 0.92f) : ImVec4(0.42f, 0.45f, 0.50f, 0.75f);
+            const ImVec2 position = ImGui::GetCursorScreenPos(); const float side = ImGui::GetTextLineHeight() * 0.72f; ImGui::Dummy(ImVec2(side, side)); ImGui::GetWindowDrawList()->AddRectFilled(position, ImVec2(position.x + side, position.y + side), ImGui::ColorConvertFloat4ToU32(color), 2.0f);
+            ImGui::SameLine(); ImGui::TextUnformatted(running ? "running" : failed ? "error / waiting" : script.Enabled ? "waiting" : "disabled");
+        }
+
+        const ImVec4& consoleColor(const RuntimeScriptLogLevel level)
+        {
+            static const ImVec4 Debug{0.55f,0.58f,0.64f,1.0f}, Info{0.82f,0.84f,0.88f,1.0f}, Warning{0.95f,0.70f,0.28f,1.0f}, Error{0.96f,0.35f,0.32f,1.0f};
+            switch (level) { case RuntimeScriptLogLevel::Debug: return Debug; case RuntimeScriptLogLevel::Warning: return Warning; case RuntimeScriptLogLevel::Error: return Error; default: return Info; }
+        }
+
         struct KeyOption { const char* Name; int Key; };
         static constexpr KeyOption Keys[] = {{"None",0},{"F1",GLFW_KEY_F1},{"F2",GLFW_KEY_F2},{"F3",GLFW_KEY_F3},{"F4",GLFW_KEY_F4},{"F5",GLFW_KEY_F5},{"F6",GLFW_KEY_F6},{"F7",GLFW_KEY_F7},{"F8",GLFW_KEY_F8},{"F9",GLFW_KEY_F9},{"F10",GLFW_KEY_F10},{"F11",GLFW_KEY_F11},{"F12",GLFW_KEY_F12},{"A",GLFW_KEY_A},{"B",GLFW_KEY_B},{"C",GLFW_KEY_C},{"D",GLFW_KEY_D},{"E",GLFW_KEY_E},{"F",GLFW_KEY_F},{"G",GLFW_KEY_G},{"H",GLFW_KEY_H},{"I",GLFW_KEY_I},{"J",GLFW_KEY_J},{"K",GLFW_KEY_K},{"L",GLFW_KEY_L},{"M",GLFW_KEY_M},{"N",GLFW_KEY_N},{"O",GLFW_KEY_O},{"P",GLFW_KEY_P},{"Q",GLFW_KEY_Q},{"R",GLFW_KEY_R},{"S",GLFW_KEY_S},{"T",GLFW_KEY_T},{"U",GLFW_KEY_U},{"V",GLFW_KEY_V},{"W",GLFW_KEY_W},{"X",GLFW_KEY_X},{"Y",GLFW_KEY_Y},{"Z",GLFW_KEY_Z},{"0",GLFW_KEY_0},{"1",GLFW_KEY_1},{"2",GLFW_KEY_2},{"3",GLFW_KEY_3},{"4",GLFW_KEY_4},{"5",GLFW_KEY_5},{"6",GLFW_KEY_6},{"7",GLFW_KEY_7},{"8",GLFW_KEY_8},{"9",GLFW_KEY_9}};
     }
@@ -113,13 +146,13 @@ namespace quartz::client::ui
         {
             ImGui::BulletText("q.process.list/find/alive/modules/regions");
             ImGui::BulletText("q.memory.read/write/readBytes/writeBytes");
-            ImGui::BulletText("q.signature.find  |  q.disassembly.decode");
+            ImGui::BulletText("q.signature.scan/status/cancel/list (async)  |  q.signature.find (sync)  |  q.disassembly.decode");
             ImGui::BulletText("q.breakpoint.arm/hit/running/cancel");
             ImGui::BulletText("q.input.keyDown/shortcut/capsLock/scrollLock");
-            ImGui::BulletText("q.events.subscribe/unsubscribe/emit");
+            ImGui::BulletText("q.events.subscribe/unsubscribe/emit  |  q.console.log/info/warn/error/debug");
             ImGui::BulletText("q.runtime.*  |  q.state (context lifetime)  |  q.storage (persistent JSON)");
             ImGui::BulletText("q.import(path)  |  q.loop(count, callback)  |  q.log(...)");
-            ImGui::TextDisabled("Built-in events: tick, shader.changed, key.down, key.up, key.changed, lock.changed, process.started, process.stopped, breakpoint.hit, script.loaded, script.reload.");
+            ImGui::TextDisabled("Built-in events include tick/input/process/shader/breakpoint plus signature.found, signature.not-found, signature.cancelled, signature.error and signature.finished.");
         }
 
         ImGui::SeparatorText("Scripts"); std::optional<std::size_t> erase;
@@ -128,7 +161,20 @@ namespace quartz::client::ui
             auto& script = javascript.scripts()[i]; ImGui::PushID(static_cast<int>(script.Id & 0x7fffffffULL)); const std::string header = std::string(script.Name) + (script.Enabled ? "" : "  DISABLED") + "###RuntimeScript" + std::to_string(script.Id);
             if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
             {
-                bool localChanged = false; localChanged |= ImGui::Checkbox("Enabled", &script.Enabled); ImGui::SameLine(); ImGui::SetNextItemWidth(240.0f); localChanged |= ImGui::InputText("Name", script.Name, sizeof(script.Name)); ImGui::SameLine(); localChanged |= ImGui::Checkbox("External", &script.External); ImGui::SameLine();
+                bool localChanged = false; localChanged |= ImGui::Checkbox("Enabled", &script.Enabled); ImGui::SameLine(); ImGui::SetNextItemWidth(240.0f); localChanged |= ImGui::InputText("Name", script.Name, sizeof(script.Name)); ImGui::SameLine();
+                const bool wasExternal = script.External;
+                if (ImGui::Checkbox("External", &script.External))
+                {
+                    localChanged = true;
+                    if (!wasExternal && script.External)
+                    {
+                        std::string conversionError;
+                        if (!materializeExternal(script, conversionError)) { script.External = false; status = conversionError; }
+                        else { runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; status = "external script: " + script.Path; }
+                    }
+                    else if (wasExternal && !script.External) { runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; }
+                }
+                ImGui::SameLine();
                 if (ImGui::SmallButton("Reload")) { runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; }
                 ImGui::SameLine(); if (ImGui::SmallButton("Reset persistent storage")) { script.PersistentStateJson = "{}"; runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; localChanged = true; }
                 ImGui::SameLine(); if (ImGui::SmallButton("Remove")) erase = i;
@@ -137,19 +183,59 @@ namespace quartz::client::ui
                 const bool oldLegacyBridge = script.LegacyBridge; ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.67f, 0.28f, 1.0f)); localChanged |= ImGui::Checkbox("Legacy bindings/controls/value-bank bridge (deprecated)", &script.LegacyBridge); ImGui::PopStyleColor();
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off by default. When enabled, q.legacy.* plus deprecated q.binding/q.bank/q.control/q.graph compatibility aliases are installed for this script.");
                 if (oldLegacyBridge != script.LegacyBridge) { runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; }
-                if (script.External)
+                if (ImGui::BeginTabBar("##JavaScriptRuntimeTabs"))
                 {
-                    char path[1024]{}; std::snprintf(path, sizeof(path), "%s", script.Path.c_str()); ImGui::SetNextItemWidth(-1.0f); if (ImGui::InputText("Path", path, sizeof(path))) { script.Path = path; localChanged = true; }
-                    ImGui::TextDisabled("Relative paths resolve under %s", runtimeQuickJSScriptDirectory().string().c_str());
+                    if (ImGui::BeginTabItem("Editor"))
+                    {
+                        if (script.External)
+                        {
+                            char path[1024]{}; std::snprintf(path, sizeof(path), "%s", script.Path.c_str()); ImGui::SetNextItemWidth(-1.0f); if (ImGui::InputText("Path", path, sizeof(path))) { script.Path = path; runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); localChanged = true; }
+                            std::filesystem::path resolved = script.Path; if (resolved.is_relative()) resolved = runtimeQuickJSScriptDirectory() / resolved; std::error_code ec; const bool regular = std::filesystem::is_regular_file(resolved, ec);
+                            if (!regular) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f,0.35f,0.32f,1.0f)); ImGui::TextWrapped("Invalid external script: %s", ec ? ec.message().c_str() : resolved.string().c_str()); ImGui::PopStyleColor(); }
+                            ImGui::TextDisabled("Relative paths resolve under %s", runtimeQuickJSScriptDirectory().string().c_str());
+                        }
+                        else
+                        {
+                            auto& editorState = editor(script); editorState.Editor.Render("##JavaScriptEditor", ImVec2(-1.0f, 360.0f)); const std::string edited = editorState.Editor.GetText();
+                            if (edited != editorState.Synced) { script.Source = edited; editorState.Synced = script.Source; runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); localChanged = true; }
+                        }
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("State"))
+                    {
+                        drawRuntimeIndicator(script);
+                        ImGui::Text("Runs %llu  compiles %llu  reloads %llu  timeouts %llu  last %.3f ms", static_cast<unsigned long long>(script.RunCount), static_cast<unsigned long long>(script.CompileCount), static_cast<unsigned long long>(script.ReloadCount), static_cast<unsigned long long>(script.TimeoutCount), script.LastMilliseconds);
+                        if (!script.Status.empty()) ImGui::TextWrapped("Status: %s", script.Status.c_str());
+                        if (!script.SignatureScans.empty())
+                        {
+                            ImGui::SeparatorText("Async signature scans");
+                            for (const auto& scan : script.SignatureScans)
+                            {
+                                const bool running = !scan.Finished; const float pulse = running ? 0.55f + 0.45f * static_cast<float>((std::sin(ImGui::GetTime() * 4.0) + 1.0) * 0.5) : 1.0f;
+                                ImGui::PushStyleColor(ImGuiCol_Text, running ? ImVec4(0.18f,0.86f,0.95f,pulse) : scan.Found ? ImVec4(0.45f,0.90f,0.62f,1.0f) : scan.Status == "error" ? ImVec4(0.96f,0.35f,0.32f,1.0f) : ImVec4(0.72f,0.74f,0.78f,1.0f));
+                                ImGui::Text("#%llu  PID %d  %s", static_cast<unsigned long long>(scan.Id), scan.Pid, scan.Status.c_str()); ImGui::PopStyleColor();
+                                if (running) ImGui::ProgressBar(scan.Progress, ImVec2(-1.0f, 0.0f));
+                                ImGui::TextDisabled("%.1f MiB/s | %llu / %llu bytes%s", scan.AverageMiBs, static_cast<unsigned long long>(scan.ScannedBytes), static_cast<unsigned long long>(scan.TotalBytes), scan.Found ? (" | 0x" + [] (std::uintptr_t value) { char buffer[32]; std::snprintf(buffer, sizeof(buffer), "%llX", static_cast<unsigned long long>(value)); return std::string(buffer); }(scan.MatchAddress)).c_str() : "");
+                                if (!scan.Error.empty()) ImGui::TextWrapped("%s", scan.Error.c_str());
+                            }
+                        }
+                        ImGui::SeparatorText("q.state"); ImGui::BeginChild("##jsState", ImVec2(0.0f, 150.0f), true, ImGuiWindowFlags_HorizontalScrollbar); ImGui::TextUnformatted(script.StateSnapshot.empty() ? "{}" : script.StateSnapshot.c_str()); ImGui::EndChild();
+                        ImGui::SeparatorText("q.storage"); ImGui::BeginChild("##jsStorage", ImVec2(0.0f, 120.0f), true, ImGuiWindowFlags_HorizontalScrollbar); ImGui::TextUnformatted(script.PersistentStateJson.empty() ? "{}" : script.PersistentStateJson.c_str()); ImGui::EndChild();
+                        if (!script.Dependencies.empty() && ImGui::TreeNode("Imported dependencies")) { for (const auto& dependency : script.Dependencies) ImGui::BulletText("%s", dependency.c_str()); ImGui::TreePop(); }
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("Console"))
+                    {
+                        static std::unordered_map<std::uint64_t, bool> autoScroll; bool& follow = autoScroll[script.Id]; if (!autoScroll.contains(script.Id)) follow = true;
+                        if (ImGui::SmallButton("Clear")) script.Console.clear(); ImGui::SameLine(); ImGui::Checkbox("Auto-scroll", &follow); ImGui::SameLine(); ImGui::TextDisabled("%zu / 512", script.Console.size());
+                        ImGui::BeginChild("##jsConsole", ImVec2(0.0f, 260.0f), true, ImGuiWindowFlags_HorizontalScrollbar);
+                        for (const auto& entry : script.Console) { ImGui::TextColored(consoleColor(entry.Level), "[%8.3f]", entry.Time); ImGui::SameLine(); ImGui::TextUnformatted(entry.Text.c_str()); }
+                        if (follow && ImGui::GetScrollMaxY() > 0.0f) ImGui::SetScrollY(ImGui::GetScrollMaxY());
+                        ImGui::EndChild();
+                        ImGui::EndTabItem();
+                    }
+                    ImGui::EndTabBar();
                 }
-                else
-                {
-                    auto& editorState = editor(script); editorState.Editor.Render("##JavaScriptEditor", ImVec2(-1.0f, 360.0f)); const std::string edited = editorState.Editor.GetText();
-                    if (edited != editorState.Synced) { script.Source = edited; editorState.Synced = script.Source; runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); localChanged = true; }
-                }
-                ImGui::Text("Runs %llu  compiles %llu  reloads %llu  timeouts %llu  last %.3f ms", static_cast<unsigned long long>(script.RunCount), static_cast<unsigned long long>(script.CompileCount), static_cast<unsigned long long>(script.ReloadCount), static_cast<unsigned long long>(script.TimeoutCount), script.LastMilliseconds);
-                if (!script.Status.empty()) ImGui::TextWrapped("Status: %s", script.Status.c_str()); if (!script.LastLog.empty()) ImGui::TextWrapped("Log: %s", script.LastLog.c_str());
-                if (!script.Dependencies.empty() && ImGui::TreeNode("Imported dependencies")) { for (const auto& dependency : script.Dependencies) ImGui::BulletText("%s", dependency.c_str()); ImGui::TreePop(); }
                 if (localChanged) javascript.markChanged();
             }
             ImGui::Separator(); ImGui::PopID();

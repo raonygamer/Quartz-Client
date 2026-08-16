@@ -44,4 +44,7 @@ namespace quartz::client
 
     void runtimeInstallQuickJSLowLevelApi(JSContext* ctx, JSValueConst api);
     void runtimeInstallQuickJSGraphApi(JSContext* ctx, JSValueConst api);
+    void runtimeInstallQuickJSAsyncSignatureApi(JSContext* ctx, JSValueConst api);
+    void runtimeRefreshQuickJSSignatureScans(RuntimeScript& script) noexcept;
+    void runtimeCancelQuickJSSignatureScans(RuntimeScript& script) noexcept;
 }

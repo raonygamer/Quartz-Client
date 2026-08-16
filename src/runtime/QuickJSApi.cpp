@@ -426,7 +426,7 @@ type QuartzAddress = bigint;
 type QuartzInputKey = number | string;
 type QuartzScalarType = "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "u64" | "i64" | "f32" | "float" | "f64" | "double" | "bool" | "boolean" | "ptr" | "pointer" | "address";
 
-type QuartzEventName = "tick" | "shader.changed" | "key.down" | "key.up" | "key.changed" | "lock.changed" | "process.started" | "process.stopped" | "breakpoint.hit" | "script.loaded" | "script.reload" | string;
+type QuartzEventName = "tick" | "shader.changed" | "key.down" | "key.up" | "key.changed" | "lock.changed" | "process.started" | "process.stopped" | "breakpoint.hit" | "signature.found" | "signature.not-found" | "signature.cancelled" | "signature.error" | "signature.finished" | "script.loaded" | "script.reload" | string;
 type QuartzEventHandle = bigint;
 
 interface QuartzProcessInfo { pid: number; name: string; exe: string; title: string; commandLine: string; }
@@ -451,7 +451,18 @@ interface QuartzMemoryAPI {
     writeBytes(pid: number, address: QuartzAddress | number, bytes: number[] | string): true;
     loop(start: QuartzAddress | number, count: number, stride: number | bigint, callback: (address: QuartzAddress, index: number) => void | boolean): number;
 }
-interface QuartzSignatureAPI { find(pid: number, pattern: string, executableOnly?: boolean): QuartzAddress | undefined; }
+type QuartzSignatureScanHandle = bigint;
+type QuartzSignatureScanState = "running" | "cancelling" | "found" | "not-found" | "cancelled" | "error";
+interface QuartzSignatureScanStatus { id: QuartzSignatureScanHandle; pid: number; pattern: string; executableOnly: boolean; state: QuartzSignatureScanState; finished: boolean; found: boolean; cancelled: boolean; progress: number; scannedBytes: bigint; totalBytes: bigint; averageMiBs: number; durationSeconds: number; address?: QuartzAddress; error?: string; }
+interface QuartzSignatureAPI {
+    /** Synchronous compatibility scan. Prefer scan() for runtime scripts. */
+    find(pid: number, pattern: string, executableOnly?: boolean): QuartzAddress | undefined;
+    /** Starts a libhat scan on Quartz's worker pool and returns immediately. */
+    scan(pid: number, pattern: string, executableOnly?: boolean): QuartzSignatureScanHandle;
+    status(handle: QuartzSignatureScanHandle | number): QuartzSignatureScanStatus | undefined;
+    cancel(handle: QuartzSignatureScanHandle | number): boolean;
+    list(): QuartzSignatureScanStatus[];
+}
 interface QuartzDisassemblyAPI { decode(pid: number, address: QuartzAddress | number, count?: number): QuartzInstruction[]; }
 interface QuartzBreakpointAPI {
     /** Arms the same one-shot execution probe used by the RE UI. */
@@ -472,6 +483,7 @@ interface QuartzEventsAPI {
     unsubscribe(handle: QuartzEventHandle | number): boolean;
     emit(type: string, data?: any): true;
 }
+interface QuartzConsoleAPI { debug(...values: unknown[]): void; log(...values: unknown[]): void; info(...values: unknown[]): void; warn(...values: unknown[]): void; error(...values: unknown[]): void; }
 interface QuartzRuntimeOutputAPI {
     shader(id: string, transitionSeconds?: number): boolean;
     shaderPreset(index: number, transitionSeconds?: number): boolean;
@@ -532,6 +544,7 @@ interface QuartzRuntimeAPI {
     readonly breakpoint: QuartzBreakpointAPI;
     readonly input: QuartzInputAPI;
     readonly events: QuartzEventsAPI;
+    readonly console: QuartzConsoleAPI;
     readonly runtime: QuartzRuntimeOutputAPI;
     /** Ephemeral state that lives until this script context reloads/stops. */
     state: Record<string, any>;
