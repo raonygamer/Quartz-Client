@@ -340,7 +340,6 @@ namespace quartz::client
         std::string Source = "// Quartz runtime script\n";
         std::string PersistentStateJson = "{}";
         bool HotReload = true;
-        bool LegacyBridge = false;
         float UpdateHz = 60.0f;
         float TimeoutMs = 4.0f;
         double NextUpdate = 0.0;

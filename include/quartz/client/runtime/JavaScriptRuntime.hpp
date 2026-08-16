@@ -9,7 +9,7 @@ namespace quartz::client
     class JavaScriptRuntime
     {
     public:
-        explicit JavaScriptRuntime(RuntimeBindingEngine& legacy);
+        JavaScriptRuntime();
         ~JavaScriptRuntime();
 
         std::vector<RuntimeScript>& scripts() noexcept { return _scripts; }
@@ -23,7 +23,7 @@ namespace quartz::client
         std::uint64_t revision() const noexcept { return _revision; }
 
         RuntimeScript& add();
-        void erase(std::size_t index, RuntimeBindingEngine& legacy);
+        void erase(std::size_t index, RuntimeBindingEngine& runtime);
         RuntimeScript* find(std::uint64_t id) noexcept;
         const RuntimeScript* find(std::uint64_t id) const noexcept;
         RuntimeScript* findByName(std::string_view name) noexcept;
@@ -35,12 +35,11 @@ namespace quartz::client
         void markChanged() noexcept { ++_revision; }
         bool save();
         void saveIfChanged() { if (_savedRevision != _revision) save(); }
-        void syncProfile(RuntimeBindingEngine& legacy);
+        void syncProfile(RuntimeBindingEngine& runtime);
         void pollReloadHotkey(GLFWwindow* window, const EvdevKeyboard& keyboard);
 
     private:
         void load();
-        void migrateLegacy(RuntimeBindingEngine& legacy, bool hadOwnFile);
 
         std::filesystem::path _path;
         std::vector<RuntimeScript> _scripts;

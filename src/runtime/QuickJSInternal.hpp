@@ -31,8 +31,6 @@ namespace quartz::client
         RuntimeQuickJSDeadline* Execution = nullptr;
         ShaderFramebuffer* Shader = nullptr;
         RuntimeControlOutput* Output = nullptr;
-        bool AllowGraphMutation = false;
-        bool LegacyBridge = false;
     };
 
     inline bool runtimeQuickJSDeadlineExpired(RuntimeQuickJSContext& context) noexcept
@@ -43,7 +41,6 @@ namespace quartz::client
     }
 
     void runtimeInstallQuickJSLowLevelApi(JSContext* ctx, JSValueConst api);
-    void runtimeInstallQuickJSGraphApi(JSContext* ctx, JSValueConst api);
     void runtimeInstallQuickJSAsyncSignatureApi(JSContext* ctx, JSValueConst api);
     void runtimeRefreshQuickJSSignatureScans(RuntimeScript& script) noexcept;
     void runtimeCancelQuickJSSignatureScans(RuntimeScript& script) noexcept;

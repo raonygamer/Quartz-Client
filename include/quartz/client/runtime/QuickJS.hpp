@@ -21,7 +21,7 @@ namespace quartz::client
     std::filesystem::path runtimeQuickJSTypeDeclarationsPath();
     bool runtimeSaveQuickJSTypeDeclarations(std::string& error);
 
-    const RuntimeControlOutput& runtimeEvaluateWorkspaceScripts(JavaScriptRuntime& javascript, RuntimeBindingEngine& legacy, const RuntimeSignalContext& context, ShaderFramebuffer& shader, const EvdevKeyboard& keyboard);
+    const RuntimeControlOutput& runtimeEvaluateWorkspaceScripts(JavaScriptRuntime& javascript, const RuntimeSignalContext& context, ShaderFramebuffer& shader, const EvdevKeyboard& keyboard);
     void runtimeResetWorkspaceScript(std::uint64_t scriptId) noexcept;
     void runtimeReloadAllWorkspaceScripts() noexcept;
     std::filesystem::path runtimeQuickJSScriptDirectory();

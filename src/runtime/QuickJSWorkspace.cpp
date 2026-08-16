@@ -2,7 +2,6 @@
 #include "quartz/client/Functions.hpp"
 #include "quartz/client/runtime/QuickJS.hpp"
 #include "quartz/client/runtime/JavaScriptRuntime.hpp"
-#include "quartz/client/runtime/RuntimeBindingEngine.hpp"
 #include "quartz/client/native/ExecutionProbe.hpp"
 #include "quartz/client/shader/ShaderFramebuffer.hpp"
 #include <quickjs.h>
@@ -21,7 +20,6 @@ namespace quartz::client
     {
         constexpr std::size_t WorkspaceMemoryLimit = 64ULL * 1024ULL * 1024ULL;
         constexpr std::size_t WorkspaceStackLimit = 512ULL * 1024ULL;
-        constexpr double MaximumSafeInteger = 9007199254740991.0;
 
         std::uint64_t hashText(const std::string_view text) noexcept
         {
@@ -139,108 +137,6 @@ namespace quartz::client
         {
             static Workspace value;
             return value;
-        }
-
-        RuntimeBinding* resolveBinding(JSContext* ctx, JSValueConst value)
-        {
-            auto* instance = static_cast<RuntimeQuickJSContext*>(JS_GetContextOpaque(ctx));
-            if (!instance || !instance->Engine) return nullptr;
-            if (JS_IsNumber(value) || JS_IsBigInt(ctx, value))
-            {
-                std::int64_t id = 0;
-                if (JS_ToInt64Ext(ctx, &id, value) < 0 || id <= 0) return nullptr;
-                return instance->Engine->findBinding(static_cast<std::uint64_t>(id));
-            }
-            const char* name = JS_ToCString(ctx, value);
-            if (!name) return nullptr;
-            RuntimeBinding* result = instance->Engine->findBindingByName(name);
-            JS_FreeCString(ctx, name);
-            return result;
-        }
-
-        RuntimeControlRule* resolveControl(JSContext* ctx, JSValueConst value)
-        {
-            auto* instance = static_cast<RuntimeQuickJSContext*>(JS_GetContextOpaque(ctx));
-            if (!instance || !instance->Engine) return nullptr;
-            if (JS_IsNumber(value) || JS_IsBigInt(ctx, value))
-            {
-                std::int64_t id = 0;
-                if (JS_ToInt64Ext(ctx, &id, value) < 0 || id <= 0) return nullptr;
-                return instance->Engine->findControl(static_cast<std::uint64_t>(id));
-            }
-            const char* name = JS_ToCString(ctx, value);
-            if (!name) return nullptr;
-            RuntimeControlRule* result = instance->Engine->findControlByName(name);
-            JS_FreeCString(ctx, name);
-            return result;
-        }
-
-        RuntimeValueBankEntry* resolveBank(JSContext* ctx, JSValueConst value)
-        {
-            auto* instance = static_cast<RuntimeQuickJSContext*>(JS_GetContextOpaque(ctx));
-            if (!instance || !instance->Engine) return nullptr;
-            if (JS_IsNumber(value) || JS_IsBigInt(ctx, value))
-            {
-                std::int64_t id = 0;
-                if (JS_ToInt64Ext(ctx, &id, value) < 0 || id <= 0) return nullptr;
-                return instance->Engine->findBankValue(static_cast<std::uint64_t>(id));
-            }
-            const char* name = JS_ToCString(ctx, value);
-            if (!name) return nullptr;
-            RuntimeValueBankEntry* result = instance->Engine->findBankValueByName(name);
-            JS_FreeCString(ctx, name);
-            return result;
-        }
-
-        JSValue jsBinding(JSContext* ctx, JSValueConst, const int argc, JSValueConst* argv)
-        {
-            const RuntimeBinding* binding = argc ? resolveBinding(ctx, argv[0]) : nullptr;
-            return binding && binding->Enabled && binding->HasValue ? JS_NewFloat64(ctx, binding->Value) : JS_UNDEFINED;
-        }
-
-        JSValue jsRaw(JSContext* ctx, JSValueConst, const int argc, JSValueConst* argv)
-        {
-            const RuntimeBinding* binding = argc ? resolveBinding(ctx, argv[0]) : nullptr;
-            return binding && binding->Enabled && binding->HasValue ? JS_NewFloat64(ctx, binding->RawValue) : JS_UNDEFINED;
-        }
-
-        JSValue jsText(JSContext* ctx, JSValueConst, const int argc, JSValueConst* argv)
-        {
-            const RuntimeBinding* binding = argc ? resolveBinding(ctx, argv[0]) : nullptr;
-            return binding && binding->Enabled && binding->HasString ? JS_NewString(ctx, binding->StringValue.c_str()) : JS_UNDEFINED;
-        }
-
-        JSValue jsAddress(JSContext* ctx, JSValueConst, const int argc, JSValueConst* argv)
-        {
-            const RuntimeBinding* binding = argc ? resolveBinding(ctx, argv[0]) : nullptr;
-            return binding && binding->Enabled && binding->HasAddress ? JS_NewBigUint64(ctx, static_cast<std::uint64_t>(binding->AddressValue)) : JS_UNDEFINED;
-        }
-
-        JSValue jsBank(JSContext* ctx, JSValueConst, const int argc, JSValueConst* argv)
-        {
-            const RuntimeValueBankEntry* value = argc ? resolveBank(ctx, argv[0]) : nullptr;
-            if (!value || !value->Enabled || !value->HasValue) return JS_UNDEFINED;
-            switch (value->Type)
-            {
-            case RuntimeBankValueType::Number: return JS_NewFloat64(ctx, value->Number);
-            case RuntimeBankValueType::Integer: return std::abs(static_cast<double>(value->Integer)) <= MaximumSafeInteger ? JS_NewFloat64(ctx, static_cast<double>(value->Integer)) : JS_NewBigInt64(ctx, value->Integer);
-            case RuntimeBankValueType::Boolean: return JS_NewBool(ctx, value->Boolean);
-            case RuntimeBankValueType::String: return JS_NewString(ctx, value->String);
-            case RuntimeBankValueType::Address: return value->Address ? JS_NewBigUint64(ctx, static_cast<std::uint64_t>(value->Address)) : JS_UNDEFINED;
-            }
-            return JS_UNDEFINED;
-        }
-
-        JSValue jsControl(JSContext* ctx, JSValueConst, const int argc, JSValueConst* argv)
-        {
-            const RuntimeControlRule* control = argc ? resolveControl(ctx, argv[0]) : nullptr;
-            return control && control->Enabled && control->RuntimeEnabled ? JS_NewBool(ctx, control->ConditionActive) : JS_UNDEFINED;
-        }
-
-        JSValue jsTriggered(JSContext* ctx, JSValueConst, const int argc, JSValueConst* argv)
-        {
-            const RuntimeControlRule* control = argc ? resolveControl(ctx, argv[0]) : nullptr;
-            return control && control->Enabled && control->RuntimeEnabled ? JS_NewBool(ctx, control->TriggeredThisFrame) : JS_UNDEFINED;
         }
 
         void appendLog(RuntimeScript& script, const double time, const RuntimeScriptLogLevel level, std::string text)
@@ -419,38 +315,7 @@ namespace quartz::client
             return result;
         }
 
-        void installLegacyBridge(Instance& instance)
-        {
-            JSContext* ctx = instance.Context;
-            JSValue legacy = JS_NewObject(ctx);
-            JS_SetPropertyStr(ctx, legacy, "binding", JS_NewCFunction(ctx, jsBinding, "binding", 1));
-            JS_SetPropertyStr(ctx, legacy, "raw", JS_NewCFunction(ctx, jsRaw, "raw", 1));
-            JS_SetPropertyStr(ctx, legacy, "text", JS_NewCFunction(ctx, jsText, "text", 1));
-            JS_SetPropertyStr(ctx, legacy, "address", JS_NewCFunction(ctx, jsAddress, "address", 1));
-            JS_SetPropertyStr(ctx, legacy, "bank", JS_NewCFunction(ctx, jsBank, "bank", 1));
-            JS_SetPropertyStr(ctx, legacy, "control", JS_NewCFunction(ctx, jsControl, "control", 1));
-            JS_SetPropertyStr(ctx, legacy, "triggered", JS_NewCFunction(ctx, jsTriggered, "triggered", 1));
-            JSValue graph = JS_GetPropertyStr(ctx, instance.Api, "graph");
-            if (!JS_IsUndefined(graph)) JS_SetPropertyStr(ctx, legacy, "graph", JS_DupValue(ctx, graph));
-            JS_FreeValue(ctx, graph);
-            JS_SetPropertyStr(ctx, instance.Api, "legacy", legacy);
-            JS_SetPropertyStr(ctx, instance.Api, "binding", JS_NewCFunction(ctx, jsBinding, "binding", 1));
-            JS_SetPropertyStr(ctx, instance.Api, "raw", JS_NewCFunction(ctx, jsRaw, "raw", 1));
-            JS_SetPropertyStr(ctx, instance.Api, "text", JS_NewCFunction(ctx, jsText, "text", 1));
-            JS_SetPropertyStr(ctx, instance.Api, "address", JS_NewCFunction(ctx, jsAddress, "address", 1));
-            JS_SetPropertyStr(ctx, instance.Api, "bank", JS_NewCFunction(ctx, jsBank, "bank", 1));
-            JS_SetPropertyStr(ctx, instance.Api, "control", JS_NewCFunction(ctx, jsControl, "control", 1));
-            JS_SetPropertyStr(ctx, instance.Api, "triggered", JS_NewCFunction(ctx, jsTriggered, "triggered", 1));
-        }
-
-        void removeGraphWhenLegacyDisabled(JSContext* ctx, JSValueConst api)
-        {
-            const JSAtom atom = JS_NewAtom(ctx, "graph");
-            JS_DeleteProperty(ctx, api, atom, 0);
-            JS_FreeAtom(ctx, atom);
-        }
-
-        Instance* createInstance(JavaScriptRuntime& javascript, RuntimeBindingEngine& legacy, RuntimeScript& script, const RuntimeSignalContext& signal, ShaderFramebuffer& shader, RuntimeControlOutput& output, const EvdevKeyboard& keyboard)
+        Instance* createInstance(JavaScriptRuntime& javascript, RuntimeScript& script, const RuntimeSignalContext& signal, ShaderFramebuffer& shader, RuntimeControlOutput& output, const EvdevKeyboard& keyboard)
         {
             auto& runtime = workspace();
             if (!runtime.Runtime) return nullptr;
@@ -459,14 +324,11 @@ namespace quartz::client
             auto instance = std::make_unique<Instance>();
             instance->Execution = &runtime.Execution;
             instance->JavaScript = &javascript;
-            instance->Engine = script.LegacyBridge ? &legacy : nullptr;
             instance->Script = &script;
             instance->SignalContext = &signal;
             instance->Keyboard = &keyboard;
             instance->Shader = &shader;
             instance->Output = &output;
-            instance->AllowGraphMutation = script.LegacyBridge;
-            instance->LegacyBridge = script.LegacyBridge;
             instance->Reloaded = script.ReloadCount > 0;
             if (const auto oldHit = executionProbe().hit()) instance->LastBreakpointHitTime = oldHit->Time;
             instance->Context = JS_NewContext(runtime.Runtime);
@@ -484,9 +346,6 @@ namespace quartz::client
             JS_SetPropertyStr(instance->Context, instance->Api, "import", JS_NewCFunction(instance->Context, jsImport, "import", 1));
             runtimeInstallQuickJSLowLevelApi(instance->Context, instance->Api);
             runtimeInstallQuickJSAsyncSignatureApi(instance->Context, instance->Api);
-            runtimeInstallQuickJSGraphApi(instance->Context, instance->Api);
-            if (script.LegacyBridge) installLegacyBridge(*instance);
-            else removeGraphWhenLegacyDisabled(instance->Context, instance->Api);
             JSValue events = JS_NewObject(instance->Context);
             JS_SetPropertyStr(instance->Context, events, "subscribe", JS_NewCFunction(instance->Context, jsEventSubscribe, "subscribe", 2));
             JS_SetPropertyStr(instance->Context, events, "unsubscribe", JS_NewCFunction(instance->Context, jsEventUnsubscribe, "unsubscribe", 1));
@@ -719,7 +578,7 @@ namespace quartz::client
             return true;
         }
 
-        bool evaluate(JavaScriptRuntime& javascript, RuntimeBindingEngine& legacy, RuntimeScript& script, const RuntimeSignalContext& signal, ShaderFramebuffer& shader, RuntimeControlOutput& output, const EvdevKeyboard& keyboard)
+        bool evaluate(JavaScriptRuntime& javascript, RuntimeScript& script, const RuntimeSignalContext& signal, ShaderFramebuffer& shader, RuntimeControlOutput& output, const EvdevKeyboard& keyboard)
         {
             auto& runtime = workspace();
             const bool watchExternal = javascript.settings().ExternalHotReload && script.HotReload;
@@ -742,17 +601,14 @@ namespace quartz::client
                 }
             }
             else source = script.Source;
-            Instance* instance = createInstance(javascript, legacy, script, signal, shader, output, keyboard);
+            Instance* instance = createInstance(javascript, script, signal, shader, output, keyboard);
             if (!instance) { script.Status = "could not create QuickJS runtime context"; return false; }
             instance->JavaScript = &javascript;
-            instance->Engine = script.LegacyBridge ? &legacy : nullptr;
             instance->Script = &script;
             instance->SignalContext = &signal;
             instance->Keyboard = &keyboard;
             instance->Shader = &shader;
             instance->Output = &output;
-            instance->AllowGraphMutation = script.LegacyBridge;
-            instance->LegacyBridge = script.LegacyBridge;
             std::string error;
             if (!reuseExternal && !compile(*instance, script, source, filename, error)) { script.Status = std::move(error); return false; }
             JS_SetPropertyStr(instance->Context, instance->Api, "time", JS_NewFloat64(instance->Context, signal.Time));
@@ -806,12 +662,12 @@ namespace quartz::client
             script.Dependencies.clear();
             for (const auto& [path, _] : instance->DependencyTimes) script.Dependencies.push_back(path);
             std::ranges::sort(script.Dependencies);
-            script.Status = script.LegacyBridge ? "running (legacy graph bridge enabled)" : "running";
+            script.Status = "running";
             return true;
         }
     }
 
-    const RuntimeControlOutput& runtimeEvaluateWorkspaceScripts(JavaScriptRuntime& javascript, RuntimeBindingEngine& legacy, const RuntimeSignalContext& context, ShaderFramebuffer& shader, const EvdevKeyboard& keyboard)
+    const RuntimeControlOutput& runtimeEvaluateWorkspaceScripts(JavaScriptRuntime& javascript, const RuntimeSignalContext& context, ShaderFramebuffer& shader, const EvdevKeyboard& keyboard)
     {
         std::vector<RuntimeScript*> order;
         order.reserve(javascript.scripts().size());
@@ -828,7 +684,7 @@ namespace quartz::client
             if (context.Time < script->NextUpdate) continue;
             const float updateHz = std::clamp(script->UpdateHz, 0.5f, 500.0f);
             script->NextUpdate = context.Time + 1.0 / updateHz;
-            evaluate(javascript, legacy, *script, context, shader, javascript.outputFor(script->Id), keyboard);
+            evaluate(javascript, *script, context, shader, javascript.outputFor(script->Id), keyboard);
         }
         javascript.rebuildOutput();
         return javascript.output();

@@ -13,12 +13,12 @@ namespace quartz::client::ui
 {
     namespace
     {
-        const TextEditor::Language* javascriptLanguage()
+        const TextEditor::Language* typescriptLanguage()
         {
             static const TextEditor::Language language = []
             {
                 TextEditor::Language value;
-                value.name = "JavaScript";
+                value.name = "TypeScript";
                 value.singleLineComment = "//";
                 value.commentStart = "/*";
                 value.commentEnd = "*/";
@@ -27,9 +27,9 @@ namespace quartz::client::ui
                 value.otherStringStart = "`";
                 value.otherStringEnd = "`";
                 value.stringEscape = '\\';
-                value.keywords = {"async","await","break","case","catch","class","const","continue","debugger","default","delete","do","else","export","extends","finally","for","from","function","get","if","import","in","instanceof","let","new","of","return","set","static","super","switch","this","throw","try","typeof","var","void","while","with","yield"};
-                value.declarations = {"true","false","null","undefined","legacy","binding","raw","text","address","bank","control","triggered","graph","re"};
-                value.identifiers = {"q","Math","JSON","BigInt","Number","String","Boolean","Array","Object","Map","Set","WeakMap","WeakSet","Date","RegExp","Promise","Error","TypeError","NaN","Infinity","process","memory","signature","disassembly","breakpoint","input","events","runtime","state","storage","list","find","alive","modules","regions","read","write","readBytes","writeBytes","decode","arm","cancel","running","hit","keyDown","shortcut","capsLock","scrollLock","subscribe","unsubscribe","emit","scan","status","console","debug","info","warn","error","shader","shaderPreset","brightness","sendFramebuffer","baseColorMode","material","currentShader","previousShader","clear","loop","log"};
+                value.keywords = {"abstract","any","as","asserts","async","await","bigint","boolean","break","case","catch","class","const","constructor","continue","debugger","declare","default","delete","do","else","export","extends","finally","for","from","function","get","if","implements","import","in","infer","instanceof","interface","is","keyof","let","module","namespace","never","new","number","object","of","override","private","protected","public","readonly","require","return","satisfies","set","static","string","super","switch","symbol","this","throw","try","type","typeof","unknown","var","void","while","with","yield"};
+                value.declarations = {"true","false","null","undefined"};
+                value.identifiers = {"Math","JSON","BigInt","Number","String","Boolean","Array","Object","Map","Set","WeakMap","WeakSet","Date","RegExp","Promise","Error","TypeError","NaN","Infinity","Process","Signature","Breakpoint","Struct","Field","Pointer","Property","Runtime","Script","System","Disassembly","Memory","Keyboard","Events","console"};
                 value.isPunctuation = [](const ImWchar c) { return std::string_view("[]{}().,;:+-*/%<>=!&|^~?").find(static_cast<char>(c)) != std::string_view::npos; };
                 value.getIdentifier = [](TextEditor::Iterator start, const TextEditor::Iterator end)
                 {
@@ -58,7 +58,7 @@ namespace quartz::client::ui
             return &language;
         }
 
-        TextEditor::Palette javascriptPalette()
+        TextEditor::Palette typescriptPalette()
         {
             auto palette = shaderEditorPalette();
             palette[static_cast<std::size_t>(TextEditor::Color::keyword)] = IM_COL32(198, 120, 221, 255);
@@ -72,16 +72,49 @@ namespace quartz::client::ui
             return palette;
         }
 
-        struct EditorState { TextEditor Editor; std::string Synced; bool Initialized = false; };
+        struct EditorState { TextEditor Editor; std::string Synced; std::filesystem::path Path; std::filesystem::file_time_type Time{}; std::string Error; bool Initialized = false; };
         EditorState& editor(RuntimeScript& script)
         {
             static std::unordered_map<std::uint64_t, std::unique_ptr<EditorState>> editors;
             auto [it, inserted] = editors.try_emplace(script.Id); if (inserted) it->second = std::make_unique<EditorState>(); auto& state = *it->second;
             if (!state.Initialized)
             {
-                state.Editor.SetLanguage(javascriptLanguage()); state.Editor.SetPalette(javascriptPalette()); state.Editor.SetTabSize(4); state.Editor.SetInsertSpacesOnTabs(true); state.Editor.SetAutoIndentEnabled(true); state.Editor.SetShowLineNumbersEnabled(true); state.Editor.SetShowMatchingBrackets(true); state.Editor.SetShowMiniMapEnabled(true); state.Editor.SetText(script.Source); state.Synced = script.Source; state.Initialized = true;
+                state.Editor.SetLanguage(typescriptLanguage()); state.Editor.SetPalette(typescriptPalette()); state.Editor.SetTabSize(4); state.Editor.SetInsertSpacesOnTabs(true); state.Editor.SetAutoIndentEnabled(true); state.Editor.SetShowLineNumbersEnabled(true); state.Editor.SetShowMatchingBrackets(true); state.Editor.SetShowMiniMapEnabled(true); state.Editor.SetReadOnlyEnabled(false); state.Editor.SetText(script.Source); state.Synced = script.Source; state.Initialized = true;
             }
             else if (state.Synced != script.Source) { state.Editor.SetText(script.Source); state.Synced = script.Source; }
+            return state;
+        }
+
+        bool readExternalSource(const std::filesystem::path& path, std::string& source, std::string& error) noexcept
+        {
+            std::error_code ec;
+            if (!std::filesystem::is_regular_file(path, ec)) { error = ec ? ec.message() : "not a regular file"; return false; }
+            try
+            {
+                std::ifstream file(path, std::ios::binary); if (!file) { error = "could not open file"; return false; }
+                source.assign(std::istreambuf_iterator<char>(file), {});
+                if (!file && !file.eof()) { error = "could not read file"; return false; }
+                error.clear(); return true;
+            }
+            catch (const std::exception& exception) { error = exception.what(); return false; }
+            catch (...) { error = "unknown filesystem error"; return false; }
+        }
+
+        EditorState& externalEditor(RuntimeScript& script, const std::filesystem::path& path)
+        {
+            static std::unordered_map<std::uint64_t, std::unique_ptr<EditorState>> editors;
+            auto [it, inserted] = editors.try_emplace(script.Id); if (inserted) it->second = std::make_unique<EditorState>(); auto& state = *it->second;
+            std::error_code ec; const auto time = std::filesystem::last_write_time(path, ec); const bool changed = !state.Initialized || state.Path != path || (!ec && state.Time != time);
+            if (!state.Initialized)
+            {
+                state.Editor.SetLanguage(typescriptLanguage()); state.Editor.SetPalette(typescriptPalette()); state.Editor.SetTabSize(4); state.Editor.SetInsertSpacesOnTabs(true); state.Editor.SetAutoIndentEnabled(true); state.Editor.SetShowLineNumbersEnabled(true); state.Editor.SetShowMatchingBrackets(true); state.Editor.SetShowMiniMapEnabled(true); state.Editor.SetReadOnlyEnabled(true); state.Initialized = true;
+            }
+            if (changed)
+            {
+                std::string source;
+                if (readExternalSource(path, source, state.Error)) { state.Editor.SetText(source); state.Synced = std::move(source); state.Path = path; state.Time = time; }
+                else if (state.Path != path) { state.Editor.ClearText(); state.Synced.clear(); state.Path = path; state.Time = {}; }
+            }
             return state;
         }
 
@@ -120,22 +153,21 @@ namespace quartz::client::ui
         static constexpr KeyOption Keys[] = {{"None",0},{"F1",GLFW_KEY_F1},{"F2",GLFW_KEY_F2},{"F3",GLFW_KEY_F3},{"F4",GLFW_KEY_F4},{"F5",GLFW_KEY_F5},{"F6",GLFW_KEY_F6},{"F7",GLFW_KEY_F7},{"F8",GLFW_KEY_F8},{"F9",GLFW_KEY_F9},{"F10",GLFW_KEY_F10},{"F11",GLFW_KEY_F11},{"F12",GLFW_KEY_F12},{"A",GLFW_KEY_A},{"B",GLFW_KEY_B},{"C",GLFW_KEY_C},{"D",GLFW_KEY_D},{"E",GLFW_KEY_E},{"F",GLFW_KEY_F},{"G",GLFW_KEY_G},{"H",GLFW_KEY_H},{"I",GLFW_KEY_I},{"J",GLFW_KEY_J},{"K",GLFW_KEY_K},{"L",GLFW_KEY_L},{"M",GLFW_KEY_M},{"N",GLFW_KEY_N},{"O",GLFW_KEY_O},{"P",GLFW_KEY_P},{"Q",GLFW_KEY_Q},{"R",GLFW_KEY_R},{"S",GLFW_KEY_S},{"T",GLFW_KEY_T},{"U",GLFW_KEY_U},{"V",GLFW_KEY_V},{"W",GLFW_KEY_W},{"X",GLFW_KEY_X},{"Y",GLFW_KEY_Y},{"Z",GLFW_KEY_Z},{"0",GLFW_KEY_0},{"1",GLFW_KEY_1},{"2",GLFW_KEY_2},{"3",GLFW_KEY_3},{"4",GLFW_KEY_4},{"5",GLFW_KEY_5},{"6",GLFW_KEY_6},{"7",GLFW_KEY_7},{"8",GLFW_KEY_8},{"9",GLFW_KEY_9}};
     }
 
-    void JavaScriptPage::render(PageContext& context, PageManager& manager)
+    void JavaScriptPage::render(PageContext& context, PageManager&)
     {
         auto& javascript = context.javascript; auto& settings = javascript.settings(); static std::string status;
-        ImGui::TextWrapped("JavaScript is Quartz's first-class automation runtime. Scripts have their own lifecycle, persistent q.storage, events, process/memory/signature/disassembly APIs and runtime output. They do not require bindings, controls or the value bank.");
-        ImGui::TextDisabled("Bindings / Controls / Value Bank remain available only as an explicitly enabled deprecated bridge for old setups.");
+        ImGui::TextWrapped("Quartz scripts are moving to a TypeScript-first SDK. External TypeScript and JavaScript sources stay visible here alongside runtime state, diagnostics and console output.");
 
-        if (ImGui::Button("+ Inline script")) { auto& script = javascript.add(); script.Source = "// Quartz runtime script\n// q.process / q.memory / q.signature / q.disassembly / q.breakpoint / q.input / q.events / q.runtime\n"; }
+        if (ImGui::Button("+ Inline script")) { auto& script = javascript.add(); script.Source = "// Quartz script\n"; }
         ImGui::SameLine(); if (ImGui::Button("+ External script")) { auto& script = javascript.add(); script.External = true; script.Path = (runtimeQuickJSScriptDirectory() / "script.js").string(); }
-        ImGui::SameLine(); if (ImGui::Button("Reload all")) { runtimeReloadAllWorkspaceScripts(); javascript.clearOutputs(); for (auto& script : javascript.scripts()) ++script.ReloadCount; status = "all JavaScript contexts reloaded"; }
-        ImGui::SameLine(); if (ImGui::Button("Save .d.ts")) { std::string error; status = runtimeSaveQuickJSTypeDeclarations(error) ? "saved " + runtimeQuickJSTypeDeclarationsPath().string() : error; }
+        ImGui::SameLine(); if (ImGui::Button("Reload all")) { runtimeReloadAllWorkspaceScripts(); javascript.clearOutputs(); for (auto& script : javascript.scripts()) ++script.ReloadCount; status = "all script contexts reloaded"; }
+        ImGui::SameLine(); if (ImGui::Button("Save @quartz/client types")) { std::string error; status = runtimeSaveQuickJSTypeDeclarations(error) ? "saved " + runtimeQuickJSTypeDeclarationsPath().string() : error; }
         ImGui::SameLine(); if (ImGui::Button("Save runtime")) status = javascript.save() ? "saved " + javascript.path().string() : "could not save JavaScript runtime";
         if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
         ImGui::TextDisabled("Runtime: %s", javascript.path().string().c_str());
         ImGui::TextDisabled("External scripts: %s", runtimeQuickJSScriptDirectory().string().c_str());
 
-        bool changed = false; changed |= ImGui::Checkbox("External script hot reload", &settings.ExternalHotReload); ImGui::SameLine(); ImGui::TextDisabled("watches root scripts and q.import() dependencies");
+        bool changed = false; changed |= ImGui::Checkbox("External script hot reload", &settings.ExternalHotReload); ImGui::SameLine(); ImGui::TextDisabled("watches root scripts and imported dependencies");
         ImGui::SeparatorText("Global reload hotkey");
         changed |= ImGui::Checkbox("Ctrl##jsReload", &settings.ReloadHotkeyCtrl); ImGui::SameLine(); changed |= ImGui::Checkbox("Alt##jsReload", &settings.ReloadHotkeyAlt); ImGui::SameLine(); changed |= ImGui::Checkbox("Shift##jsReload", &settings.ReloadHotkeyShift); ImGui::SameLine();
         const char* preview = "None"; for (const auto& key : Keys) if (key.Key == settings.ReloadHotkeyKey) { preview = key.Name; break; }
@@ -167,9 +199,6 @@ namespace quartz::client::ui
                 ImGui::SameLine(); if (ImGui::SmallButton("Remove")) erase = i;
                 ImGui::SetNextItemWidth(160.0f); localChanged |= ImGui::DragFloat("Update Hz", &script.UpdateHz, 0.5f, 0.5f, 500.0f, "%.1f"); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); localChanged |= ImGui::DragFloat("Timeout", &script.TimeoutMs, 0.1f, 0.1f, 100.0f, "%.1f ms"); ImGui::SameLine(); localChanged |= ImGui::Checkbox("Hot reload##script", &script.HotReload);
                 ImGui::SetNextItemWidth(180.0f); localChanged |= ImGui::InputText("Group", script.Group, sizeof(script.Group)); ImGui::SameLine(); ImGui::SetNextItemWidth(80.0f); localChanged |= ImGui::InputInt("Order", &script.Order);
-                const bool oldLegacyBridge = script.LegacyBridge; ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.67f, 0.28f, 1.0f)); localChanged |= ImGui::Checkbox("Legacy bindings/controls/value-bank bridge (deprecated)", &script.LegacyBridge); ImGui::PopStyleColor();
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off by default. When enabled, q.legacy.* plus deprecated q.binding/q.bank/q.control/q.graph compatibility aliases are installed for this script.");
-                if (oldLegacyBridge != script.LegacyBridge) { runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; }
                 if (ImGui::BeginTabBar("##JavaScriptRuntimeTabs"))
                 {
                     if (ImGui::BeginTabItem("Editor"))
@@ -179,6 +208,14 @@ namespace quartz::client::ui
                             char path[1024]{}; std::snprintf(path, sizeof(path), "%s", script.Path.c_str()); ImGui::SetNextItemWidth(-1.0f); if (ImGui::InputText("Path", path, sizeof(path))) { script.Path = path; runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); localChanged = true; }
                             std::filesystem::path resolved = script.Path; if (resolved.is_relative()) resolved = runtimeQuickJSScriptDirectory() / resolved; std::error_code ec; const bool regular = std::filesystem::is_regular_file(resolved, ec);
                             if (!regular) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f,0.35f,0.32f,1.0f)); ImGui::TextWrapped("Invalid external script: %s", ec ? ec.message().c_str() : resolved.string().c_str()); ImGui::PopStyleColor(); }
+                            ImGui::TextDisabled("%s", resolved.string().c_str());
+                            if (regular)
+                            {
+                                auto& external = externalEditor(script, resolved);
+                                ImGui::SameLine(); ImGui::TextDisabled("read-only live view");
+                                if (!external.Error.empty()) { ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f,0.35f,0.32f,1.0f)); ImGui::TextWrapped("Could not refresh source view: %s", external.Error.c_str()); ImGui::PopStyleColor(); }
+                                external.Editor.Render("##ExternalScriptView", ImVec2(-1.0f, 360.0f));
+                            }
                             ImGui::TextDisabled("Relative paths resolve under %s", runtimeQuickJSScriptDirectory().string().c_str());
                         }
                         else
@@ -206,8 +243,8 @@ namespace quartz::client::ui
                                 if (!scan.Error.empty()) ImGui::TextWrapped("%s", scan.Error.c_str());
                             }
                         }
-                        ImGui::SeparatorText("q.state"); ImGui::BeginChild("##jsState", ImVec2(0.0f, 150.0f), true, ImGuiWindowFlags_HorizontalScrollbar); ImGui::TextUnformatted(script.StateSnapshot.empty() ? "{}" : script.StateSnapshot.c_str()); ImGui::EndChild();
-                        ImGui::SeparatorText("q.storage"); ImGui::BeginChild("##jsStorage", ImVec2(0.0f, 120.0f), true, ImGuiWindowFlags_HorizontalScrollbar); ImGui::TextUnformatted(script.PersistentStateJson.empty() ? "{}" : script.PersistentStateJson.c_str()); ImGui::EndChild();
+                        ImGui::SeparatorText("Script.state"); ImGui::BeginChild("##jsState", ImVec2(0.0f, 150.0f), true, ImGuiWindowFlags_HorizontalScrollbar); ImGui::TextUnformatted(script.StateSnapshot.empty() ? "{}" : script.StateSnapshot.c_str()); ImGui::EndChild();
+                        ImGui::SeparatorText("Script.storage"); ImGui::BeginChild("##jsStorage", ImVec2(0.0f, 120.0f), true, ImGuiWindowFlags_HorizontalScrollbar); ImGui::TextUnformatted(script.PersistentStateJson.empty() ? "{}" : script.PersistentStateJson.c_str()); ImGui::EndChild();
                         if (!script.Dependencies.empty() && ImGui::TreeNode("Imported dependencies")) { for (const auto& dependency : script.Dependencies) ImGui::BulletText("%s", dependency.c_str()); ImGui::TreePop(); }
                         ImGui::EndTabItem();
                     }
@@ -229,9 +266,6 @@ namespace quartz::client::ui
         }
         if (erase) javascript.erase(*erase, context.runtimeBindings);
 
-        ImGui::SeparatorText("Deprecated compatibility");
-        ImGui::TextDisabled("The old runtime graph is intentionally no longer the JavaScript execution model. Enable the per-script legacy bridge only for old configs/scripts that still need it.");
-        if (ImGui::Button("Bindings (deprecated)")) manager.open("bindings"); ImGui::SameLine(); if (ImGui::Button("Controls (deprecated)")) manager.open("controls"); ImGui::SameLine(); if (ImGui::Button("Value Bank (deprecated)")) manager.open("value-bank"); ImGui::SameLine(); if (ImGui::Button("Profiles")) manager.open("profiles");
         javascript.saveIfChanged();
     }
 }

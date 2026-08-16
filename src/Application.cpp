@@ -72,7 +72,7 @@ int Application::run(int argc, char* argv[])
     RuntimeInputAnalytics inputAnalytics;
     RuntimeRGBAnalytics rgbAnalytics;
     RuntimeBindingEngine runtimeBindings;
-    JavaScriptRuntime javascript(runtimeBindings);
+    JavaScriptRuntime javascript;
     RuntimeTelemetry runtimeTelemetry;
     AutoGainState autoGain;
     autoGain.reset(settings);
@@ -256,7 +256,7 @@ int Application::run(int argc, char* argv[])
         javascriptContext.ShaderFramebufferWidth = settings.ShaderFramebufferWidth;
         javascriptContext.ShaderFramebufferHeight = settings.ShaderFramebufferHeight;
         javascript.syncProfile(runtimeBindings);
-        const RuntimeControlOutput& mainScriptOutput = runtimeEvaluateWorkspaceScripts(javascript, runtimeBindings, javascriptContext, shaderFramebuffer, keyboardInput);
+        const RuntimeControlOutput& mainScriptOutput = runtimeEvaluateWorkspaceScripts(javascript, javascriptContext, shaderFramebuffer, keyboardInput);
         if (mainScriptOutput.ShaderId && *mainScriptOutput.ShaderId != settings.ShaderId)
         {
             switchShaderId(shaderFramebuffer, shaderTransition, shaderEditor, vertexShaderSource, fragmentShaderSource, settings, *mainScriptOutput.ShaderId, currentFrame, mainScriptOutput.ShaderTransitionSeconds, false);
