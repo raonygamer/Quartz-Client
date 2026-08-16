@@ -2,6 +2,7 @@
 #include "quartz/client/ui/PageContext.hpp"
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/ui/AddressInput.hpp"
+#include "quartz/client/ui/I18n.hpp"
 #include "quartz/client/ui/ProcessPicker.hpp"
 #include "quartz/client/ui/ReverseEngineeringNavigation.hpp"
 #include "quartz/client/ui/SignatureMaker.hpp"
@@ -40,25 +41,25 @@ namespace quartz::client::ui
     {
         (void)context;
         if (_processes.empty()) _processes = enumerateRuntimeProcesses();
-        ImGui::TextWrapped("Hardware data breakpoints answer the classic 'who writes/reads this address?' question. x86 provides write-only or read/write data traps (not read-only) and only four debug-address slots per thread; Quartz uses one slot and mirrors it onto newly created threads. Click a hit to inspect its latest register snapshot; right-click hits and register values for actions.");
+        ImGui::TextWrapped("%s", i18n::tr("re.watchDescription"));
         drawProcessPicker("MemoryWatchProcess", _processes, _pid, _processSearch.data(), _processSearch.size(), 520.0f);
-        drawAddressInput("Address", _address.data(), _address.size(), _pid, 310.0f); ImGui::SameLine(); ImGui::SetNextItemWidth(110.0f); static constexpr const char* Sizes[] = {"1 byte", "2 bytes", "4 bytes", "8 bytes"}; ImGui::Combo("Size", &_size, Sizes, 4); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); ImGui::Combo("Access", &_access, "Write\0Read / write\0");
-        ImGui::SetNextItemWidth(120.0f); ImGui::InputInt("Hit limit", &_maxHits); ImGui::SameLine(); ImGui::TextDisabled("0 = unlimited | address expressions support module names and + - * / | %s", runtimeX86ModeName(runtimeProcessX86Mode(_pid)));
+        drawAddressInput(i18n::tr("re.address"), _address.data(), _address.size(), _pid, 310.0f); ImGui::SameLine(); ImGui::SetNextItemWidth(110.0f); static constexpr const char* Sizes[] = {"1 byte", "2 bytes", "4 bytes", "8 bytes"}; ImGui::Combo(i18n::tr("re.size"), &_size, Sizes, 4); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); const std::string accessItems=std::string(i18n::tr("re.writeAccess"))+"\0"+i18n::tr("re.readWriteAccess")+"\0"; ImGui::Combo(i18n::tr("re.access"), &_access, accessItems.c_str());
+        ImGui::SetNextItemWidth(120.0f); ImGui::InputInt(i18n::tr("re.hitLimit"), &_maxHits); ImGui::SameLine(); ImGui::TextDisabled(i18n::tr("re.watchAddressHint"), runtimeX86ModeName(runtimeProcessX86Mode(_pid)));
         const bool watchRunning = _watch.running();
         ImGui::BeginDisabled(watchRunning);
-        if (ImGui::Button("Start watch"))
+        if (ImGui::Button(i18n::tr("re.startWatch")))
         {
             std::uintptr_t address = 0; std::string error; static constexpr std::size_t Widths[] = {1, 2, 4, 8};
             if (!evaluateAddressExpression(_pid, _address.data(), address, error) || address == 0) _status = error.empty() ? "invalid address" : error;
             else { _selectedSite = 0; _watch.start(_pid, address, Widths[std::clamp(_size, 0, 3)], static_cast<MemoryWatchAccess>(_access), static_cast<std::size_t>(std::max(_maxHits, 0)), _status); }
         }
-        ImGui::EndDisabled(); ImGui::SameLine(); ImGui::BeginDisabled(!watchRunning); if (ImGui::Button("Stop")) _watch.stop(); ImGui::EndDisabled(); ImGui::SameLine(); if (ImGui::Button("Clear hits")) { _watch.clearHits(); _selectedSite = 0; }
+        ImGui::EndDisabled(); ImGui::SameLine(); ImGui::BeginDisabled(!watchRunning); if (ImGui::Button(i18n::tr("re.stopWatch"))) _watch.stop(); ImGui::EndDisabled(); ImGui::SameLine(); if (ImGui::Button(i18n::tr("re.clearHits"))) { _watch.clearHits(); _selectedSite = 0; }
         const std::string watchStatus = _watch.status(); if (!watchStatus.empty()) ImGui::TextWrapped("%s", watchStatus.c_str()); if (!_status.empty()) ImGui::TextDisabled("%s", _status.c_str());
 
         const auto hits = _watch.hits();
         if (ImGui::BeginTable("MemoryWatchHits", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable, ImVec2(0.0f, 350.0f)))
         {
-            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 42.0f); ImGui::TableSetupColumn("Hits", ImGuiTableColumnFlags_WidthFixed, 68.0f); ImGui::TableSetupColumn("Last TID", ImGuiTableColumnFlags_WidthFixed, 85.0f); ImGui::TableSetupColumn("RIP after access", ImGuiTableColumnFlags_WidthFixed, 145.0f); ImGui::TableSetupColumn("Access instruction"); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 62.0f); ImGui::TableHeadersRow();
+            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 42.0f); ImGui::TableSetupColumn(i18n::tr("re.hits"), ImGuiTableColumnFlags_WidthFixed, 68.0f); ImGui::TableSetupColumn(i18n::tr("re.lastTid"), ImGuiTableColumnFlags_WidthFixed, 85.0f); ImGui::TableSetupColumn(i18n::tr("re.ripAfter"), ImGuiTableColumnFlags_WidthFixed, 175.0f); ImGui::TableSetupColumn(i18n::tr("re.accessInstruction")); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 72.0f); ImGui::TableHeadersRow();
             for (std::size_t i = 0; i < hits.size(); ++i)
             {
                 const auto& hit = hits[i]; const std::uintptr_t site = hitSite(hit); const bool active = _selectedSite == site; ImGui::PushID(static_cast<int>(i)); ImGui::TableNextRow(); ImGui::TableNextColumn();
@@ -67,46 +68,45 @@ namespace quartz::client::ui
                 if (ImGui::BeginPopupContextItem("WatchHitContext"))
                 {
                     _selectedSite = site;
-                    if (ImGui::MenuItem("Inspect access instruction")) openWatchInspector(manager, _pid, site);
-                    if (ImGui::MenuItem("Create signature from access instruction")) { requestSignatureMaker(_pid, site); manager.open("native"); }
-                    if (ImGui::MenuItem("Inspect RIP after access")) openWatchInspector(manager, _pid, hit.Rip);
+                    if (ImGui::MenuItem(i18n::tr("re.inspectAccessInstruction"))) openWatchInspector(manager, _pid, site);
+                    if (ImGui::MenuItem(i18n::tr("re.signatureFromAccess"))) { requestSignatureMaker(_pid, site); manager.open("native"); }
+                    if (ImGui::MenuItem(i18n::tr("re.inspectRipAfter"))) openWatchInspector(manager, _pid, hit.Rip);
                     ImGui::Separator();
                     auto& probe = executionProbe(); const bool thisProbe = probe.running() && probe.pid() == _pid && probe.address() == site;
                     if (thisProbe)
                     {
-                        if (ImGui::MenuItem("Cancel execution probe")) { probe.stop(); _status = "execution probe cancelled"; }
+                        if (ImGui::MenuItem(i18n::tr("re.cancelProbe"))) { probe.stop(); _status = "execution probe cancelled"; }
                     }
                     else
                     {
                         ImGui::BeginDisabled(probe.running());
-                        if (ImGui::MenuItem("Capture registers on next execution"))
+                        if (ImGui::MenuItem(i18n::tr("re.captureRegistersNext")))
                         {
                             if (_watch.running()) _watch.stop(); std::string error;
-                            if (!probe.start(_pid, site, error)) _status = error; else _status = "armed one-shot execution probe at " + runtimeHexAddress(site);
+                            if (!probe.start(_pid, site, error)) _status = error; else _status = "armed one-shot execution probe at " + runtimeFormatProcessAddress(_pid,site);
                         }
                         ImGui::EndDisabled();
                     }
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Copy instruction address")) { const std::string text = runtimeHexAddress(site); ImGui::SetClipboardText(text.c_str()); }
-                    if (ImGui::MenuItem("Copy RIP after access")) { const std::string text = runtimeHexAddress(hit.Rip); ImGui::SetClipboardText(text.c_str()); }
-                    if (ImGui::MenuItem("Copy instruction")) ImGui::SetClipboardText(hit.Instruction.c_str());
-                    if (ImGui::MenuItem("Copy address + instruction")) { const std::string text = runtimeHexAddress(site) + "  " + hit.Instruction; ImGui::SetClipboardText(text.c_str()); }
-                    ImGui::Separator();
+                    if (ImGui::MenuItem(i18n::tr("re.copyInstructionAddress"))) { const std::string text = runtimeFormatProcessAddress(_pid,site); ImGui::SetClipboardText(text.c_str()); }
+                    if (ImGui::MenuItem(i18n::tr("re.copyRipAfter"))) { const std::string text = runtimeFormatProcessAddress(_pid,hit.Rip); ImGui::SetClipboardText(text.c_str()); }
+                    if (ImGui::MenuItem(i18n::tr("re.copyInstruction"))) ImGui::SetClipboardText(hit.Instruction.c_str());
+                    if (ImGui::MenuItem(i18n::tr("re.copyAddressInstruction"))) { const std::string text = runtimeFormatProcessAddress(_pid,site) + "  " + hit.Instruction; ImGui::SetClipboardText(text.c_str()); }
                     ImGui::EndPopup();
                 }
-                ImGui::SameLine(); ImGui::Text("%zu", i + 1); ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(hit.Count)); ImGui::TableNextColumn(); ImGui::Text("%d", hit.Tid); ImGui::TableNextColumn(); ImGui::Text("0x%llX", static_cast<unsigned long long>(hit.Rip)); ImGui::TableNextColumn(); if (hit.InstructionAddress) ImGui::Text("0x%llX  %s", static_cast<unsigned long long>(hit.InstructionAddress), hit.Instruction.c_str()); else ImGui::TextUnformatted(hit.Instruction.c_str()); ImGui::TableNextColumn(); if (ImGui::SmallButton("Inspect")) openWatchInspector(manager, _pid, site); ImGui::PopID();
+                ImGui::SameLine(); ImGui::Text("%zu", i + 1); ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(hit.Count)); ImGui::TableNextColumn(); ImGui::Text("%d", hit.Tid); ImGui::TableNextColumn(); ImGui::TextUnformatted(runtimeFormatProcessAddress(_pid,hit.Rip).c_str()); ImGui::TableNextColumn(); if (hit.InstructionAddress) ImGui::Text("%s  %s", runtimeFormatProcessAddress(_pid,hit.InstructionAddress).c_str(), hit.Instruction.c_str()); else ImGui::TextUnformatted(hit.Instruction.c_str()); ImGui::TableNextColumn(); if (ImGui::SmallButton(i18n::tr("re.inspect"))) openWatchInspector(manager, _pid, site); ImGui::PopID();
             }
             ImGui::EndTable();
         }
-        ImGui::TextDisabled("Hits are grouped by the instruction that accessed the watched address. The register snapshot below is replaced with the latest trap at that site; RIP is post-access because x86 data breakpoints trap after the memory access.");
+        ImGui::TextDisabled("%s", i18n::tr("re.hitsDescription"));
 
         const MemoryWatchHit* selectedHit = nullptr; for (const auto& hit : hits) if (hitSite(hit) == _selectedSite) { selectedHit = &hit; break; }
         if (selectedHit && selectedHit->HasRegisters)
         {
-            const RuntimeX86Mode mode = runtimeProcessX86Mode(_pid); const auto registers = registerValues(*selectedHit, mode); ImGui::SeparatorText("Register snapshot"); ImGui::TextDisabled("Latest hit at %s | TID %d | %s | right-click any register value", runtimeHexAddress(hitSite(*selectedHit)).c_str(), selectedHit->Tid, mode == RuntimeX86Mode::X86 ? "32-bit register view" : "64-bit register view");
+            const RuntimeX86Mode mode = runtimeProcessX86Mode(_pid); const auto registers = registerValues(*selectedHit, mode); ImGui::SeparatorText(i18n::tr("re.registerSnapshot")); ImGui::TextDisabled(i18n::tr("re.latestHit"), runtimeFormatProcessAddress(_pid,hitSite(*selectedHit)).c_str(), selectedHit->Tid, mode == RuntimeX86Mode::X86 ? "32-bit" : "64-bit");
             if (ImGui::BeginTable("WatchRegisters", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollY, ImVec2(0.0f, 285.0f)))
             {
-                ImGui::TableSetupColumn("Register", ImGuiTableColumnFlags_WidthFixed, 90.0f); ImGui::TableSetupColumn("Value"); ImGui::TableSetupColumn("Register", ImGuiTableColumnFlags_WidthFixed, 90.0f); ImGui::TableSetupColumn("Value"); ImGui::TableHeadersRow();
+                ImGui::TableSetupColumn(i18n::tr("re.register"), ImGuiTableColumnFlags_WidthFixed, 90.0f); ImGui::TableSetupColumn(i18n::tr("re.value")); ImGui::TableSetupColumn(i18n::tr("re.register"), ImGuiTableColumnFlags_WidthFixed, 90.0f); ImGui::TableSetupColumn(i18n::tr("re.value")); ImGui::TableHeadersRow();
                 for (std::size_t pair = 0; pair < (registers.size() + 1) / 2; ++pair)
                 {
                     ImGui::TableNextRow();
@@ -114,17 +114,17 @@ namespace quartz::client::ui
                     {
                         const std::size_t index = pair + side * ((registers.size() + 1) / 2); ImGui::TableNextColumn();
                         if (index >= registers.size()) { ImGui::TableNextColumn(); continue; }
-                        const auto& reg = registers[index]; ImGui::TextUnformatted(reg.Name); ImGui::TableNextColumn(); ImGui::PushID(static_cast<int>(index)); const std::string hex = runtimeHexAddress(static_cast<std::uintptr_t>(reg.Value));
-                        ImGui::Selectable(hex.c_str(), false, ImGuiSelectableFlags_AllowOverlap, ImVec2(0.0f, ImGui::GetTextLineHeight()));
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s = %s\nunsigned: %llu\nsigned: %lld", reg.Name, hex.c_str(), static_cast<unsigned long long>(reg.Value), static_cast<long long>(reg.Value));
+                        const auto& reg = registers[index]; ImGui::TextUnformatted(reg.Name); ImGui::TableNextColumn(); ImGui::PushID(static_cast<int>(index)); const std::string symbolic = runtimeFormatProcessAddress(_pid,static_cast<std::uintptr_t>(reg.Value));
+                        ImGui::Selectable(symbolic.c_str(), false, ImGuiSelectableFlags_AllowOverlap, ImVec2(0.0f, ImGui::GetTextLineHeight()));
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s = %s\nunsigned: %llu\nsigned: %lld", reg.Name, symbolic.c_str(), static_cast<unsigned long long>(reg.Value), static_cast<long long>(reg.Value));
                         if (ImGui::BeginPopupContextItem("RegisterContext"))
                         {
-                            if (ImGui::MenuItem("Copy hexadecimal")) ImGui::SetClipboardText(hex.c_str());
-                            if (ImGui::MenuItem("Copy decimal")) { const std::string text = std::to_string(reg.Value); ImGui::SetClipboardText(text.c_str()); }
-                            if (ImGui::MenuItem("Copy register = value")) { const std::string text = std::string(reg.Name) + " = " + hex; ImGui::SetClipboardText(text.c_str()); }
+                            if (ImGui::MenuItem(i18n::tr("re.copySymbolicAddress"))) ImGui::SetClipboardText(symbolic.c_str());
+                            if (ImGui::MenuItem(i18n::tr("re.copyDecimal"))) { const std::string text = std::to_string(reg.Value); ImGui::SetClipboardText(text.c_str()); }
+                            if (ImGui::MenuItem(i18n::tr("re.copyRegisterValue"))) { const std::string text = std::string(reg.Name) + " = " + symbolic; ImGui::SetClipboardText(text.c_str()); }
                             ImGui::Separator(); ImGui::BeginDisabled(reg.Value == 0);
-                            if (ImGui::MenuItem("Inspect/disassemble value as address")) openWatchInspector(manager, _pid, static_cast<std::uintptr_t>(reg.Value));
-                            if (ImGui::MenuItem("Use value as watch address")) { std::snprintf(_address.data(), _address.size(), "0x%llX", static_cast<unsigned long long>(reg.Value)); _status = std::string("watch address field <- ") + reg.Name; }
+                            if (ImGui::MenuItem(i18n::tr("re.inspectValueAddress"))) openWatchInspector(manager, _pid, static_cast<std::uintptr_t>(reg.Value));
+                            if (ImGui::MenuItem(i18n::tr("re.useValueAsWatch"))) { std::snprintf(_address.data(), _address.size(), "0x%llX", static_cast<unsigned long long>(reg.Value)); _status = std::string("watch address field <- ") + reg.Name; }
                             ImGui::EndDisabled(); ImGui::EndPopup();
                         }
                         ImGui::PopID();
@@ -133,6 +133,6 @@ namespace quartz::client::ui
                 ImGui::EndTable();
             }
         }
-        else if (_selectedSite != 0) { ImGui::SeparatorText("Register snapshot"); ImGui::TextDisabled("No register snapshot is available for the selected hit."); }
+        else if (_selectedSite != 0) { ImGui::SeparatorText(i18n::tr("re.registerSnapshot")); ImGui::TextDisabled("%s",i18n::tr("re.noRegisterSnapshot")); }
     }
 }
