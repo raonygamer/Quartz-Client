@@ -5,6 +5,7 @@
 #include "quartz/client/ui/SignatureMaker.hpp"
 #include "quartz/client/ui/TextEditorSupport.hpp"
 #include "quartz/client/Model.hpp"
+#include "quartz/client/async/ThreadPool.hpp"
 #include "quartz/client/native/ExecutionProbe.hpp"
 #include "quartz/client/native/FunctionAnalysis.hpp"
 #include "quartz/client/native/NativeDisassembly.hpp"
@@ -18,10 +19,12 @@
 #include <cstring>
 #include <iomanip>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <imgui_internal.h>
 
 namespace quartz::client
@@ -93,6 +96,21 @@ namespace quartz::client
             std::string PreviewText;
         };
 
+        struct AsyncDisassemblyFetchResult
+        {
+            std::uint64_t Generation = 0;
+            pid_t Pid = 0;
+            std::uintptr_t Focus = 0;
+            std::uintptr_t BufferBase = 0;
+            std::size_t BufferSize = 0;
+            std::uintptr_t RegionBase = 0;
+            std::uintptr_t RegionEnd = 0;
+            std::vector<std::uint8_t> Bytes;
+            std::optional<std::uintptr_t> ScrollAnchor;
+            TextEditor::Scroll Alignment = TextEditor::Scroll::alignTop;
+            std::string Error;
+        };
+
         struct EnhancedMemoryInspectorState
         {
             pid_t LastPid = 0;
@@ -107,6 +125,11 @@ namespace quartz::client
             std::uintptr_t BufferRegionBase = 0;
             std::uintptr_t BufferRegionEnd = 0;
             double LastDisassemblyWindowShift = 0.0;
+            std::mutex AsyncFetchMutex;
+            std::optional<AsyncDisassemblyFetchResult> AsyncFetchResult;
+            std::uint64_t AsyncFetchGeneration = 0;
+            std::uint64_t AsyncFetchPendingGeneration = 0;
+            std::uintptr_t AsyncFetchRequestedFocus = 0;
             std::vector<std::uintptr_t> NavigationBack;
             std::vector<std::uintptr_t> NavigationForward;
             std::array<char, 256> GoToText{};
@@ -260,7 +283,7 @@ namespace quartz::client
 
         std::string tokenAt(const TextEditor& editor, const TextEditor::DocPos pos)
         {
-            const std::string line = editor.GetLineText(pos.line); if (line.empty()) return {}; std::size_t index = std::min(pos.index, line.size()); if (index == line.size() && index) --index;
+            if (pos.line>=editor.GetLineCount()) return {}; const std::string line = editor.GetLineText(pos.line); if (line.empty()) return {}; std::size_t index = std::min(pos.index, line.size()); if (index == line.size() && index) --index;
             const auto allowed = [](const unsigned char c) { return std::isalnum(c) || c == '_' || c == '$'; }; if (index < line.size() && !allowed(static_cast<unsigned char>(line[index])) && index && allowed(static_cast<unsigned char>(line[index - 1]))) --index; if (index >= line.size() || !allowed(static_cast<unsigned char>(line[index]))) return {};
             std::size_t begin = index, end = index + 1; while (begin && allowed(static_cast<unsigned char>(line[begin - 1]))) --begin; while (end < line.size() && allowed(static_cast<unsigned char>(line[end]))) ++end; return line.substr(begin, end - begin);
         }
@@ -311,6 +334,40 @@ namespace quartz::client
             return size != 0;
         }
 
+        void invalidateAsyncDisassemblyFetch()
+        {
+            auto& ui=enhancedMemoryInspectorState(); ++ui.AsyncFetchGeneration; ui.AsyncFetchPendingGeneration=0; ui.AsyncFetchRequestedFocus=0; std::lock_guard lock(ui.AsyncFetchMutex); ui.AsyncFetchResult.reset();
+        }
+
+        bool requestAsyncDisassemblyFetch(RuntimeMemoryInspectorState& state, const std::uintptr_t focus, const std::optional<std::uintptr_t> scrollAnchor, const TextEditor::Scroll alignment)
+        {
+            auto& ui=enhancedMemoryInspectorState(); if (state.Pid<=0||focus==0||state.ReadSize<=0) return false; if (ui.AsyncFetchPendingGeneration) return ui.AsyncFetchRequestedFocus==focus;
+            const std::uint64_t generation=++ui.AsyncFetchGeneration; const pid_t pid=state.Pid; const int readSize=state.ReadSize; ui.AsyncFetchPendingGeneration=generation; ui.AsyncFetchRequestedFocus=focus;
+            async::globalThreadPool().submit([generation,pid,focus,readSize,scrollAnchor,alignment](const std::stop_token stop)
+            {
+                if (stop.stop_requested()) return; AsyncDisassemblyFetchResult result; result.Generation=generation; result.Pid=pid; result.Focus=focus; result.ScrollAnchor=scrollAnchor; result.Alignment=alignment;
+                if (!calculateDisassemblyWindow(pid,focus,readSize,result.BufferBase,result.BufferSize,result.RegionBase,result.RegionEnd)) result.Error="target address is not in readable memory";
+                else
+                {
+                    result.Bytes.assign(result.BufferSize,0); if (stop.stop_requested()) return; std::string error; if (!readProcessMemoryBlock(pid,result.BufferBase,result.Bytes,error)) { result.Bytes.clear(); result.Error="memory read failed: "+error; }
+                }
+                auto& ui=enhancedMemoryInspectorState(); std::lock_guard lock(ui.AsyncFetchMutex); if (!ui.AsyncFetchResult||ui.AsyncFetchResult->Generation<=generation) ui.AsyncFetchResult=std::move(result);
+            },async::TaskPriority::High); return true;
+        }
+
+        void applyDisassemblyMarkers(RuntimeMemoryInspectorState& state);
+        void rebuildDisassembly(RuntimeMemoryInspectorState& state);
+
+        bool pollAsyncDisassemblyFetch(RuntimeMemoryInspectorState& state)
+        {
+            auto& ui=enhancedMemoryInspectorState(); if (ImGui::IsKeyDown(ImGuiKey_PageUp)||ImGui::IsKeyDown(ImGuiKey_PageDown)) return false; std::optional<AsyncDisassemblyFetchResult> result;
+            {
+                std::lock_guard lock(ui.AsyncFetchMutex); if (!ui.AsyncFetchPendingGeneration) { if (ui.AsyncFetchResult&&ui.AsyncFetchResult->Generation<=ui.AsyncFetchGeneration) ui.AsyncFetchResult.reset(); return false; } if (!ui.AsyncFetchResult) return false; if (ui.AsyncFetchResult->Generation<ui.AsyncFetchPendingGeneration) { ui.AsyncFetchResult.reset(); return false; } if (ui.AsyncFetchResult->Generation!=ui.AsyncFetchPendingGeneration) return false; result=std::move(ui.AsyncFetchResult); ui.AsyncFetchResult.reset();
+            }
+            ui.AsyncFetchPendingGeneration=0; ui.AsyncFetchRequestedFocus=0; if (!result||result->Pid!=state.Pid||result->Generation!=ui.AsyncFetchGeneration) return false; if (!result->Error.empty()) { state.Status=result->Error; return false; }
+            ui.BufferBase=result->BufferBase; ui.BufferSize=result->BufferSize; ui.BufferRegionBase=result->RegionBase; ui.BufferRegionEnd=result->RegionEnd; state.Original=std::move(result->Bytes); ui.RawBytes=state.Original; state.Patched=state.Original; const std::string formatted=runtimeFormatHexBytes(state.Original); std::snprintf(state.HexEdit.data(),state.HexEdit.size(),"%s",formatted.c_str()); state.WriteConfirm=0; state.Address=result->Focus; ui.AddressTextValue=std::numeric_limits<std::uintptr_t>::max(); ui.PendingScrollAnchor=result->ScrollAnchor?result->ScrollAnchor:std::optional<std::uintptr_t>(result->Focus); ui.PendingScrollAlignment=result->ScrollAnchor?result->Alignment:TextEditor::Scroll::alignMiddle; configureDisassemblyEditor(state); rebuildDisassembly(state); syncInspectorAddressText(state); const double now=runtimeSteadySeconds(); ui.LastDisassemblyRefresh=now; ui.LastRawRefresh=now; ui.LastPid=state.Pid; ui.LastAddress=state.Address; ui.LastReadSize=state.ReadSize; state.Status="read "+std::to_string(state.Original.size())+" prefetched bytes as "+runtimeX86ModeName(runtimeProcessX86Mode(state.Pid)); requestRuntimeFunctionAnalysis(state.Pid,state.Address); return true;
+        }
+
         void applyDisassemblyMarkers(RuntimeMemoryInspectorState& state)
         {
             auto& ui = enhancedMemoryInspectorState(); auto& probe = executionProbe(); const bool armed = probe.running() && probe.pid() == state.Pid; const std::uintptr_t armedAddress = armed ? probe.address() : 0; state.Disassembly.ClearMarkers();
@@ -346,6 +403,7 @@ namespace quartz::client
                 else ui.FlowGraph.erase(address);
                 ui.Instructions.push_back({address, length, decoded, 0}); offset += length;
             }
+            const std::uintptr_t loadedEnd=ui.BufferBase+state.Original.size(); std::unordered_set<std::uintptr_t> currentInstructionStarts; currentInstructionStarts.reserve(ui.Instructions.size()); for (const auto& instruction:ui.Instructions) currentInstructionStarts.insert(instruction.Address); std::erase_if(ui.FlowGraph,[&](const auto& item){return item.first>=ui.BufferBase&&item.first<loadedEnd&&!currentInstructionStarts.contains(item.first);});
             while (ui.FlowGraph.size()>8192) ui.FlowGraph.erase(ui.FlowGraph.begin());
             analysis = runtimeFunctionAnalysisSnapshot(state.Pid, state.Address); ui.FunctionAnalysis = analysis; ui.FunctionRevision = analysis.Revision;
             const auto appendBoundary=[&](const std::string& name,const bool ending)
@@ -375,7 +433,7 @@ namespace quartz::client
             state.Disassembly.SetText(disassembly.str()); applyDisassemblyMarkers(state); ui.LastProbeRunning = executionProbe().running(); ui.LastProbePid = executionProbe().pid(); ui.LastProbeAddress = executionProbe().address(); ui.DisassemblyDirty = false;
             if (ui.PendingScrollAnchor)
             {
-                const auto it = std::ranges::find(ui.DisplayLineAddresses, *ui.PendingScrollAnchor); if (it != ui.DisplayLineAddresses.end()) state.Disassembly.ScrollToLine(static_cast<std::size_t>(it - ui.DisplayLineAddresses.begin()), ui.PendingScrollAlignment); ui.PendingScrollAnchor.reset(); ui.PendingScrollAlignment=TextEditor::Scroll::alignTop;
+                const auto it = std::ranges::find(ui.DisplayLineAddresses, *ui.PendingScrollAnchor); if (it != ui.DisplayLineAddresses.end()) state.Disassembly.ScrollToLine(static_cast<std::size_t>(it - ui.DisplayLineAddresses.begin()), ui.PendingScrollAlignment); else { const auto focus=std::ranges::find(ui.DisplayLineAddresses,state.Address); if (focus!=ui.DisplayLineAddresses.end()) state.Disassembly.ScrollToLine(static_cast<std::size_t>(focus-ui.DisplayLineAddresses.begin()),TextEditor::Scroll::alignMiddle); } ui.PendingScrollAnchor.reset(); ui.PendingScrollAlignment=TextEditor::Scroll::alignTop;
             }
         }
 
@@ -490,7 +548,7 @@ namespace quartz::client
             const std::size_t writeSize = assembler.Patch.size(); std::vector<std::uint8_t> originalPrefix(assembler.Original.begin(), assembler.Original.begin() + std::min(writeSize, assembler.Original.size()));
             if (!runtimeWriteProcessMemory(state.Pid, assembler.Address, assembler.Patch, error)) { assembler.Error = "patch write failed: " + error; assembler.ConfirmArmed = false; return false; }
             if (runtimeConfiguration().AssemblerKeepOriginalBytes) ui.PatchHistory.push_back({state.Pid, assembler.Address, std::move(originalPrefix), assembler.Patch, assembler.NopMode ? "NOP patch" : "assembled patch"});
-            assembler.Error = "patch written"; assembler.ConfirmArmed = false; if (runtimeConfiguration().AssemblerAutoRedisassemble) refreshDisassemblyBytes(state, true, false); return true;
+            assembler.Error = "patch written"; assembler.ConfirmArmed = false; if (runtimeConfiguration().AssemblerAutoRedisassemble) { invalidateAsyncDisassemblyFetch(); refreshDisassemblyBytes(state, true, false); } return true;
         }
 
         void drawAssemblerTweaks()
@@ -521,7 +579,7 @@ namespace quartz::client
             for (std::size_t i = ui.PatchHistory.size(); i-- > 0;)
             {
                 auto& patch = ui.PatchHistory[i]; if (patch.Pid != state.Pid) continue; ImGui::PushID(static_cast<int>(i)); const std::string address = runtimeFormatProcessAddress(state.Pid, patch.Address); ImGui::Text("%s  %s", address.c_str(), patch.Label.c_str()); ImGui::SameLine();
-                if (ImGui::SmallButton(ui::i18n::tr("re.restore"))) { std::string error; if (runtimeWriteProcessMemory(patch.Pid, patch.Address, patch.Original, error)) { state.Status = "restored original patch bytes"; if (runtimeConfiguration().AssemblerAutoRedisassemble) refreshDisassemblyBytes(state, true, false); } else state.Status = "restore failed: " + error; }
+                if (ImGui::SmallButton(ui::i18n::tr("re.restore"))) { std::string error; if (runtimeWriteProcessMemory(patch.Pid, patch.Address, patch.Original, error)) { state.Status = "restored original patch bytes"; if (runtimeConfiguration().AssemblerAutoRedisassemble) { invalidateAsyncDisassemblyFetch(); refreshDisassemblyBytes(state, true, false); } } else state.Status = "restore failed: " + error; }
                 ImGui::SameLine(); if (ImGui::SmallButton(ui::i18n::tr("re.copyAddress"))) ImGui::SetClipboardText(address.c_str()); ImGui::PopID();
             }
         }
@@ -548,12 +606,12 @@ namespace quartz::client
 
         bool assemblyHoverAvailable(RuntimeMemoryInspectorState& state, TextEditor& editor, const bool mappedLines, const TextEditor::DocPos pos)
         {
-            auto& ui=enhancedMemoryInspectorState(); const std::string token=tokenAt(editor,pos); if (!token.empty()&&knownRegister(token)) return true; const DisassemblyInstruction* instruction=nullptr; if (mappedLines) if (const auto index=instructionIndexForDisplayLine(ui,pos.line)) instruction=&ui.Instructions[*index]; std::string mnemonic; if (instruction) { const auto space=instruction->Decoded.Text.find_first_of(" \t"); mnemonic=lower(instruction->Decoded.Text.substr(0,space)); } else { const std::string line=editor.GetLineText(pos.line); const auto first=line.find_first_not_of(" \t"); if (first!=std::string::npos) { const auto end=line.find_first_of(" \t",first); mnemonic=lower(line.substr(first,end-first)); } } if ((!token.empty()&&lower(token)==mnemonic&&(mnemonicDescription(mnemonic)||mnemonicReadableName(mnemonic)))||(instruction&&instruction->Decoded.Target&&(instruction->Decoded.Branch==RuntimeBranchKind::Conditional||instruction->Decoded.Branch==RuntimeBranchKind::Unconditional||instruction->Decoded.Branch==RuntimeBranchKind::Call))) return true; return false;
+            if (pos.line>=editor.GetLineCount()) return false; auto& ui=enhancedMemoryInspectorState(); const std::string token=tokenAt(editor,pos); if (!token.empty()&&knownRegister(token)) return true; const DisassemblyInstruction* instruction=nullptr; if (mappedLines) if (const auto index=instructionIndexForDisplayLine(ui,pos.line)) instruction=&ui.Instructions[*index]; std::string mnemonic; if (instruction) { const auto space=instruction->Decoded.Text.find_first_of(" \t"); mnemonic=lower(instruction->Decoded.Text.substr(0,space)); } else { const std::string line=editor.GetLineText(pos.line); const auto first=line.find_first_not_of(" \t"); if (first!=std::string::npos) { const auto end=line.find_first_of(" \t",first); mnemonic=lower(line.substr(first,end-first)); } } if ((!token.empty()&&lower(token)==mnemonic&&(mnemonicDescription(mnemonic)||mnemonicReadableName(mnemonic)))||(instruction&&instruction->Decoded.Target&&(instruction->Decoded.Branch==RuntimeBranchKind::Conditional||instruction->Decoded.Branch==RuntimeBranchKind::Unconditional||instruction->Decoded.Branch==RuntimeBranchKind::Call))) return true; return false;
         }
 
         bool drawAssemblyHoverContent(RuntimeMemoryInspectorState& state, TextEditor& editor, const bool mappedLines, const TextEditor::DocPos pos)
         {
-            auto& ui = enhancedMemoryInspectorState(); const std::string token = tokenAt(editor,pos); bool rendered = false; const RuntimeX86Mode mode=runtimeProcessX86Mode(state.Pid); const auto modules = runtimeProcessModules(state.Pid);
+            if (pos.line>=editor.GetLineCount()) return false; auto& ui = enhancedMemoryInspectorState(); const std::string token = tokenAt(editor,pos); bool rendered = false; const RuntimeX86Mode mode=runtimeProcessX86Mode(state.Pid); const auto modules = runtimeProcessModules(state.Pid);
             if (!token.empty() && knownRegister(token))
             {
                 rendered = true; const std::string reg=upper(token); ImGui::TextUnformatted(reg.c_str()); if (const char* description=registerDescription(reg)) ImGui::TextWrapped("%s",description); ImGui::Separator();
@@ -627,12 +685,12 @@ namespace quartz::client
 
         float branchLineEndX(RuntimeMemoryInspectorState& state, const std::size_t row)
         {
-            const std::string text=state.Disassembly.GetLineText(row); return state.Disassembly.GetDocPosScreenPos(TextEditor::DocPos(row,text.size())).x;
+            if (row>=state.Disassembly.GetLineCount()) return 0.0f; const std::string text=state.Disassembly.GetLineText(row); return state.Disassembly.GetDocPosScreenPos(TextEditor::DocPos(row,text.size())).x;
         }
 
         float branchRowCenterY(RuntimeMemoryInspectorState& state, const std::size_t row)
         {
-            return state.Disassembly.GetDocPosScreenPos(TextEditor::DocPos(row,0)).y+state.Disassembly.GetLineHeight()*0.5f;
+            if (row>=state.Disassembly.GetLineCount()) return 0.0f; return state.Disassembly.GetDocPosScreenPos(TextEditor::DocPos(row,0)).y+state.Disassembly.GetLineHeight()*0.5f;
         }
 
         void drawFarControlFlowWindow(RuntimeMemoryInspectorState& state)
@@ -665,18 +723,18 @@ namespace quartz::client
             struct FarRoute { FarControlFlowEntry Entry; bool SourceVisible=false,TargetVisible=false,DestinationBelow=false; float SourceY=0.0f,TargetY=0.0f,SourceDock=0.0f,TargetDock=0.0f; };
             struct Reservation { float X=0.0f,Y0=0.0f,Y1=0.0f; };
 
-            auto& ui=enhancedMemoryInspectorState(); if (ui.FlowGraph.empty()||ui.DisplayLineAddresses.empty()) return; const std::size_t firstRow=state.Disassembly.GetFirstVisibleRow(),lastRow=state.Disassembly.GetLastVisibleRow(); if (lastRow<firstRow) return; const auto firstAddress=displayAddressNearRow(ui,firstRow),lastAddress=displayAddressNearRow(ui,lastRow); if (!firstAddress||!lastAddress) return;
+            auto& ui=enhancedMemoryInspectorState(); const std::size_t lineCount=state.Disassembly.GetLineCount(); if (ui.FlowGraph.empty()||ui.DisplayLineAddresses.empty()||lineCount==0) return; const std::size_t firstRow=std::min(state.Disassembly.GetFirstVisibleRow(),lineCount-1),lastRow=std::min(state.Disassembly.GetLastVisibleRow(),lineCount-1); if (lastRow<firstRow) return; const auto firstAddress=displayAddressNearRow(ui,firstRow),lastAddress=displayAddressNearRow(ui,lastRow); if (!firstAddress||!lastAddress) return;
             const float scrollbarClearance=ImGui::GetStyle().ScrollbarSize+20.0f,top=min.y+7.0f,bottom=max.y-10.0f,farRailX=max.x-scrollbarClearance,right=farRailX-28.0f,dockGap=15.0f,routeGap=32.0f,laneStep=19.0f,portOffset=3.0f; if (bottom<=top||right<=min.x+20.0f) return; const std::size_t visibleRows=std::max<std::size_t>(1,lastRow-firstRow+1);
             std::vector<Route> routes; routes.reserve(ui.FlowGraph.size()*2); std::vector<FarRoute> farRoutes;
 
-            const auto rowFor=[&](const std::uintptr_t address)->std::optional<std::size_t> { const auto it=ui.DisplayLineByAddress.find(address); return it==ui.DisplayLineByAddress.end()?std::nullopt:std::optional<std::size_t>(it->second); };
+            const auto rowFor=[&](const std::uintptr_t address)->std::optional<std::size_t> { const auto it=ui.DisplayLineByAddress.find(address); return it==ui.DisplayLineByAddress.end()||it->second>=lineCount?std::nullopt:std::optional<std::size_t>(it->second); };
             const auto classify=[&](const std::uintptr_t source,const std::uintptr_t destination,const ImU32 color,const RuntimeBranchKind branch,const std::string& mnemonic,const bool sourceDot,const bool fallThrough)
             {
                 const auto sourceRow=rowFor(source),targetRow=rowFor(destination); const bool sourceVisible=sourceRow&&*sourceRow>=firstRow&&*sourceRow<=lastRow,targetVisible=targetRow&&*targetRow>=firstRow&&*targetRow<=lastRow; const bool sourceAbove=sourceRow?*sourceRow<firstRow:source<*firstAddress,sourceBelow=sourceRow?*sourceRow>lastRow:source>*lastAddress,targetAbove=targetRow?*targetRow<firstRow:destination<*firstAddress,targetBelow=targetRow?*targetRow>lastRow:destination>*lastAddress; if (!sourceVisible&&!targetVisible&&!((sourceAbove&&targetBelow)||(sourceBelow&&targetAbove))) return;
                 const bool far=!fallThrough&&(!sourceRow||!targetRow||(sourceRow&&targetRow&&static_cast<std::size_t>(std::max(*sourceRow,*targetRow)-std::min(*sourceRow,*targetRow))>visibleRows*3));
                 const float sourceY=std::clamp(sourceVisible?branchRowCenterY(state,*sourceRow)-portOffset:(sourceAbove?top:bottom),top,bottom),targetY=std::clamp(targetVisible?branchRowCenterY(state,*targetRow)+portOffset:(targetBelow?bottom:top),top,bottom); const float sourceDock=sourceVisible?branchLineEndX(state,*sourceRow)+dockGap:min.x+ui.AddressColumnWidth+dockGap,targetDock=targetVisible?branchLineEndX(state,*targetRow)+dockGap:sourceDock;
                 if (far) { farRoutes.push_back({{source,destination,branch,mnemonic,color},sourceVisible,targetVisible,targetBelow,sourceY,targetY,sourceDock,targetDock}); return; }
-                Route route; route.SourceRow=sourceRow; route.TargetRow=targetRow; route.Source=source; route.Destination=destination; route.SourceVisible=sourceVisible; route.TargetVisible=targetVisible; route.TargetBelow=targetBelow; route.SourceDot=sourceDot; route.FallThrough=fallThrough; route.Color=color; route.SourceY=sourceY; route.TargetY=targetY; route.SourceDock=sourceDock; route.TargetDock=targetDock; const std::size_t sourceScan=sourceRow?std::clamp(*sourceRow,firstRow,lastRow):(sourceAbove?firstRow:lastRow),targetScan=targetRow?std::clamp(*targetRow,firstRow,lastRow):(targetAbove?firstRow:lastRow); const std::size_t scanBegin=std::min(sourceScan,targetScan),scanEnd=std::max(sourceScan,targetScan); float desired=std::max(route.SourceDock,route.TargetDock)+routeGap; for (std::size_t row=scanBegin;row<=scanEnd&&row<state.Disassembly.GetLineCount();++row) { if (row<ui.DisplayLineAddresses.size()&&!ui.DisplayLineAddresses[row]) continue; desired=std::max(desired,branchLineEndX(state,row)+routeGap); } if (destination<source) desired+=laneStep; route.DesiredLane=std::min(desired,right); route.LaneX=route.DesiredLane; routes.emplace_back(route);
+                Route route; route.SourceRow=sourceRow; route.TargetRow=targetRow; route.Source=source; route.Destination=destination; route.SourceVisible=sourceVisible; route.TargetVisible=targetVisible; route.TargetBelow=targetBelow; route.SourceDot=sourceDot; route.FallThrough=fallThrough; route.Color=color; route.SourceY=sourceY; route.TargetY=targetY; route.SourceDock=sourceDock; route.TargetDock=targetDock; const std::size_t sourceScan=sourceRow?std::clamp(*sourceRow,firstRow,lastRow):(sourceAbove?firstRow:lastRow),targetScan=targetRow?std::clamp(*targetRow,firstRow,lastRow):(targetAbove?firstRow:lastRow); const std::size_t scanBegin=std::min(sourceScan,targetScan),scanEnd=std::max(sourceScan,targetScan); float desired=std::max(route.SourceDock,route.TargetDock)+routeGap; for (std::size_t row=scanBegin;row<=scanEnd&&row<lineCount;++row) { if (row<ui.DisplayLineAddresses.size()&&!ui.DisplayLineAddresses[row]) continue; desired=std::max(desired,branchLineEndX(state,row)+routeGap); } if (destination<source) desired+=laneStep; route.DesiredLane=std::min(desired,right); route.LaneX=route.DesiredLane; routes.emplace_back(route);
             };
 
             for (const auto& [source,flow]:ui.FlowGraph)
@@ -739,7 +797,7 @@ namespace quartz::client
                         else drawHorizontalContinuation(draw,{farRailX-8.0f,route.TargetY},false,color);
                     }
                 }
-                const ImU32 headColor=farHot?IM_COL32(255,255,255,245):colors.front(); if (hasUp) drawVerticalArrowHead(draw,{farRailX,top},false,headColor); if (hasDown) drawVerticalArrowHead(draw,{farRailX,bottom},true,headColor); const std::string count="×"+std::to_string(farRoutes.size()); draw->AddText({farRailX-ImGui::CalcTextSize(count.c_str()).x-9.0f,top+5.0f},farHot?IM_COL32(255,255,255,255):IM_COL32(215,215,225,230),count.c_str()); if (farHot) { ImGui::SetMouseCursor(ImGuiMouseCursor_Hand); ImGui::SetTooltip(ui::i18n::tr("re.farFlowTooltip"),farRoutes.size()); if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { ui.FarFlowEntries.clear(); ui.FarFlowEntries.reserve(farRoutes.size()); for (const auto& route:farRoutes) ui.FarFlowEntries.push_back(route.Entry); ui.OpenFarFlowWindow=true; ui.FocusFarFlowWindow=true; } }
+                const ImU32 headColor=farHot?IM_COL32(255,255,255,245):colors.front(); if (hasUp) drawVerticalArrowHead(draw,{farRailX,top},false,headColor); if (hasDown) drawVerticalArrowHead(draw,{farRailX,bottom},true,headColor); const std::string count="x"+std::to_string(farRoutes.size()); draw->AddText({farRailX-ImGui::CalcTextSize(count.c_str()).x-9.0f,top+5.0f},farHot?IM_COL32(255,255,255,255):IM_COL32(215,215,225,230),count.c_str()); if (farHot) { ImGui::SetMouseCursor(ImGuiMouseCursor_Hand); ImGui::SetTooltip(ui::i18n::tr("re.farFlowTooltip"),farRoutes.size()); if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { ui.FarFlowEntries.clear(); ui.FarFlowEntries.reserve(farRoutes.size()); for (const auto& route:farRoutes) ui.FarFlowEntries.push_back(route.Entry); ui.OpenFarFlowWindow=true; ui.FocusFarFlowWindow=true; } }
             }
             draw->PopClipRect();
             if (hotRoute)
@@ -787,26 +845,26 @@ namespace quartz::client
 
     void refreshEnhancedRuntimeMemoryInspector(RuntimeMemoryInspectorState& state)
     {
-        auto& ui = enhancedMemoryInspectorState(); state.ReadSize = std::clamp(state.ReadSize, 16, 4096); if (state.Pid <= 0 || state.Address == 0) { state.Original.clear(); ui.RawBytes.clear(); ui.BufferBase=0; ui.BufferSize=0; state.Disassembly.SetText({}); ui.Instructions.clear(); ui.DisplayLineAddresses.clear(); ui.DisplayLineByAddress.clear(); state.Status = "select a process and enter an address"; return; }
+        auto& ui = enhancedMemoryInspectorState(); invalidateAsyncDisassemblyFetch(); state.ReadSize = std::clamp(state.ReadSize, 16, 4096); if (state.Pid <= 0 || state.Address == 0) { state.Original.clear(); ui.RawBytes.clear(); ui.BufferBase=0; ui.BufferSize=0; state.Disassembly.SetText({}); ui.Instructions.clear(); ui.DisplayLineAddresses.clear(); ui.DisplayLineByAddress.clear(); state.Status = "select a process and enter an address"; return; }
         if (!refreshDisassemblyBytes(state, true, true)) return; refreshRawBytes(state); ui.LastPid = state.Pid; ui.LastAddress = state.Address; ui.LastReadSize = state.ReadSize; ui.LastFunctionAnalysisPoll=0.0; if (ui.SyncedAddress < ui.BufferBase || ui.SyncedAddress >= ui.BufferBase + ui.BufferSize) ui.SyncedAddress = state.Address; state.Status = "read " + std::to_string(state.Original.size()) + " prefetched bytes as " + runtimeX86ModeName(runtimeProcessX86Mode(state.Pid)); syncInspectorAddressText(state); requestRuntimeFunctionAnalysis(state.Pid, state.Address);
     }
 
     void drawEnhancedRuntimeMemoryInspector(RuntimeMemoryInspectorState& state)
     {
-        auto& ui = enhancedMemoryInspectorState(); auto& probe = executionProbe(); auto& configuration = runtimeConfiguration(); syncInspectorAddressText(state); if ((ui.LastPid != state.Pid || ui.LastAddress != state.Address || ui.LastReadSize != state.ReadSize) && state.Pid > 0 && state.Address != 0) refreshEnhancedRuntimeMemoryInspector(state); configureDisassemblyEditor(state);
+        auto& ui = enhancedMemoryInspectorState(); auto& probe = executionProbe(); auto& configuration = runtimeConfiguration(); pollAsyncDisassemblyFetch(state); syncInspectorAddressText(state); if ((ui.LastPid != state.Pid || ui.LastAddress != state.Address || ui.LastReadSize != state.ReadSize) && state.Pid > 0 && state.Address != 0) refreshEnhancedRuntimeMemoryInspector(state); configureDisassemblyEditor(state);
         if (const auto hit = probe.hit(); hit && hit->HasRegisters && hit->Pid == state.Pid && hit->Time > ui.LastProbeHitTime) { ui.CapturedHit = *hit; ui.HasCapturedHit = true; ui.LastProbeHitTime = hit->Time; ui.SyncedAddress = hit->Address; ui.NavigationHighlightAddress=hit->Address; ui.SelectRegistersTab = true; state.Status = "captured registers at " + runtimeFormatProcessAddress(state.Pid, hit->Address) + " on TID " + std::to_string(hit->Tid); ui.DisassemblyDirty = true; }
         const bool probeRunning = probe.running(); const pid_t probePid = probe.pid(); const std::uintptr_t probeAddress = probe.address(); if (probeRunning != ui.LastProbeRunning || probePid != ui.LastProbePid || probeAddress != ui.LastProbeAddress) ui.DisassemblyDirty = true;
-        const double now = runtimeSteadySeconds();
+        const double now = runtimeSteadySeconds(); const bool paging=ImGui::IsKeyDown(ImGuiKey_PageUp)||ImGui::IsKeyDown(ImGuiKey_PageDown);
         if (configuration.FunctionHeuristics && state.Pid > 0 && state.Address)
         {
             const double pollInterval=ui.FunctionAnalysis.Running?0.05:0.25;
             if (ui.LastFunctionAnalysisPoll==0.0||now-ui.LastFunctionAnalysisPoll>=pollInterval) { requestRuntimeFunctionAnalysis(state.Pid, state.Address); const auto snapshot = runtimeFunctionAnalysisSnapshot(state.Pid, state.Address); if (snapshot.Revision != ui.FunctionRevision) { ui.FunctionAnalysis = snapshot; ui.FunctionRevision = snapshot.Revision; ui.DisassemblyDirty = true; } else ui.FunctionAnalysis.Running=snapshot.Running,ui.FunctionAnalysis.Progress=snapshot.Progress,ui.FunctionAnalysis.Status=snapshot.Status; ui.LastFunctionAnalysisPoll=now; }
         }
-        if (configuration.DisassemblyRefreshHz > 0.0f && state.Pid > 0 && state.Address && now - ui.LastDisassemblyRefresh >= 1.0 / configuration.DisassemblyRefreshHz) refreshDisassemblyBytes(state, false, false); if (ui.DisassemblyDirty && !state.Original.empty()) rebuildDisassembly(state);
+        if (!paging&&!ui.AsyncFetchPendingGeneration&&configuration.DisassemblyRefreshHz > 0.0f && state.Pid > 0 && state.Address && now - ui.LastDisassemblyRefresh >= 1.0 / configuration.DisassemblyRefreshHz) refreshDisassemblyBytes(state, false, false); if (ui.DisassemblyDirty && !state.Original.empty()&&!paging) rebuildDisassembly(state);
 
         const pid_t oldPid=state.Pid; if (ui::drawProcessPicker("DisassemblyProcess",ui.Processes,state.Pid,ui.ProcessSearch.data(),ui.ProcessSearch.size(),360.0f) && state.Pid!=oldPid)
         {
-            if (oldPid>0) invalidateRuntimeFunctionAnalysis(oldPid); ui.BufferBase=0; ui.BufferSize=0; ui.LastPid=0; ui.NavigationBack.clear(); ui.NavigationForward.clear(); ui.FlowGraph.clear(); ui.FlowPreviewCache.clear(); ui.FarFlowEntries.clear(); ui.OpenFarFlowWindow=false; ui.FlowPid=state.Pid; ui.ContextAddress.reset(); ui.NavigationHighlightAddress=0; state.Address=0; ui.AddressTextValue=std::numeric_limits<std::uintptr_t>::max(); state.Original.clear(); state.Disassembly.SetText({}); state.Status="select an address";
+            if (oldPid>0) invalidateRuntimeFunctionAnalysis(oldPid); invalidateAsyncDisassemblyFetch(); ui.BufferBase=0; ui.BufferSize=0; ui.LastPid=0; ui.NavigationBack.clear(); ui.NavigationForward.clear(); ui.FlowGraph.clear(); ui.FlowPreviewCache.clear(); ui.FarFlowEntries.clear(); ui.OpenFarFlowWindow=false; ui.FlowPid=state.Pid; ui.ContextAddress.reset(); ui.NavigationHighlightAddress=0; state.Address=0; ui.AddressTextValue=std::numeric_limits<std::uintptr_t>::max(); state.Original.clear(); state.Disassembly.SetText({}); state.Status="select an address";
         }
 
         ImGui::BeginDisabled(ui.NavigationBack.empty()); if (ImGui::SmallButton("<##DisassemblyBack")) navigateBack(state); ImGui::EndDisabled(); if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s",ui::i18n::tr("re.backTooltip")); ImGui::SameLine();
@@ -814,7 +872,7 @@ namespace quartz::client
         if (ImGui::Button(ui::i18n::tr("re.goTo"))) { std::snprintf(ui.GoToText.data(),ui.GoToText.size(),"%s",ui.AddressText.data()); ImGui::OpenPopup("##DisassemblyGoToPopup"); } ImGui::SameLine();
         const bool addressEnter = ui::drawAddressInput("Address##memory2", ui.AddressText.data(), ui.AddressText.size(), state.Pid, 260.0f, ImGuiInputTextFlags_EnterReturnsTrue); ImGui::SameLine(); ImGui::SetNextItemWidth(105.0f); if (ImGui::InputInt("Bytes##memory2", &state.ReadSize)) state.ReadSize = std::clamp(state.ReadSize,16,4096); ImGui::SameLine(); const bool readPressed = ImGui::Button(ui::i18n::tr("re.readDisassemble"));
         if (addressEnter || readPressed) { std::uintptr_t address = 0; std::string error; if (!ui::evaluateAddressExpression(state.Pid, ui.AddressText.data(), address, error) || address == 0) state.Status = error.empty() ? "invalid memory address" : error; else navigateInspector(state,address,true); }
-        ImGui::SameLine(); if (state.Pid>0) ImGui::TextDisabled("%s", runtimeX86ModeName(runtimeProcessX86Mode(state.Pid))); if (ImGui::SmallButton(ui::i18n::tr("common.refresh"))) { if (refreshDisassemblyBytes(state,true,false)) refreshRawBytes(state); } ImGui::SameLine(); ImGui::Checkbox(ui::i18n::tr("re.synchronizeAddress"), &ui.SynchronizeAddress); if (ui.SynchronizeAddress && ui.SyncedAddress) { ImGui::SameLine(); ImGui::TextDisabled(ui::i18n::tr("re.syncedAddress"), runtimeFormatProcessAddress(state.Pid, ui.SyncedAddress).c_str()); }
+        ImGui::SameLine(); if (state.Pid>0) ImGui::TextDisabled("%s", runtimeX86ModeName(runtimeProcessX86Mode(state.Pid))); if (ImGui::SmallButton(ui::i18n::tr("common.refresh"))) { invalidateAsyncDisassemblyFetch(); if (refreshDisassemblyBytes(state,true,false)) refreshRawBytes(state); } ImGui::SameLine(); ImGui::Checkbox(ui::i18n::tr("re.synchronizeAddress"), &ui.SynchronizeAddress); if (ui.SynchronizeAddress && ui.SyncedAddress) { ImGui::SameLine(); ImGui::TextDisabled(ui::i18n::tr("re.syncedAddress"), runtimeFormatProcessAddress(state.Pid, ui.SyncedAddress).c_str()); }
         const auto& io=ImGui::GetIO();
         if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_G,false)) { std::snprintf(ui.GoToText.data(),ui.GoToText.size(),"%s",ui.AddressText.data()); ImGui::OpenPopup("##DisassemblyGoToPopup"); }
         if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z,false)) navigateBack(state); else if (!io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y,false)) navigateForward(state);
@@ -842,23 +900,26 @@ namespace quartz::client
         drawBranchLanes(state,disassemblyMin,disassemblyMax); drawFarControlFlowWindow(state);
         if (ui.OpenContextPopup) { ImGui::OpenPopup("##QuartzDisassemblyContext"); ui.OpenContextPopup=false; }
         if (ImGui::BeginPopup("##QuartzDisassemblyContext")) { if (ui.ContextAddress) drawDisassemblyContextMenu(state,*ui.ContextAddress); else ImGui::CloseCurrentPopup(); ImGui::EndPopup(); }
-        const bool contextOpen=ImGui::IsPopupOpen("##QuartzDisassemblyContext"); if (!contextOpen&&!ui.FarFlowWindowHovered&&!ImGui::IsMouseDown(ImGuiMouseButton_Right)&&!ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&overDisassemblyContent) { const auto pos=state.Disassembly.GetDocPosAtMousePos(mouse); if (assemblyHoverAvailable(state,state.Disassembly,true,pos)) { ImGui::BeginTooltip(); drawAssemblyHoverContent(state,state.Disassembly,true,pos); ImGui::EndTooltip(); } }
+        const bool contextOpen=ImGui::IsPopupOpen("##QuartzDisassemblyContext"); if (!contextOpen&&!ui.FarFlowWindowHovered&&!ImGui::IsMouseDown(ImGuiMouseButton_Right)&&!ImGui::IsMouseClicked(ImGuiMouseButton_Right)&&overDisassemblyContent) { const auto pos=state.Disassembly.GetDocPosAtMousePos(mouse); if (assemblyHoverAvailable(state,state.Disassembly,true,pos)) { ImGui::SetNextWindowSizeConstraints(ImVec2(380.0f,0.0f),ImVec2(560.0f,std::numeric_limits<float>::max())); ImGui::BeginTooltip(); ImGui::PushTextWrapPos(ImGui::GetCursorPosX()+500.0f); drawAssemblyHoverContent(state,state.Disassembly,true,pos); ImGui::PopTextWrapPos(); ImGui::EndTooltip(); } }
         if (!ui.PendingInspectorAddress && ui.SynchronizeAddress && overDisassemblyContent && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) { const auto pos = state.Disassembly.GetDocPosAtMousePos(mouse); if (pos.line < ui.DisplayLineAddresses.size() && ui.DisplayLineAddresses[pos.line]) { ui.SyncedAddress = ui.DisplayLineAddresses[pos.line]; ui.NavigationHighlightAddress=ui.SyncedAddress; applyDisassemblyMarkers(state); } }
-        if (!ui.PendingInspectorAddress && !ui.DisplayLineAddresses.empty() && ui.BufferSize && now-ui.LastDisassemblyWindowShift>=0.10)
+        if (!ui.PendingInspectorAddress && !ui.DisplayLineAddresses.empty() && ui.BufferSize && now-ui.LastDisassemblyWindowShift>=0.08 && !ui.AsyncFetchPendingGeneration)
         {
-            const std::size_t first=state.Disassembly.GetFirstVisibleRow(),last=state.Disassembly.GetLastVisibleRow(); if (last>=first)
+            const std::size_t lineCount=state.Disassembly.GetLineCount(); if (lineCount)
             {
-                const auto focus=displayAddressNearRow(ui,(first+last)/2); if (focus&&*focus>=ui.BufferBase&&*focus<ui.BufferBase+ui.BufferSize)
+                const std::size_t first=std::min(state.Disassembly.GetFirstVisibleRow(),lineCount-1),last=std::min(state.Disassembly.GetLastVisibleRow(),lineCount-1); if (last>=first)
                 {
-                    const double position=static_cast<double>(*focus-ui.BufferBase)/static_cast<double>(ui.BufferSize); const bool needUp=position<0.38&&ui.BufferBase>ui.BufferRegionBase,needDown=position>0.62&&ui.BufferBase+ui.BufferSize<ui.BufferRegionEnd;
-                    if (needUp||needDown)
+                    const auto focus=displayAddressNearRow(ui,(first+last)/2); if (focus&&*focus>=ui.BufferBase&&*focus<ui.BufferBase+ui.BufferSize)
                     {
-                        const auto topAnchor=displayAddressNearRow(ui,first); ui.LastDisassemblyWindowShift=now; setInspectorAddress(state,*focus,topAnchor?topAnchor:focus,topAnchor?TextEditor::Scroll::alignTop:TextEditor::Scroll::alignMiddle);
+                        const double position=static_cast<double>(*focus-ui.BufferBase)/static_cast<double>(ui.BufferSize); const bool needUp=position<0.42&&ui.BufferBase>ui.BufferRegionBase,needDown=position>0.58&&ui.BufferBase+ui.BufferSize<ui.BufferRegionEnd;
+                        if (needUp||needDown)
+                        {
+                            const auto topAnchor=displayAddressNearRow(ui,first); ui.LastDisassemblyWindowShift=now; requestAsyncDisassemblyFetch(state,*focus,topAnchor?topAnchor:focus,topAnchor?TextEditor::Scroll::alignTop:TextEditor::Scroll::alignMiddle);
+                        }
                     }
                 }
             }
         }
-        if (ui.DisassemblyDirty) rebuildDisassembly(state);
+        if (ui.DisassemblyDirty&&!paging) rebuildDisassembly(state);
 
         if (ImGui::BeginTabBar("MemoryInspectorLowerTabs"))
         {
