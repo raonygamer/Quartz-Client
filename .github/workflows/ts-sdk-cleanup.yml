@@ -3,7 +3,9 @@ name: TypeScript SDK cleanup
 on:
   push:
     branches: [feature/quickjs-bindings]
-    paths: [tools/apply_ts_sdk_cleanup.py]
+    paths:
+      - tools/apply_ts_sdk_cleanup.py
+      - tools/ts-sdk-cleanup.trigger
 
 permissions:
   contents: write
