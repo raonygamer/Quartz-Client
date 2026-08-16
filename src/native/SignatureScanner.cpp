@@ -3,6 +3,7 @@
 #include <libhat/scanner.hpp>
 #include <libhat/signature.hpp>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <span>
@@ -11,8 +12,8 @@ namespace quartz::client
 {
     namespace
     {
-        constexpr std::size_t ReadChunk = 4 * 1024 * 1024;
         constexpr double BytesPerMiB = 1024.0 * 1024.0;
+        std::atomic<std::size_t> ReadChunkBytes{DefaultSignatureScanChunkBytes};
 
         std::int64_t steadyNowNs() noexcept
         {
@@ -34,10 +35,19 @@ namespace quartz::client
         }
     }
 
+    std::size_t normalizeSignatureScanChunkBytes(const std::size_t bytes) noexcept
+    {
+        const std::size_t clamped = std::clamp(bytes, MinimumSignatureScanChunkBytes, MaximumSignatureScanChunkBytes);
+        return clamped - clamped % SignatureScanChunkAlignment;
+    }
+
+    std::size_t signatureScanChunkBytes() noexcept { return ReadChunkBytes.load(std::memory_order_relaxed); }
+    void setSignatureScanChunkBytes(const std::size_t bytes) noexcept { ReadChunkBytes.store(normalizeSignatureScanChunkBytes(bytes), std::memory_order_relaxed); }
+
     std::shared_ptr<SignatureScanState> startSignatureScan(const pid_t pid, std::vector<RuntimeProcessRegion> regions, std::vector<std::uint8_t> bytes, std::vector<std::uint8_t> masks, const bool executableOnly, const std::uint64_t generation)
     {
         auto state = std::make_shared<SignatureScanState>();
-        state->Generation = generation;
+        state->Generation = generation; state->ChunkBytes = signatureScanChunkBytes();
         for (const auto& region : regions) state->TotalBytes += region.End - region.Base;
         async::globalThreadPool().submit([state, pid, regions = std::move(regions), bytes = std::move(bytes), masks = std::move(masks), executableOnly](std::stop_token stop) mutable
         {
@@ -63,7 +73,7 @@ namespace quartz::client
                             return;
                         }
                         const std::size_t remaining = static_cast<std::size_t>(region.End - cursor);
-                        const std::size_t readSize = std::min(remaining, ReadChunk + overlap);
+                        const std::size_t readSize = std::min(remaining, state->ChunkBytes + overlap);
                         if (readSize < signature.size()) break;
                         buffer.resize(readSize);
                         std::string readError;
