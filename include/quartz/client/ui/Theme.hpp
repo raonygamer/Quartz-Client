@@ -26,5 +26,6 @@ namespace quartz::client::ui
     void saveThemePreferences(const VisualizerSettings& settings) noexcept;
     void applyTheme(Theme theme) noexcept;
     void applyTheme(int theme) noexcept;
+    void applyCornerRounding(float rounding) noexcept;
     bool drawThemeSelector(VisualizerSettings& settings);
 }
