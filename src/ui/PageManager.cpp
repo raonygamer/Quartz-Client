@@ -1,5 +1,6 @@
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/ui/PageContext.hpp"
+#include "quartz/client/ui/I18n.hpp"
 #include "quartz/client/ui/pages/VisualizerPage.hpp"
 #include "quartz/client/ui/pages/SpectrumPage.hpp"
 #include "quartz/client/ui/pages/AudioPage.hpp"
@@ -32,14 +33,21 @@ namespace quartz::client::ui
         {
             switch (section)
             {
-            case PageSection::Visual: return "VISUAL";
-            case PageSection::Scripting: return "SCRIPTING";
-            case PageSection::ReverseEngineering: return "REVERSE ENGINEERING";
-            case PageSection::Device: return "DEVICE";
-            case PageSection::Diagnostics: return "DIAGNOSTICS";
-            case PageSection::Other: return "OTHER";
+            case PageSection::Visual: return i18n::tr("nav.section.visual");
+            case PageSection::Scripting: return i18n::tr("nav.section.scripting");
+            case PageSection::ReverseEngineering: return i18n::tr("nav.section.reverseEngineering");
+            case PageSection::Device: return i18n::tr("nav.section.device");
+            case PageSection::Diagnostics: return i18n::tr("nav.section.diagnostics");
+            case PageSection::Other: return i18n::tr("nav.section.other");
             }
-            return "OTHER";
+            return i18n::tr("nav.section.other");
+        }
+
+        const char* pageName(const Page& page)
+        {
+            const std::string key = "nav." + std::string(page.id());
+            const char* translated = i18n::tr(key);
+            return std::string_view(translated) == key ? page.title().data() : translated;
         }
     }
 
@@ -73,26 +81,37 @@ namespace quartz::client::ui
         if (!active) return;
 
         const ImVec2 available = ImGui::GetContentRegionAvail();
-        constexpr float NavigationWidth = 184.0f;
+        constexpr float NavigationWidth = 210.0f;
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 7.0f);
         if (ImGui::BeginChild("PageNavigation", ImVec2(NavigationWidth, available.y), ImGuiChildFlags_Borders))
         {
+            ImGui::Dummy({0.0f, 3.0f});
             for (const PageSection section : Sections)
             {
                 bool hasPages = false;
                 for (const auto& page : _pages) if (page->presentation() == PagePresentation::Tab && page->section() == section) { hasPages = true; break; }
                 if (!hasPages) continue;
                 ImGui::TextDisabled("%s", sectionName(section));
+                ImGui::Dummy({0.0f, 1.0f});
                 for (const auto& page : _pages)
                 {
                     if (page->presentation() != PagePresentation::Tab || page->section() != section) continue;
                     const bool selected = page->id() == _activePageId;
                     const float selectableWidth = ImGui::GetContentRegionAvail().x;
-                    if (ImGui::Selectable(page->title().data(), selected, ImGuiSelectableFlags_None, ImVec2(selectableWidth, 0.0f))) _activePageId.assign(page->id());
+                    ImGui::PushID(page->id().data());
+                    if (ImGui::Selectable(pageName(*page), selected, ImGuiSelectableFlags_None, ImVec2(selectableWidth, 27.0f))) _activePageId.assign(page->id());
+                    if (selected)
+                    {
+                        const ImVec2 min = ImGui::GetItemRectMin(); const ImVec2 max = ImGui::GetItemRectMax();
+                        ImGui::GetWindowDrawList()->AddRectFilled({min.x, min.y + 4.0f}, {min.x + 3.0f, max.y - 4.0f}, ImGui::GetColorU32(ImGuiCol_CheckMark), 2.0f);
+                    }
+                    ImGui::PopID();
                 }
-                ImGui::Spacing();
+                ImGui::Spacing(); ImGui::Spacing();
             }
         }
         ImGui::EndChild();
+        ImGui::PopStyleVar();
         ImGui::SameLine();
         if (ImGui::BeginChild("PageContent", ImVec2(0.0f, available.y), ImGuiChildFlags_None))
         {
