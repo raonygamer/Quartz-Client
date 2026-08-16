@@ -2,11 +2,28 @@
 #include "quartz/client/Functions.hpp"
 #include "quartz/client/Model.hpp"
 #include <elf.h>
+#include <mutex>
+#include <unordered_map>
 
 namespace quartz::client
 {
     namespace
     {
+        struct ProcessDisassemblyMetadata
+        {
+            RuntimeX86Mode Mode = RuntimeX86Mode::X64;
+            double ModeUpdated = 0.0;
+            std::vector<RuntimeProcessModule> Modules;
+            double ModulesUpdated = 0.0;
+        };
+
+        constexpr double ModeCacheSeconds = 2.0;
+        constexpr double ModuleCacheSeconds = 0.75;
+        std::mutex MetadataMutex;
+        std::unordered_map<pid_t, ProcessDisassemblyMetadata> MetadataCache;
+
+        double metadataNow() noexcept { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+
         bool runAssemblerCommand(const std::string& command, std::string& output)
         {
             output.clear(); FILE* pipe = popen((command + " 2>&1").c_str(), "r"); if (!pipe) { output = "could not start assembler command"; return false; }
@@ -23,11 +40,16 @@ namespace quartz::client
     RuntimeX86Mode runtimeProcessX86Mode(const pid_t pid) noexcept
     {
         if (pid <= 0) return RuntimeX86Mode::X64;
+        const double now = metadataNow();
+        {
+            std::lock_guard lock(MetadataMutex); if (const auto it = MetadataCache.find(pid); it != MetadataCache.end() && now - it->second.ModeUpdated < ModeCacheSeconds) return it->second.Mode;
+        }
+        RuntimeX86Mode mode = RuntimeX86Mode::X64;
         std::ifstream file("/proc/" + std::to_string(pid) + "/exe", std::ios::binary);
         std::array<unsigned char, EI_NIDENT> ident{};
-        if (!file.read(reinterpret_cast<char*>(ident.data()), static_cast<std::streamsize>(ident.size()))) return RuntimeX86Mode::X64;
-        if (ident[EI_MAG0] != ELFMAG0 || ident[EI_MAG1] != ELFMAG1 || ident[EI_MAG2] != ELFMAG2 || ident[EI_MAG3] != ELFMAG3) return RuntimeX86Mode::X64;
-        return ident[EI_CLASS] == ELFCLASS32 ? RuntimeX86Mode::X86 : RuntimeX86Mode::X64;
+        if (file.read(reinterpret_cast<char*>(ident.data()), static_cast<std::streamsize>(ident.size())) && ident[EI_MAG0] == ELFMAG0 && ident[EI_MAG1] == ELFMAG1 && ident[EI_MAG2] == ELFMAG2 && ident[EI_MAG3] == ELFMAG3) mode = ident[EI_CLASS] == ELFCLASS32 ? RuntimeX86Mode::X86 : RuntimeX86Mode::X64;
+        { std::lock_guard lock(MetadataMutex); auto& cached = MetadataCache[pid]; cached.Mode = mode; cached.ModeUpdated = now; }
+        return mode;
     }
 
     const char* runtimeX86ModeName(const RuntimeX86Mode mode) noexcept { return mode == RuntimeX86Mode::X86 ? "x86" : "x86-64"; }
@@ -48,7 +70,15 @@ namespace quartz::client
     std::string runtimeFormatProcessAddress(const pid_t pid, const std::uintptr_t address)
     {
         if (pid <= 0 || address == 0) return runtimeHexAddress(address);
-        return runtimeFormatProcessAddress(enumerateRuntimeModules(pid), address);
+        const double now = metadataNow(); std::vector<RuntimeProcessModule> modules;
+        {
+            std::lock_guard lock(MetadataMutex); if (const auto it = MetadataCache.find(pid); it != MetadataCache.end() && !it->second.Modules.empty() && now - it->second.ModulesUpdated < ModuleCacheSeconds) modules = it->second.Modules;
+        }
+        if (modules.empty())
+        {
+            modules = enumerateRuntimeModules(pid); std::lock_guard lock(MetadataMutex); auto& cached = MetadataCache[pid]; cached.Modules = modules; cached.ModulesUpdated = now;
+        }
+        return runtimeFormatProcessAddress(modules, address);
     }
 
     bool runtimeDecodeProcessInstruction(const RuntimeX86Mode mode, const std::span<const std::uint8_t> bytes, const std::uintptr_t address, RuntimeDecodedInstruction& result)
