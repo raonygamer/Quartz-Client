@@ -15,6 +15,7 @@ namespace quartz::client
         constexpr std::size_t ExperimentStackLimit = 256ULL * 1024ULL;
         constexpr std::size_t MaximumFields = 1024;
         constexpr std::size_t MaximumDepth = 8;
+        constexpr std::size_t MaximumStringLength = 4096;
 
         std::string exceptionText(JSContext* ctx)
         {
@@ -68,6 +69,7 @@ namespace quartz::client
             if (kind == "i64") return StructExperimentFieldKind::I64; if (kind == "u64") return StructExperimentFieldKind::U64;
             if (kind == "f32") return StructExperimentFieldKind::F32; if (kind == "f64") return StructExperimentFieldKind::F64;
             if (kind == "bool") return StructExperimentFieldKind::Bool; if (kind == "pointer") return StructExperimentFieldKind::Pointer;
+            if (kind == "cstring") return StructExperimentFieldKind::CString; if (kind == "wstring") return StructExperimentFieldKind::WString;
             if (kind == "struct") return StructExperimentFieldKind::Struct; if (kind == "array") return StructExperimentFieldKind::Array;
             return std::nullopt;
         }
@@ -95,7 +97,14 @@ namespace quartz::client
             if (offset > std::numeric_limits<std::uintptr_t>::max()) { error = "field offset is outside uintptr_t range"; return false; }
             field.Offset = static_cast<std::uintptr_t>(offset); field.Size = scalarSize(field.Kind);
 
-            if (field.Kind == StructExperimentFieldKind::Pointer || field.Kind == StructExperimentFieldKind::Struct)
+            if (field.Kind == StructExperimentFieldKind::CString || field.Kind == StructExperimentFieldKind::WString)
+            {
+                std::uint64_t maxLength = 0; if (!integerProperty(ctx, value, "maxLength", maxLength, error, true)) return false;
+                if (maxLength == 0) maxLength = 256;
+                if (maxLength > MaximumStringLength) { error = "string maxLength is too large for object experiments"; return false; }
+                field.MaxLength = static_cast<std::size_t>(maxLength);
+            }
+            else if (field.Kind == StructExperimentFieldKind::Pointer || field.Kind == StructExperimentFieldKind::Struct)
             {
                 JSValue nested = JS_GetPropertyStr(ctx, value, "struct");
                 if (JS_IsException(nested)) { error = exceptionText(ctx); return false; }
@@ -153,6 +162,7 @@ namespace quartz::client
 const __quartzSizes = Object.freeze({i8:1n,u8:1n,i16:2n,u16:2n,i32:4n,u32:4n,i64:8n,u64:8n,f32:4n,f64:8n,bool:1n});
 const __quartzAddress = value => typeof value === "bigint" ? value : BigInt(value);
 const __quartzScalar = (kind, offset) => Object.freeze({kind, offset:__quartzAddress(offset), size:__quartzSizes[kind]});
+const __quartzString = (kind, offset, maxLength=256) => Object.freeze({kind, offset:__quartzAddress(offset), maxLength});
 const Field = Object.freeze({
     Int8:offset=>__quartzScalar("i8",offset), UInt8:offset=>__quartzScalar("u8",offset),
     Int16:offset=>__quartzScalar("i16",offset), UInt16:offset=>__quartzScalar("u16",offset),
@@ -160,6 +170,7 @@ const Field = Object.freeze({
     Int64:offset=>__quartzScalar("i64",offset), UInt64:offset=>__quartzScalar("u64",offset),
     Float32:offset=>__quartzScalar("f32",offset), Float64:offset=>__quartzScalar("f64",offset), Boolean:offset=>__quartzScalar("bool",offset),
     Pointer:(offset,struct)=>Object.freeze({kind:"pointer",offset:__quartzAddress(offset),struct}),
+    CString:(offset,maxLength=256)=>__quartzString("cstring",offset,maxLength), WString:(offset,maxLength=256)=>__quartzString("wstring",offset,maxLength),
     Struct:(offset,struct)=>Object.freeze({kind:"struct",offset:__quartzAddress(offset),struct}),
     Array:(offset,element,count)=>Object.freeze({kind:"array",offset:__quartzAddress(offset),element,count})
 });
@@ -189,6 +200,7 @@ const Struct = Object.freeze({define(fields){return Object.freeze({fields:Object
         case StructExperimentFieldKind::I64: return "int64"; case StructExperimentFieldKind::U64: return "uint64";
         case StructExperimentFieldKind::F32: return "float32"; case StructExperimentFieldKind::F64: return "float64";
         case StructExperimentFieldKind::Bool: return "bool"; case StructExperimentFieldKind::Pointer: return "pointer";
+        case StructExperimentFieldKind::CString: return "cstring"; case StructExperimentFieldKind::WString: return "wstring";
         case StructExperimentFieldKind::Struct: return "struct"; case StructExperimentFieldKind::Array: return "array";
         }
         return "unknown";
