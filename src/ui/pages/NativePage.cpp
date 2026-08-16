@@ -5,6 +5,7 @@
 #include "quartz/client/ui/MemoryInspector.hpp"
 #include "quartz/client/ui/ObjectExperiments.hpp"
 #include "quartz/client/ui/ReverseEngineeringNavigation.hpp"
+#include "quartz/client/ui/ReverseEngineeringTools.hpp"
 #include "quartz/client/ui/SignatureMaker.hpp"
 #include "quartz/client/native/OpcodePatternEditor.hpp"
 
