@@ -5,6 +5,7 @@ on:
     branches: [feature/quickjs-bindings]
     paths:
       - tools/apply_re_workspace_refresh.py
+      - tools/fix_re_workspace.py
       - tools/re-workspace-trigger.txt
 
 permissions:
@@ -19,7 +20,9 @@ jobs:
           submodules: recursive
           fetch-depth: 0
       - name: Apply reverse engineering refresh
-        run: python3 tools/apply_re_workspace_refresh.py
+        run: |
+          python3 tools/apply_re_workspace_refresh.py
+          python3 tools/fix_re_workspace.py
       - name: Install build dependencies
         run: |
           sudo apt-get update
