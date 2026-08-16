@@ -341,6 +341,10 @@ namespace quartz::client
                     ui::drawThemeSelector(settings);
                     ui::i18n::drawLanguageSelector();
                     ImGui::Separator();
+                    float silhouettePercent = settings.UiSilhouetteOpacity * 100.0f;
+                    ImGui::SetNextItemWidth(220.0f);
+                    if (ImGui::SliderFloat(ui::i18n::tr("appearance.silhouetteOpacity"), &silhouettePercent, 0.0f, 200.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) { settings.UiSilhouetteOpacity = silhouettePercent / 100.0f; ui::saveThemePreferences(settings); }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", ui::i18n::tr("appearance.silhouetteOpacityTooltip"));
                     ImGui::SetNextItemWidth(220.0f);
                     ImGui::SliderFloat(ui::i18n::tr("appearance.globalBrightness"), &settings.GlobalBrightness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
                     ImGui::SetNextItemWidth(220.0f);
@@ -351,6 +355,7 @@ namespace quartz::client
                         settings.UiTheme = defaults.UiTheme;
                         settings.SuspiciousColorThemes = defaults.SuspiciousColorThemes;
                         settings.UiCornerRounding = defaults.UiCornerRounding;
+                        settings.UiSilhouetteOpacity = defaults.UiSilhouetteOpacity;
                         settings.GlobalBrightness = defaults.GlobalBrightness;
                         settings.LiveOutputInterpolation = defaults.LiveOutputInterpolation;
                         ui::applyTheme(settings.UiTheme);
