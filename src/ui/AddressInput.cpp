@@ -1,10 +1,13 @@
 #include "quartz/client/ui/AddressInput.hpp"
 #include "quartz/client/Functions.hpp"
+#include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <cstdio>
 #include <filesystem>
 #include <imgui.h>
 #include <limits>
+#include <vector>
 
 namespace quartz::client::ui
 {
@@ -138,10 +141,10 @@ namespace quartz::client::ui
     bool drawAddressInput(const char* label, char* buffer, const std::size_t bufferSize, const pid_t pid, const float width)
     {
         if (width != 0.0f) ImGui::SetNextItemWidth(width);
-        const bool changed = ImGui::InputText(label, buffer, bufferSize);
+        bool changed = ImGui::InputText(label, buffer, bufferSize);
         std::uintptr_t evaluated = 0; std::string error;
         const bool valid = evaluateAddressExpression(pid, buffer, evaluated, error);
-        if (ImGui::IsItemFocused() && ImGui::GetIO().KeyCtrl && ImGui::GetIO().KeyShift && ImGui::IsKeyPressed(ImGuiKey_E, false) && valid) std::snprintf(buffer, bufferSize, "0x%llX", static_cast<unsigned long long>(evaluated));
+        if (ImGui::IsItemFocused() && ImGui::GetIO().KeyCtrl && ImGui::GetIO().KeyShift && ImGui::IsKeyPressed(ImGuiKey_E, false) && valid) { std::snprintf(buffer, bufferSize, "0x%llX", static_cast<unsigned long long>(evaluated)); changed = true; }
         if (ImGui::IsItemHovered())
         {
             if (valid) ImGui::SetTooltip("= 0x%llX\nCtrl+Shift+E replaces the expression with its evaluated address.\nSupports + - * /, parentheses and module names such as Terraria.exe+0x0.", static_cast<unsigned long long>(evaluated));
