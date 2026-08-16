@@ -33,16 +33,31 @@ namespace quartz::client::ui
             const auto [ptr, ec] = std::from_chars(view.data(), view.data() + view.size(), value, base); return ec == std::errc{} && ptr == view.data() + view.size();
         }
 
-        std::size_t fixedValueWidth(const MemoryScanValueType type) noexcept
+        std::size_t fixedValueWidth(const MemoryScanValueType type, const pid_t pid = 0) noexcept
         {
             switch (type)
             {
             case MemoryScanValueType::U8: case MemoryScanValueType::I8: case MemoryScanValueType::Bool: return 1;
             case MemoryScanValueType::U16: case MemoryScanValueType::I16: return 2;
             case MemoryScanValueType::U32: case MemoryScanValueType::I32: case MemoryScanValueType::Float: return 4;
-            case MemoryScanValueType::U64: case MemoryScanValueType::I64: case MemoryScanValueType::Double: case MemoryScanValueType::Pointer: return 8;
+            case MemoryScanValueType::U64: case MemoryScanValueType::I64: case MemoryScanValueType::Double: return 8;
+            case MemoryScanValueType::Pointer: return pid > 0 && runtimeProcessX86Mode(pid) == RuntimeX86Mode::X86 ? 4 : 8;
             default: return 0;
             }
+        }
+
+        const char* scanValueTypeLabel(const MemoryScanValueType type) noexcept
+        {
+            static constexpr const char* English[] = {"u8","i8","u16","i16","u32","i32","u64","i64","float","double","pointer","bool","UTF-8 string","UTF-16 string","byte array"};
+            static constexpr const char* Portuguese[] = {"u8","i8","u16","i16","u32","i32","u64","i64","float","double","ponteiro","bool","string UTF-8","string UTF-16","array de bytes"};
+            const int index = std::clamp(static_cast<int>(type),0,static_cast<int>(std::size(English))-1); return i18n::language()==i18n::Language::PortugueseBrazil?Portuguese[index]:English[index];
+        }
+
+        const char* scanComparisonLabel(const MemoryScanComparison comparison) noexcept
+        {
+            static constexpr const char* English[] = {"Exact value","Not equal","Unknown initial value","Changed","Unchanged","Increased","Decreased","Increased by","Decreased by","Greater than","Less than","Between","Changed from -> to"};
+            static constexpr const char* Portuguese[] = {"Valor exato","Diferente","Valor inicial desconhecido","Alterado","Inalterado","Aumentou","Diminuiu","Aumentou em","Diminuiu em","Maior que","Menor que","Entre","Alterou de -> para"};
+            const int index = std::clamp(static_cast<int>(comparison),0,static_cast<int>(std::size(English))-1); return i18n::language()==i18n::Language::PortugueseBrazil?Portuguese[index]:English[index];
         }
 
         bool integerValueType(const MemoryScanValueType type) noexcept
@@ -71,16 +86,16 @@ namespace quartz::client::ui
             return text;
         }
 
-        std::size_t resultValueWidth(const MemoryScanValueType type, const std::string_view value) noexcept
+        std::size_t resultValueWidth(const MemoryScanValueType type, const std::string_view value, const pid_t pid = 0) noexcept
         {
-            if (const auto fixed = fixedValueWidth(type); fixed != 0) return fixed;
+            if (const auto fixed = fixedValueWidth(type, pid); fixed != 0) return fixed;
             if (type == MemoryScanValueType::Utf8String) return value.size();
             if (type == MemoryScanValueType::Utf16String) return value.size() * 2;
             if (type == MemoryScanValueType::ByteArray) return value.empty() ? 0 : (value.size() + 1) / 3;
             return 0;
         }
 
-        long double numericAt(const MemoryScanValueType type, const std::uint8_t* data)
+        long double numericAt(const MemoryScanValueType type, const std::uint8_t* data, const std::size_t width = 0)
         {
             switch (type)
             {
@@ -90,7 +105,8 @@ namespace quartz::client::ui
             case MemoryScanValueType::I16: { std::int16_t v; std::memcpy(&v, data, 2); return v; }
             case MemoryScanValueType::U32: { std::uint32_t v; std::memcpy(&v, data, 4); return v; }
             case MemoryScanValueType::I32: { std::int32_t v; std::memcpy(&v, data, 4); return v; }
-            case MemoryScanValueType::U64: case MemoryScanValueType::Pointer: { std::uint64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
+            case MemoryScanValueType::U64: { std::uint64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
+            case MemoryScanValueType::Pointer: { if (width == 4) { std::uint32_t v; std::memcpy(&v, data, 4); return static_cast<long double>(v); } std::uint64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
             case MemoryScanValueType::I64: { std::int64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
             case MemoryScanValueType::Float: { float v; std::memcpy(&v, data, 4); return static_cast<long double>(v); }
             case MemoryScanValueType::Double: { double v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
@@ -110,9 +126,9 @@ namespace quartz::client::ui
             std::ostringstream out;
             if (fixedValueWidth(type) != 0)
             {
-                if (type == MemoryScanValueType::Pointer) { std::uint64_t value; std::memcpy(&value, bytes.data(), 8); out << "0x" << std::hex << std::uppercase << value; }
-                else if (type == MemoryScanValueType::Float || type == MemoryScanValueType::Double) out << std::setprecision(12) << static_cast<double>(numericAt(type, bytes.data()));
-                else out << std::fixed << std::setprecision(0) << numericAt(type, bytes.data());
+                if (type == MemoryScanValueType::Pointer) { if (bytes.size() == 4) { std::uint32_t value; std::memcpy(&value, bytes.data(), 4); out << "0x" << std::hex << std::uppercase << value; } else { std::uint64_t value; std::memcpy(&value, bytes.data(), 8); out << "0x" << std::hex << std::uppercase << value; } }
+                else if (type == MemoryScanValueType::Float || type == MemoryScanValueType::Double) out << std::setprecision(12) << static_cast<double>(numericAt(type, bytes.data(), bytes.size()));
+                else out << std::fixed << std::setprecision(0) << numericAt(type, bytes.data(), bytes.size());
                 return out.str();
             }
             if (type == MemoryScanValueType::Utf8String) return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
@@ -127,11 +143,11 @@ namespace quartz::client::ui
 
         bool readValueSample(const pid_t pid, const std::uintptr_t address, const MemoryScanValueType type, const std::size_t width, ValueSample& sample, std::string& error)
         {
-            if (pid <= 0 || address == 0 || width == 0) { error = "invalid value target"; return false; }
+            if (pid <= 0 || address == 0 || width == 0) { error = i18n::tr("re.invalidValueTarget"); return false; }
             std::vector<std::uint8_t> bytes(width);
             if (!readProcessMemoryBlock(pid, address, std::span<std::uint8_t>(bytes.data(), bytes.size()), error)) return false;
             sample.Value = formatSample(type, bytes);
-            sample.Numeric = fixedValueWidth(type) != 0 ? std::optional<long double>(numericAt(type, bytes.data())) : std::nullopt;
+            sample.Numeric = fixedValueWidth(type, pid) != 0 ? std::optional<long double>(numericAt(type, bytes.data(), width)) : std::nullopt;
             return true;
         }
 
@@ -156,32 +172,33 @@ namespace quartz::client::ui
         {
             if constexpr (std::is_integral_v<T>)
             {
-                if (value < static_cast<long double>(std::numeric_limits<T>::lowest()) || value > static_cast<long double>(std::numeric_limits<T>::max())) { error = "value is outside the selected type range"; return false; }
+                if (value < static_cast<long double>(std::numeric_limits<T>::lowest()) || value > static_cast<long double>(std::numeric_limits<T>::max())) { error = i18n::tr("re.valueOutsideTypeRange"); return false; }
             }
-            else if (std::abs(value) > static_cast<long double>(std::numeric_limits<T>::max())) { error = "value is outside the selected type range"; return false; }
+            else if (std::abs(value) > static_cast<long double>(std::numeric_limits<T>::max())) { error = i18n::tr("re.valueOutsideTypeRange"); return false; }
             const T converted = static_cast<T>(value); bytes.resize(sizeof(T)); std::memcpy(bytes.data(), &converted, sizeof(T)); return true;
         }
 
         bool writeValueSample(const pid_t pid, const std::uintptr_t address, const MemoryScanValueType type, const std::size_t width, const std::string_view text, std::string& error)
         {
-            if (pid <= 0 || address == 0 || width == 0) { error = "invalid value target"; return false; }
+            if (pid <= 0 || address == 0 || width == 0) { error = i18n::tr("re.invalidValueTarget"); return false; }
             std::vector<std::uint8_t> bytes;
             if (fixedValueWidth(type) != 0)
             {
                 if (type == MemoryScanValueType::Pointer)
                 {
-                    std::uint64_t parsed = 0; if (!parseNumber(text, parsed)) { error = "invalid pointer value"; return false; }
-                    bytes.resize(sizeof(parsed)); std::memcpy(bytes.data(), &parsed, sizeof(parsed));
+                    std::uint64_t parsed = 0; if (!parseNumber(text, parsed)) { error = i18n::tr("re.invalidPointerValue"); return false; }
+                    if (width == 4) { if (parsed > std::numeric_limits<std::uint32_t>::max()) { error = i18n::tr("re.valueOutsideTypeRange"); return false; } const auto value = static_cast<std::uint32_t>(parsed); bytes.resize(sizeof(value)); std::memcpy(bytes.data(), &value, sizeof(value)); }
+                    else { bytes.resize(sizeof(parsed)); std::memcpy(bytes.data(), &parsed, sizeof(parsed)); }
                 }
                 else if (type == MemoryScanValueType::Bool)
                 {
                     std::string value = runtimeLower(text); std::uint8_t converted = 0;
-                    if (value == "true" || value == "1" || value == "0x1") converted = 1; else if (value == "false" || value == "0" || value == "0x0") converted = 0; else { error = "bool must be true/false, 1/0 or 0x1/0x0"; return false; }
+                    if (value == "true" || value == "1" || value == "0x1") converted = 1; else if (value == "false" || value == "0" || value == "0x0") converted = 0; else { error = i18n::tr("re.boolValueHint"); return false; }
                     bytes.push_back(converted);
                 }
                 else
                 {
-                    long double parsed = 0.0L; if (!parseNumericInput(type, text, parsed)) { error = "invalid numeric value"; return false; }
+                    long double parsed = 0.0L; if (!parseNumericInput(type, text, parsed)) { error = i18n::tr("re.invalidNumericValue"); return false; }
                     switch (type)
                     {
                     case MemoryScanValueType::U8: if (!storeNumeric<std::uint8_t>(parsed, bytes, error)) return false; break;
@@ -200,16 +217,16 @@ namespace quartz::client::ui
             }
             else if (type == MemoryScanValueType::Utf8String)
             {
-                bytes.assign(text.begin(), text.end()); if (bytes.size() > width) { error = "string is wider than the watched value"; return false; } bytes.resize(width, 0);
+                bytes.assign(text.begin(), text.end()); if (bytes.size() > width) { error = i18n::tr("re.stringTooWide"); return false; } bytes.resize(width, 0);
             }
             else if (type == MemoryScanValueType::Utf16String)
             {
-                bytes = utf16Bytes(text); if (bytes.size() > width) { error = "string is wider than the watched value"; return false; } bytes.resize(width, 0);
+                bytes = utf16Bytes(text); if (bytes.size() > width) { error = i18n::tr("re.stringTooWide"); return false; } bytes.resize(width, 0);
             }
             else
             {
                 if (!runtimeParseHexBytes(text, bytes, error)) return false;
-                if (bytes.size() != width) { error = "byte-array write must keep the watched width"; return false; }
+                if (bytes.size() != width) { error = i18n::tr("re.byteArrayWidthMismatch"); return false; }
             }
             return runtimeWriteProcessMemory(pid, address, std::span<const std::uint8_t>(bytes.data(), bytes.size()), error);
         }
@@ -248,15 +265,15 @@ namespace quartz::client::ui
 
         ImGui::SeparatorText(i18n::tr("re.scan"));
         ImGui::SetNextItemWidth(180.0f);
-        if (ImGui::BeginCombo(i18n::tr("re.valueType"), memoryScanValueTypeName(static_cast<MemoryScanValueType>(_type))))
+        if (ImGui::BeginCombo(i18n::tr("re.valueType"), scanValueTypeLabel(static_cast<MemoryScanValueType>(_type))))
         {
-            for (int i = 0; i <= static_cast<int>(MemoryScanValueType::ByteArray); ++i) if (ImGui::Selectable(memoryScanValueTypeName(static_cast<MemoryScanValueType>(i)), i == _type)) _type = i;
+            for (int i = 0; i <= static_cast<int>(MemoryScanValueType::ByteArray); ++i) if (ImGui::Selectable(scanValueTypeLabel(static_cast<MemoryScanValueType>(i)), i == _type)) _type = i;
             ImGui::EndCombo();
         }
         ImGui::SameLine(); ImGui::SetNextItemWidth(220.0f);
-        if (ImGui::BeginCombo(i18n::tr("re.comparison"), memoryScanComparisonName(static_cast<MemoryScanComparison>(_comparison))))
+        if (ImGui::BeginCombo(i18n::tr("re.comparison"), scanComparisonLabel(static_cast<MemoryScanComparison>(_comparison))))
         {
-            for (int i = 0; i <= static_cast<int>(MemoryScanComparison::ChangedFromTo); ++i) if (ImGui::Selectable(memoryScanComparisonName(static_cast<MemoryScanComparison>(i)), i == _comparison)) _comparison = i;
+            for (int i = 0; i <= static_cast<int>(MemoryScanComparison::ChangedFromTo); ++i) if (ImGui::Selectable(scanComparisonLabel(static_cast<MemoryScanComparison>(i)), i == _comparison)) _comparison = i;
             ImGui::EndCombo();
         }
         const auto comparison = static_cast<MemoryScanComparison>(_comparison);
@@ -297,9 +314,9 @@ namespace quartz::client::ui
         const double refreshInterval = 1.0 / std::max(static_cast<double>(_refreshHz), 0.1);
         auto addWatch = [&](const MemoryScanResultRow& row, const LiveValue* live)
         {
-            const std::size_t width = resultValueWidth(scanType, row.Value);
-            if (width == 0) { _status = "cannot determine watched value width"; return; }
-            for (const auto& watch : _watchList) if (watch.Pid == _scanner.pid() && watch.Address == row.Address && watch.Type == scanType) { _status = "value is already in the watch list"; return; }
+            const std::size_t width = resultValueWidth(scanType, row.Value, _scanner.pid());
+            if (width == 0) { _status = i18n::tr("re.watchWidthUnknown"); return; }
+            for (const auto& watch : _watchList) if (watch.Pid == _scanner.pid() && watch.Address == row.Address && watch.Type == scanType) { _status = i18n::tr("re.watchAlreadyExists"); return; }
             WatchedValue watch; watch.Id = _nextWatchId++; watch.Pid = _scanner.pid(); watch.Address = row.Address; watch.Type = scanType; watch.Width = width; watch.Value = live && !live->Value.empty() ? live->Value : row.Value; watch.PreviousValue = row.Value; watch.Numeric = live ? live->Numeric : parseDisplayedNumeric(scanType, row.Value); watch.FrozenValue = watch.Value; std::snprintf(watch.AddressText.data(), watch.AddressText.size(), "0x%llX", static_cast<unsigned long long>(watch.Address)); std::snprintf(watch.ValueText.data(), watch.ValueText.size(), "%s", watch.Value.c_str()); _watchList.emplace_back(std::move(watch)); _status = i18n::tr("re.watchAdded");
         };
 
@@ -314,8 +331,8 @@ namespace quartz::client::ui
                 if (live.LastRefresh == 0.0 || now - live.LastRefresh >= refreshInterval)
                 {
                     ValueSample sample; std::string error;
-                    if (readValueSample(_scanner.pid(), row.Address, scanType, resultValueWidth(scanType, row.Value), sample, error)) { live.Value = std::move(sample.Value); live.Numeric = sample.Numeric; }
-                    else { live.Value = "<unreadable>"; live.Numeric.reset(); }
+                    if (readValueSample(_scanner.pid(), row.Address, scanType, resultValueWidth(scanType, row.Value, _scanner.pid()), sample, error)) { live.Value = std::move(sample.Value); live.Numeric = sample.Numeric; }
+                    else { live.Value = i18n::tr("re.unreadable"); live.Numeric.reset(); }
                     live.LastRefresh = now;
                 }
                 const auto previousNumeric = parseDisplayedNumeric(scanType, row.Value);
@@ -330,7 +347,7 @@ namespace quartz::client::ui
                     if (ImGui::MenuItem(i18n::tr("re.inspectMemory"))) openInspector(manager, _scanner.pid(), row.Address);
                     if (ImGui::MenuItem(i18n::tr("re.disassemble"))) openInspector(manager, _scanner.pid(), row.Address);
                     if (ImGui::MenuItem(i18n::tr("re.createSignatureHere"))) { requestSignatureMaker(_scanner.pid(), row.Address); manager.open("native"); }
-                    if (ImGui::MenuItem(i18n::tr("re.watchAccesses"))) openAccessWatch(manager, _scanner.pid(), row.Address, resultValueWidth(scanType, row.Value));
+                    if (ImGui::MenuItem(i18n::tr("re.watchAccesses"))) openAccessWatch(manager, _scanner.pid(), row.Address, resultValueWidth(scanType, row.Value, _scanner.pid()));
                     if (ImGui::MenuItem(i18n::tr("re.addWatchList"))) addWatch(row, &live);
                     std::uintptr_t pointedAddress = 0; const bool hasPointedAddress = parseAddress(currentValue.c_str(), pointedAddress) && pointedAddress != 0;
                     ImGui::BeginDisabled(!hasPointedAddress); if (ImGui::MenuItem(i18n::tr("re.inspectCurrentAddress"))) openInspector(manager, _scanner.pid(), pointedAddress); ImGui::EndDisabled();
@@ -341,7 +358,7 @@ namespace quartz::client::ui
                     if (ImGui::MenuItem(i18n::tr("re.copyAddressValue"))) { const std::string text = runtimeFormatProcessAddress(_scanner.pid(),row.Address) + " = " + currentValue; ImGui::SetClipboardText(text.c_str()); }
                     ImGui::SeparatorText(i18n::tr("re.changeValue"));
                     ImGui::SetNextItemWidth(220.0f); ImGui::InputText("##ScanWriteValue", _scanWriteValue.data(), _scanWriteValue.size());
-                    if (ImGui::Button(i18n::tr("re.writeValue"))) { if (writeValueSample(_scanner.pid(), row.Address, scanType, resultValueWidth(scanType, row.Value), _scanWriteValue.data(), _status)) { live.LastRefresh = 0.0; _status = i18n::tr("re.valueWritten"); } }
+                    if (ImGui::Button(i18n::tr("re.writeValue"))) { if (writeValueSample(_scanner.pid(), row.Address, scanType, resultValueWidth(scanType, row.Value, _scanner.pid()), _scanWriteValue.data(), _status)) { live.LastRefresh = 0.0; _status = i18n::tr("re.valueWritten"); } }
                     ImGui::EndPopup();
                 }
                 ImGui::SameLine(); ImGui::TextUnformatted(runtimeFormatProcessAddress(_scanner.pid(),row.Address).c_str()); ImGui::TableNextColumn(); ImGui::TextColored(valueColor, "%s", currentValue.c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(row.Value.c_str()); ImGui::TableNextColumn();
@@ -368,7 +385,7 @@ namespace quartz::client::ui
                 {
                     ValueSample sample; std::string error;
                     if (readValueSample(watch.Pid, watch.Address, watch.Type, watch.Width, sample, error)) { watch.PreviousValue = watch.Value; watch.Value = std::move(sample.Value); watch.Numeric = sample.Numeric; if (!watch.Frozen) std::snprintf(watch.ValueText.data(), watch.ValueText.size(), "%s", watch.Value.c_str()); }
-                    else { watch.PreviousValue = watch.Value; watch.Value = "<unreadable>"; watch.Numeric.reset(); }
+                    else { watch.PreviousValue = watch.Value; watch.Value = i18n::tr("re.unreadable"); watch.Numeric.reset(); }
                     watch.LastRefresh = now;
                 }
                 ImGui::TableNextRow(); ImGui::TableNextColumn();
@@ -377,22 +394,22 @@ namespace quartz::client::ui
                 if (ImGui::BeginPopupContextItem("WatchValueContext"))
                 {
                     ImGui::SeparatorText(i18n::tr("re.changeAddress")); drawAddressInput("##WatchAddress", watch.AddressText.data(), watch.AddressText.size(), watch.Pid, 260.0f);
-                    if (ImGui::Button(i18n::tr("re.applyAddress"))) { std::uintptr_t address = 0; std::string error; if (!evaluateAddressExpression(watch.Pid, watch.AddressText.data(), address, error) || address == 0) _status = error.empty() ? "invalid watch address" : error; else { watch.Address = address; watch.LastRefresh = 0.0; watch.LastFreeze = 0.0; _status = i18n::tr("re.watchAddressChanged"); } }
+                    if (ImGui::Button(i18n::tr("re.applyAddress"))) { std::uintptr_t address = 0; std::string error; if (!evaluateAddressExpression(watch.Pid, watch.AddressText.data(), address, error) || address == 0) _status = error.empty() ? i18n::tr("re.invalidWatchAddress") : error; else { watch.Address = address; watch.LastRefresh = 0.0; watch.LastFreeze = 0.0; _status = i18n::tr("re.watchAddressChanged"); } }
                     ImGui::SeparatorText(i18n::tr("re.changeType")); ImGui::SetNextItemWidth(180.0f);
-                    if (ImGui::BeginCombo("##WatchType", memoryScanValueTypeName(watch.Type)))
+                    if (ImGui::BeginCombo("##WatchType", scanValueTypeLabel(watch.Type)))
                     {
                         for (int typeIndex = 0; typeIndex <= static_cast<int>(MemoryScanValueType::ByteArray); ++typeIndex)
                         {
                             const auto type = static_cast<MemoryScanValueType>(typeIndex); const bool active = type == watch.Type;
-                            if (ImGui::Selectable(memoryScanValueTypeName(type), active)) { watch.Type = type; if (const auto fixed = fixedValueWidth(type); fixed != 0) watch.Width = fixed; watch.LastRefresh = 0.0; watch.Frozen = false; }
+                            if (ImGui::Selectable(scanValueTypeLabel(type), active)) { watch.Type = type; if (const auto fixed = fixedValueWidth(type, watch.Pid); fixed != 0) watch.Width = fixed; watch.LastRefresh = 0.0; watch.Frozen = false; }
                             if (active) ImGui::SetItemDefaultFocus();
                         }
                         ImGui::EndCombo();
                     }
-                    if (fixedValueWidth(watch.Type) == 0) { int width = static_cast<int>(watch.Width); ImGui::SetNextItemWidth(120.0f); if (ImGui::InputInt(i18n::tr("re.width"), &width)) { watch.Width = static_cast<std::size_t>(std::max(width, 1)); watch.LastRefresh = 0.0; watch.Frozen = false; } }
+                    if (fixedValueWidth(watch.Type, watch.Pid) == 0) { int width = static_cast<int>(watch.Width); ImGui::SetNextItemWidth(120.0f); if (ImGui::InputInt(i18n::tr("re.width"), &width)) { watch.Width = static_cast<std::size_t>(std::max(width, 1)); watch.LastRefresh = 0.0; watch.Frozen = false; } }
                     ImGui::SeparatorText(i18n::tr("re.changeValue")); ImGui::SetNextItemWidth(220.0f); ImGui::InputText("##WatchValue", watch.ValueText.data(), watch.ValueText.size());
                     if (ImGui::Button(i18n::tr("re.write"))) { if (writeValueSample(watch.Pid, watch.Address, watch.Type, watch.Width, watch.ValueText.data(), _status)) { watch.LastRefresh = 0.0; if (watch.Frozen) watch.FrozenValue = watch.ValueText.data(); _status = i18n::tr("re.watchValueWritten"); } }
-                    ImGui::SameLine(); bool frozen = watch.Frozen; if (ImGui::Checkbox(i18n::tr("re.freeze"), &frozen)) { watch.Frozen = frozen; watch.LastFreeze = 0.0; if (watch.Frozen) { watch.FrozenValue = watch.ValueText.data(); if (watch.FrozenValue.empty() || watch.FrozenValue == "<unreadable>") watch.FrozenValue = watch.Value; } }
+                    ImGui::SameLine(); bool frozen = watch.Frozen; if (ImGui::Checkbox(i18n::tr("re.freeze"), &frozen)) { watch.Frozen = frozen; watch.LastFreeze = 0.0; if (watch.Frozen) { watch.FrozenValue = watch.ValueText.data(); if (watch.FrozenValue.empty() || watch.FrozenValue == i18n::tr("re.unreadable")) watch.FrozenValue = watch.Value; } }
                     ImGui::Separator();
                     if (ImGui::MenuItem(i18n::tr("re.inspectMemory"))) openInspector(manager, watch.Pid, watch.Address);
                     if (ImGui::MenuItem(i18n::tr("re.disassemble"))) openInspector(manager, watch.Pid, watch.Address);
@@ -405,7 +422,7 @@ namespace quartz::client::ui
                     ImGui::Separator(); if (ImGui::MenuItem(i18n::tr("re.removeWatchList"))) eraseWatch = i;
                     ImGui::EndPopup();
                 }
-                ImGui::SameLine(); ImGui::TextUnformatted(runtimeFormatProcessAddress(watch.Pid,watch.Address).c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(memoryScanValueTypeName(watch.Type)); ImGui::TableNextColumn(); ImGui::TextUnformatted(watch.Value.c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(watch.PreviousValue.c_str()); ImGui::TableNextColumn(); bool frozen = watch.Frozen; if (ImGui::Checkbox("##Frozen", &frozen)) { watch.Frozen = frozen; watch.LastFreeze = 0.0; if (watch.Frozen) { watch.FrozenValue = watch.Value; std::snprintf(watch.ValueText.data(), watch.ValueText.size(), "%s", watch.Value.c_str()); } } ImGui::TableNextColumn(); if (ImGui::SmallButton(i18n::tr("re.remove"))) eraseWatch = i; ImGui::PopID();
+                ImGui::SameLine(); ImGui::TextUnformatted(runtimeFormatProcessAddress(watch.Pid,watch.Address).c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(scanValueTypeLabel(watch.Type)); ImGui::TableNextColumn(); ImGui::TextUnformatted(watch.Value.c_str()); ImGui::TableNextColumn(); ImGui::TextUnformatted(watch.PreviousValue.c_str()); ImGui::TableNextColumn(); bool frozen = watch.Frozen; if (ImGui::Checkbox("##Frozen", &frozen)) { watch.Frozen = frozen; watch.LastFreeze = 0.0; if (watch.Frozen) { watch.FrozenValue = watch.Value; std::snprintf(watch.ValueText.data(), watch.ValueText.size(), "%s", watch.Value.c_str()); } } ImGui::TableNextColumn(); if (ImGui::SmallButton(i18n::tr("re.remove"))) eraseWatch = i; ImGui::PopID();
             }
             ImGui::EndTable();
         }
@@ -419,7 +436,7 @@ namespace quartz::client::ui
         if (ImGui::Button(i18n::tr("re.derivePatternAction")))
         {
             std::uintptr_t start = 0, end = 0; std::string error;
-            if (!evaluateAddressExpression(_pid, _rangeStart.data(), start, error) || !evaluateAddressExpression(_pid, _rangeEnd.data(), end, error) || start == 0 || end <= start) _status = error.empty() ? "invalid range" : error;
+            if (!evaluateAddressExpression(_pid, _rangeStart.data(), start, error) || !evaluateAddressExpression(_pid, _rangeEnd.data(), end, error) || start == 0 || end <= start) _status = error.empty() ? i18n::tr("re.invalidRange") : error;
             else _derivedPattern = deriveRuntimeBytePattern(_pid, start, end, _wildcardRelocations, _status);
         }
         if (!_derivedPattern.empty())

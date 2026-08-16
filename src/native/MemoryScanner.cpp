@@ -38,19 +38,29 @@ namespace quartz::client
             std::vector<std::uint8_t> MaskB;
         };
 
-        std::size_t numericWidth(const MemoryScanValueType type) noexcept
+        bool isNumeric(const MemoryScanValueType type) noexcept
+        {
+            switch (type)
+            {
+            case MemoryScanValueType::U8: case MemoryScanValueType::I8: case MemoryScanValueType::U16: case MemoryScanValueType::I16:
+            case MemoryScanValueType::U32: case MemoryScanValueType::I32: case MemoryScanValueType::U64: case MemoryScanValueType::I64:
+            case MemoryScanValueType::Float: case MemoryScanValueType::Double: case MemoryScanValueType::Pointer: case MemoryScanValueType::Bool: return true;
+            default: return false;
+            }
+        }
+
+        std::size_t numericWidth(const MemoryScanValueType type, const pid_t pid = 0) noexcept
         {
             switch (type)
             {
             case MemoryScanValueType::U8: case MemoryScanValueType::I8: case MemoryScanValueType::Bool: return 1;
             case MemoryScanValueType::U16: case MemoryScanValueType::I16: return 2;
             case MemoryScanValueType::U32: case MemoryScanValueType::I32: case MemoryScanValueType::Float: return 4;
-            case MemoryScanValueType::U64: case MemoryScanValueType::I64: case MemoryScanValueType::Double: case MemoryScanValueType::Pointer: return 8;
+            case MemoryScanValueType::U64: case MemoryScanValueType::I64: case MemoryScanValueType::Double: return 8;
+            case MemoryScanValueType::Pointer: return pid > 0 && runtimeProcessX86Mode(pid) == RuntimeX86Mode::X86 ? 4 : 8;
             default: return 0;
             }
         }
-
-        bool isNumeric(const MemoryScanValueType type) noexcept { return numericWidth(type) != 0; }
         bool comparisonNeedsPrevious(const MemoryScanComparison c) noexcept { return c == MemoryScanComparison::Changed || c == MemoryScanComparison::Unchanged || c == MemoryScanComparison::Increased || c == MemoryScanComparison::Decreased || c == MemoryScanComparison::IncreasedBy || c == MemoryScanComparison::DecreasedBy || c == MemoryScanComparison::ChangedFromTo; }
         bool comparisonNeedsA(const MemoryScanComparison c) noexcept { return c == MemoryScanComparison::Exact || c == MemoryScanComparison::NotEqual || c == MemoryScanComparison::IncreasedBy || c == MemoryScanComparison::DecreasedBy || c == MemoryScanComparison::Greater || c == MemoryScanComparison::Less || c == MemoryScanComparison::Between || c == MemoryScanComparison::ChangedFromTo; }
         bool comparisonNeedsB(const MemoryScanComparison c) noexcept { return c == MemoryScanComparison::Between || c == MemoryScanComparison::ChangedFromTo; }
@@ -109,7 +119,7 @@ namespace quartz::client
             parsed = {};
             if (isNumeric(request.Type))
             {
-                parsed.Width = numericWidth(request.Type);
+                parsed.Width = existingWidth != 0 ? existingWidth : numericWidth(request.Type, request.Pid);
                 if (comparisonNeedsA(request.Comparison) && !parseNumeric(request.ValueA, parsed.NumericA)) { error = "invalid first numeric value"; return false; }
                 if (comparisonNeedsB(request.Comparison) && !parseNumeric(request.ValueB, parsed.NumericB)) { error = "invalid second numeric value"; return false; }
                 parsed.HasA = comparisonNeedsA(request.Comparison); parsed.HasB = comparisonNeedsB(request.Comparison);
@@ -133,7 +143,7 @@ namespace quartz::client
             return parsed.Width != 0;
         }
 
-        long double numericAt(const MemoryScanValueType type, const std::uint8_t* data)
+        long double numericAt(const MemoryScanValueType type, const std::uint8_t* data, const std::size_t width = 0)
         {
             switch (type)
             {
@@ -143,7 +153,8 @@ namespace quartz::client
             case MemoryScanValueType::I16: { std::int16_t v; std::memcpy(&v, data, 2); return v; }
             case MemoryScanValueType::U32: { std::uint32_t v; std::memcpy(&v, data, 4); return v; }
             case MemoryScanValueType::I32: { std::int32_t v; std::memcpy(&v, data, 4); return v; }
-            case MemoryScanValueType::U64: case MemoryScanValueType::Pointer: { std::uint64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
+            case MemoryScanValueType::U64: { std::uint64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
+            case MemoryScanValueType::Pointer: { if (width == 4) { std::uint32_t v; std::memcpy(&v, data, 4); return static_cast<long double>(v); } std::uint64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
             case MemoryScanValueType::I64: { std::int64_t v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
             case MemoryScanValueType::Float: { float v; std::memcpy(&v, data, 4); return static_cast<long double>(v); }
             case MemoryScanValueType::Double: { double v; std::memcpy(&v, data, 8); return static_cast<long double>(v); }
@@ -167,7 +178,7 @@ namespace quartz::client
 
         bool valuesEqual(const MemoryScanValueType type, const std::uint8_t* a, const std::uint8_t* b, const std::size_t width, const bool caseSensitive)
         {
-            if (isNumeric(type)) return numericAt(type, a) == numericAt(type, b);
+            if (isNumeric(type)) return numericAt(type, a, width) == numericAt(type, b, width);
             if (caseSensitive || type == MemoryScanValueType::ByteArray) return std::memcmp(a, b, width) == 0;
             if (type == MemoryScanValueType::Utf8String) for (std::size_t i = 0; i < width; ++i) if (std::tolower(a[i]) != std::tolower(b[i])) return false; else { }
             else if (type == MemoryScanValueType::Utf16String) for (std::size_t i = 0; i + 1 < width; i += 2) { const std::uint16_t av = static_cast<std::uint16_t>(a[i] | (a[i + 1] << 8)), bv = static_cast<std::uint16_t>(b[i] | (b[i + 1] << 8)); if (av < 128 && bv < 128 ? std::tolower(av) != std::tolower(bv) : av != bv) return false; }
@@ -179,7 +190,7 @@ namespace quartz::client
             if (request.Comparison == MemoryScanComparison::UnknownInitial) return true;
             if (isNumeric(request.Type))
             {
-                const long double now = numericAt(request.Type, current), before = previous ? numericAt(request.Type, previous) : 0.0L;
+                const long double now = numericAt(request.Type, current, parsed.Width), before = previous ? numericAt(request.Type, previous, parsed.Width) : 0.0L;
                 switch (request.Comparison)
                 {
                 case MemoryScanComparison::Exact: return now == parsed.NumericA;
@@ -217,9 +228,9 @@ namespace quartz::client
             std::ostringstream out;
             if (isNumeric(type))
             {
-                if (type == MemoryScanValueType::Pointer) { std::uint64_t v; std::memcpy(&v, data, 8); out << "0x" << std::hex << std::uppercase << v; }
-                else if (type == MemoryScanValueType::Float || type == MemoryScanValueType::Double) out << std::setprecision(12) << static_cast<double>(numericAt(type, data));
-                else out << std::fixed << std::setprecision(0) << numericAt(type, data);
+                if (type == MemoryScanValueType::Pointer) { if (width == 4) { std::uint32_t v; std::memcpy(&v, data, 4); out << "0x" << std::hex << std::uppercase << v; } else { std::uint64_t v; std::memcpy(&v, data, 8); out << "0x" << std::hex << std::uppercase << v; } }
+                else if (type == MemoryScanValueType::Float || type == MemoryScanValueType::Double) out << std::setprecision(12) << static_cast<double>(numericAt(type, data, width));
+                else out << std::fixed << std::setprecision(0) << numericAt(type, data, width);
                 return out.str();
             }
             if (type == MemoryScanValueType::Utf8String) return std::string(reinterpret_cast<const char*>(data), width);
@@ -440,7 +451,7 @@ namespace quartz::client
 #if QUARTZ_HAS_ZYDIS
         if (wildcardRelocations)
         {
-            ZydisDecoder decoder{}; ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+            const RuntimeX86Mode mode = runtimeProcessX86Mode(pid); ZydisDecoder decoder{}; ZydisDecoderInit(&decoder, mode == RuntimeX86Mode::X86 ? ZYDIS_MACHINE_MODE_LEGACY_32 : ZYDIS_MACHINE_MODE_LONG_64, mode == RuntimeX86Mode::X86 ? ZYDIS_STACK_WIDTH_32 : ZYDIS_STACK_WIDTH_64);
             std::size_t offset = 0;
             while (offset < bytes.size())
             {

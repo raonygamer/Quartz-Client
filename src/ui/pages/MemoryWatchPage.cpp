@@ -57,7 +57,7 @@ namespace quartz::client::ui
         if (ImGui::Button(i18n::tr("re.startWatch")))
         {
             std::uintptr_t address = 0; std::string error; static constexpr std::size_t Widths[] = {1, 2, 4, 8};
-            if (!evaluateAddressExpression(_pid, _address.data(), address, error) || address == 0) _status = error.empty() ? "invalid address" : error;
+            if (!evaluateAddressExpression(_pid, _address.data(), address, error) || address == 0) _status = error.empty() ? i18n::tr("re.invalidAddress") : error;
             else { _selectedSite = 0; _watch.start(_pid, address, Widths[std::clamp(_size, 0, 3)], static_cast<MemoryWatchAccess>(_access), static_cast<std::size_t>(std::max(_maxHits, 0)), _status); }
         }
         ImGui::EndDisabled(); ImGui::SameLine(); ImGui::BeginDisabled(!watchRunning); if (ImGui::Button(i18n::tr("re.stopWatch"))) _watch.stop(); ImGui::EndDisabled(); ImGui::SameLine(); if (ImGui::Button(i18n::tr("re.clearHits"))) { _watch.clearHits(); _selectedSite = 0; }
@@ -82,7 +82,7 @@ namespace quartz::client::ui
                     auto& probe = executionProbe(); const bool thisProbe = probe.running() && probe.pid() == _pid && probe.address() == site;
                     if (thisProbe)
                     {
-                        if (ImGui::MenuItem(i18n::tr("re.cancelProbe"))) { probe.stop(); _status = "execution probe cancelled"; }
+                        if (ImGui::MenuItem(i18n::tr("re.cancelProbe"))) { probe.stop(); _status = i18n::tr("re.executionProbeCancelled"); }
                     }
                     else
                     {
@@ -90,7 +90,7 @@ namespace quartz::client::ui
                         if (ImGui::MenuItem(i18n::tr("re.captureRegistersNext")))
                         {
                             if (_watch.running()) _watch.stop(); std::string error;
-                            if (!probe.start(_pid, site, error)) _status = error; else _status = "armed one-shot execution probe at " + runtimeFormatProcessAddress(_pid,site);
+                            if (!probe.start(_pid, site, error)) _status = error; else char message[256]{}; std::snprintf(message,sizeof(message),i18n::tr("re.armedProbeAt"),runtimeFormatProcessAddress(_pid,site).c_str()); _status=message;
                         }
                         ImGui::EndDisabled();
                     }
@@ -123,7 +123,7 @@ namespace quartz::client::ui
                         if (index >= registers.size()) { ImGui::TableNextColumn(); continue; }
                         const auto& reg = registers[index]; ImGui::TextUnformatted(reg.Name); ImGui::TableNextColumn(); ImGui::PushID(static_cast<int>(index)); const std::string symbolic = runtimeFormatProcessAddress(_pid,static_cast<std::uintptr_t>(reg.Value));
                         ImGui::Selectable(symbolic.c_str(), false, ImGuiSelectableFlags_AllowOverlap, ImVec2(0.0f, ImGui::GetTextLineHeight()));
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s = %s\nunsigned: %llu\nsigned: %lld", reg.Name, symbolic.c_str(), static_cast<unsigned long long>(reg.Value), static_cast<long long>(reg.Value));
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip(i18n::tr("re.registerValueTooltip"), reg.Name, symbolic.c_str(), static_cast<unsigned long long>(reg.Value), static_cast<long long>(reg.Value));
                         if (ImGui::BeginPopupContextItem("RegisterContext"))
                         {
                             if (ImGui::MenuItem(i18n::tr("re.copySymbolicAddress"))) ImGui::SetClipboardText(symbolic.c_str());
@@ -131,7 +131,7 @@ namespace quartz::client::ui
                             if (ImGui::MenuItem(i18n::tr("re.copyRegisterValue"))) { const std::string text = std::string(reg.Name) + " = " + symbolic; ImGui::SetClipboardText(text.c_str()); }
                             ImGui::Separator(); ImGui::BeginDisabled(reg.Value == 0);
                             if (ImGui::MenuItem(i18n::tr("re.inspectValueAddress"))) openWatchInspector(manager, _pid, static_cast<std::uintptr_t>(reg.Value));
-                            if (ImGui::MenuItem(i18n::tr("re.useValueAsWatch"))) { std::snprintf(_address.data(), _address.size(), "0x%llX", static_cast<unsigned long long>(reg.Value)); _status = std::string("watch address field <- ") + reg.Name; }
+                            if (ImGui::MenuItem(i18n::tr("re.useValueAsWatch"))) { std::snprintf(_address.data(), _address.size(), "0x%llX", static_cast<unsigned long long>(reg.Value)); char message[160]{}; std::snprintf(message,sizeof(message),i18n::tr("re.watchAddressFromRegister"),reg.Name); _status=message; }
                             ImGui::EndDisabled(); ImGui::EndPopup();
                         }
                         ImGui::PopID();
