@@ -5,7 +5,7 @@ on:
     branches: [feature/quickjs-bindings]
     paths:
       - tools/apply_ts_sdk_cleanup.py
-      - tools/ts-sdk-cleanup.trigger
+      - .github/workflows/ts-sdk-cleanup.yml
 
 permissions:
   contents: write
