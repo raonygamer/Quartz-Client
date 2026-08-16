@@ -100,11 +100,24 @@ quartz_theme_kirisaki_end:
 ")
 set_source_files_properties("${QUARTZ_THEME_ASSETS_SOURCE}" PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/deviluke.png;${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/kurosaki.png;${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/yami.png;${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/kirisaki.png")
 
+# ImGuiColorTextEdit 6730786 scrolls the selected completion back into view on every frame,
+# which fights the mouse wheel. Keep keyboard selection tracking, but let wheel scrolling stay put.
+set(QUARTZ_TEXT_EDITOR_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/TextEditor.cpp")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ImGuiColorTextEdit/TextEditor.cpp" QUARTZ_TEXT_EDITOR_CONTENT)
+set(QUARTZ_AUTOCOMPLETE_SCROLL_OLD "if (selected) {\n\t\t\t\t\t\tImGui::SetScrollHereY(1.0f);\n\t\t\t\t\t}")
+set(QUARTZ_AUTOCOMPLETE_SCROLL_NEW "if (selected && (ImGui::IsKeyPressed(ImGuiKey_UpArrow) || ImGui::IsKeyPressed(ImGuiKey_DownArrow))) {\n\t\t\t\t\t\tImGui::SetScrollHereY(0.5f);\n\t\t\t\t\t}")
+string(FIND "${QUARTZ_TEXT_EDITOR_CONTENT}" "${QUARTZ_AUTOCOMPLETE_SCROLL_OLD}" QUARTZ_AUTOCOMPLETE_SCROLL_POS)
+if(QUARTZ_AUTOCOMPLETE_SCROLL_POS EQUAL -1)
+    message(FATAL_ERROR "ImGuiColorTextEdit autocomplete scroll patch no longer matches the vendored source")
+endif()
+string(REPLACE "${QUARTZ_AUTOCOMPLETE_SCROLL_OLD}" "${QUARTZ_AUTOCOMPLETE_SCROLL_NEW}" QUARTZ_TEXT_EDITOR_CONTENT "${QUARTZ_TEXT_EDITOR_CONTENT}")
+file(WRITE "${QUARTZ_TEXT_EDITOR_SOURCE}" "${QUARTZ_TEXT_EDITOR_CONTENT}")
+
 add_executable(QuartzClient
         ${QUARTZ_CLIENT_SOURCES}
         ${QUARTZ_THEME_ASSETS_SOURCE}
         vendor/ImGuiColorTextEdit/TextDiff.cpp
-        vendor/ImGuiColorTextEdit/TextEditor.cpp
+        ${QUARTZ_TEXT_EDITOR_SOURCE}
         vendor/imgui/imgui.cpp
         vendor/imgui/imgui_draw.cpp
         vendor/imgui/imgui_tables.cpp
