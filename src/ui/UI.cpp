@@ -104,7 +104,7 @@ namespace quartz::client
         return changed;
     }
 
-    void drawShaderEditorPage(RawUSB& usb, SharedDeviceState& deviceState, const EvdevKeyboard& keyboardInput, ShaderFramebuffer& shaderFramebuffer, ShaderTransitionState& shaderTransition, ShaderEditorState& shaderEditor, ViewPage& page, std::array<char, ShaderSourceCapacity>& vertexShaderSource, std::array<char, ShaderSourceCapacity>& fragmentShaderSource, std::array<char, ShaderPathCapacity>& vertexLoadPath, std::array<char, ShaderPathCapacity>& fragmentLoadPath, VisualizerSettings& settings, const std::array<Color32, MatrixSize>& framebuffer, const float appCpuUsage, const bool scrollLockActive, const bool capsLockActive)
+    void drawShaderEditorPage(RawUSB& usb, SharedDeviceState& deviceState, const EvdevKeyboard& keyboardInput, ShaderFramebuffer& shaderFramebuffer, ShaderTransitionState& shaderTransition, ShaderEditorState& shaderEditor, ViewPage& page, std::array<char, ShaderSourceCapacity>& vertexShaderSource, std::array<char, ShaderSourceCapacity>& fragmentShaderSource, std::array<char, ShaderPathCapacity>& vertexLoadPath, std::array<char, ShaderPathCapacity>& fragmentLoadPath, VisualizerSettings& settings, const std::array<Color32, MatrixSize>& framebuffer, JavaScriptRuntime& javascript, const float appCpuUsage, const bool scrollLockActive, const bool capsLockActive)
     {
         initializeShaderEditors(shaderEditor, vertexShaderSource.data(), fragmentShaderSource.data());
         if (ImGui::Button("< Back"))
@@ -162,7 +162,9 @@ namespace quartz::client
         if (ImGui::Button("Refresh shader library")) { refreshShaderLibrary(); settings.ShaderPresetIndex = shaderPresetIndexById(settings.ShaderId); }
         ImGui::SameLine(); ImGui::TextDisabled("%zu shaders | %s", ShaderPresets.size(), shaderLibraryPath().string().c_str());
         const char* presetPreview = settings.ShaderPresetIndex == 0 ? "Custom / current" : ShaderPresets[settings.ShaderPresetIndex - 1].Name.c_str();
+        const bool shaderMutexLocked = javascript.shaderMutexLocked();
         ImGui::SetNextItemWidth(230.0f);
+        ImGui::BeginDisabled(shaderMutexLocked);
         if (ImGui::BeginCombo("Preset", presetPreview))
         {
             if (ImGui::Selectable("Custom / current", settings.ShaderPresetIndex == 0)) { settings.ShaderPresetIndex = 0; settings.ShaderId.clear(); }
@@ -178,12 +180,18 @@ namespace quartz::client
             }
             ImGui::EndCombo();
         }
+        ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::Checkbox("Key-state uniforms", &settings.ShaderKeyStateUniforms);
         ImGui::SameLine();
         ImGui::TextDisabled("evdev -> uCapsLock %.0f   uScrollLock %.0f", settings.ShaderKeyStateUniforms && capsLockActive ? 1.0f : 0.0f, settings.ShaderKeyStateUniforms && scrollLockActive ? 1.0f : 0.0f);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Reactive presets also receive uKeyState[112] and uKeyEvents[16]. Key capture comes from Linux evdev and works while Quartz is unfocused.");
+        if (shaderMutexLocked)
+        {
+            const std::string owner = javascript.shaderMutexOwnerDisplayName();
+            ImGui::TextDisabled(ui::i18n::tr("shaders.mutexLocked"), owner.c_str());
+        }
         ImGui::Checkbox("Caps Lock fixed-color LED", &settings.ShaderCapsLockColorEnabled);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(145.0f);
@@ -343,7 +351,7 @@ namespace quartz::client
                     ImGui::Separator();
                     float silhouettePercent = settings.UiSilhouetteOpacity * 100.0f;
                     ImGui::SetNextItemWidth(220.0f);
-                    if (ImGui::SliderFloat(ui::i18n::tr("appearance.silhouetteOpacity"), &silhouettePercent, 0.0f, 200.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) { settings.UiSilhouetteOpacity = silhouettePercent / 100.0f; ui::saveThemePreferences(settings); }
+                    if (ImGui::SliderFloat(ui::i18n::tr("appearance.silhouetteOpacity"), &silhouettePercent, 0.0f, 300.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) { settings.UiSilhouetteOpacity = silhouettePercent / 100.0f; ui::saveThemePreferences(settings); }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", ui::i18n::tr("appearance.silhouetteOpacityTooltip"));
                     ImGui::SetNextItemWidth(220.0f);
                     ImGui::SliderFloat(ui::i18n::tr("appearance.globalBrightness"), &settings.GlobalBrightness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);

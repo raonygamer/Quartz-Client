@@ -119,6 +119,18 @@ namespace quartz::client
         _shaderMutexOwner = 0; rebuildOutput(); return true;
     }
 
+    std::string JavaScriptRuntime::shaderMutexOwnerDisplayName() const
+    {
+        const RuntimeScript* owner = find(_shaderMutexOwner);
+        if (!owner) return {};
+        if (owner->External && !owner->Path.empty())
+        {
+            const std::string filename = std::filesystem::path(owner->Path).filename().string();
+            if (!filename.empty()) return filename;
+        }
+        return owner->Name;
+    }
+
     void JavaScriptRuntime::clearOutput(const std::uint64_t scriptId) noexcept
     {
         const bool released = _shaderMutexOwner == scriptId; if (released) _shaderMutexOwner = 0;

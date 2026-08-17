@@ -77,7 +77,7 @@ namespace quartz::client::ui
             }
             settings.UiTheme = std::clamp(settings.UiTheme, 0, static_cast<int>(Theme::Count) - 1);
             settings.UiCornerRounding = std::clamp(settings.UiCornerRounding, 0.0f, 12.0f);
-            settings.UiSilhouetteOpacity = std::clamp(settings.UiSilhouetteOpacity, 0.0f, 2.0f);
+            settings.UiSilhouetteOpacity = std::clamp(settings.UiSilhouetteOpacity, 0.0f, 3.0f);
             if (suspiciousTheme(static_cast<Theme>(settings.UiTheme)) && !settings.SuspiciousColorThemes) settings.UiTheme = static_cast<int>(Theme::QuartzCyan);
             applyCornerRounding(settings.UiCornerRounding);
         }

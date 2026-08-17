@@ -38,6 +38,8 @@ namespace quartz::client::ui
         ImGui::SeparatorText(i18n::tr("shaders.current"));
         const bool presetValid = settings.ShaderPresetIndex > 0 && settings.ShaderPresetIndex <= static_cast<int>(ShaderPresets.size());
         const char* presetPreview = presetValid ? ShaderPresets[static_cast<std::size_t>(settings.ShaderPresetIndex - 1)].Name.c_str() : i18n::tr("shaders.customExternal");
+        const bool shaderMutexLocked = context.javascript.shaderMutexLocked();
+        ImGui::BeginDisabled(shaderMutexLocked);
         if (ImGui::BeginCombo(i18n::tr("shaders.catalog"), presetPreview))
         {
             if (ImGui::Selectable(i18n::tr("shaders.customExternal"), settings.ShaderPresetIndex == 0)) { settings.ShaderPresetIndex = 0; settings.ShaderId.clear(); }
@@ -55,11 +57,17 @@ namespace quartz::client::ui
             }
             ImGui::EndCombo();
         }
+        ImGui::EndDisabled();
         ImGui::SameLine(); if (ImGui::Button(i18n::tr("shaders.refreshCatalog"))) refreshShaderLibrary();
         ImGui::SameLine(); if (ImGui::Button(i18n::tr("common.edit")))
         {
             initializeShaderEditors(editor, vertexSource.data(), fragmentSource.data());
             syncEditorText(editor.Vertex, vertexSource.data()); syncEditorText(editor.Fragment, fragmentSource.data()); updateShaderDiagnostics(editor, framebuffer.status()); manager.open("shader-editor");
+        }
+        if (shaderMutexLocked)
+        {
+            const std::string owner = context.javascript.shaderMutexOwnerDisplayName();
+            ImGui::TextDisabled(i18n::tr("shaders.mutexLocked"), owner.c_str());
         }
         if (ImGui::Button(i18n::tr("shaders.compileCurrent"))) compileShaders(framebuffer, editor, vertexSource, fragmentSource);
         ImGui::SameLine(); if (ImGui::Button(i18n::tr("shaders.saveDefaults"))) saveShaderSources(vertexSource, fragmentSource);

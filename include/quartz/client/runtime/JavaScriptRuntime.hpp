@@ -35,6 +35,7 @@ namespace quartz::client
         bool ownsShaderMutex(std::uint64_t scriptId) const noexcept { return _shaderMutexOwner == scriptId; }
         bool canWriteShader(std::uint64_t scriptId) const noexcept { return _shaderMutexOwner == 0 || _shaderMutexOwner == scriptId; }
         std::uint64_t shaderMutexOwner() const noexcept { return _shaderMutexOwner; }
+        std::string shaderMutexOwnerDisplayName() const;
 
         void clearOutput(std::uint64_t scriptId) noexcept;
         void clearOutputs() noexcept;
