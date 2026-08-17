@@ -29,6 +29,13 @@ namespace quartz::client
         RuntimeScript* findByName(std::string_view name) noexcept;
         const RuntimeScript* findByName(std::string_view name) const noexcept;
 
+        bool lockShaderMutex(std::uint64_t scriptId) noexcept;
+        bool unlockShaderMutex(std::uint64_t scriptId) noexcept;
+        bool shaderMutexLocked() const noexcept { return _shaderMutexOwner != 0; }
+        bool ownsShaderMutex(std::uint64_t scriptId) const noexcept { return _shaderMutexOwner == scriptId; }
+        bool canWriteShader(std::uint64_t scriptId) const noexcept { return _shaderMutexOwner == 0 || _shaderMutexOwner == scriptId; }
+        std::uint64_t shaderMutexOwner() const noexcept { return _shaderMutexOwner; }
+
         void clearOutput(std::uint64_t scriptId) noexcept;
         void clearOutputs() noexcept;
         void rebuildOutput() noexcept;
@@ -46,6 +53,7 @@ namespace quartz::client
         RuntimeScriptSettings _settings{};
         std::unordered_map<std::uint64_t, RuntimeControlOutput> _scriptOutputs;
         RuntimeControlOutput _output{};
+        std::uint64_t _shaderMutexOwner = 0;
         std::uint64_t _nextScriptId = 1;
         std::uint64_t _revision = 0;
         std::uint64_t _savedRevision = 0;
