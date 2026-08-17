@@ -132,12 +132,12 @@ namespace quartz::client::ui
         for (std::size_t i=0;i<javascript.scripts().size();++i)
         {
             auto& script=javascript.scripts()[i]; ImGui::PushID(static_cast<int>(script.Id & 0x7fffffffULL)); const std::string header=std::string(script.Name)+(script.Enabled?"":std::string("  ")+jsText("DISABLED","DESATIVADO"))+"###RuntimeScript"+std::to_string(script.Id);
-            if (ImGui::CollapsingHeader(header.c_str(),ImGuiTreeNodeFlags_DefaultOpen))
+            if (ImGui::CollapsingHeader(header.c_str()))
             {
                 bool localChanged=false; localChanged|=ImGui::Checkbox(jsText("Enabled","Ativado"),&script.Enabled); ImGui::SameLine(); ImGui::SetNextItemWidth(240.0f); localChanged|=ImGui::InputText(jsText("Name","Nome"),script.Name,sizeof(script.Name)); ImGui::SameLine(); const bool wasExternal=script.External;
                 if (ImGui::Checkbox(jsText("External","Externo"),&script.External)) { localChanged=true; if (!wasExternal&&script.External) { std::string conversionError; if (!materializeExternal(script,conversionError)) { script.External=false; status=conversionError; } else { runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; status=std::string(jsText("external script: ","script externo: "))+script.Path; } } else if (wasExternal&&!script.External) { runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; } }
                 ImGui::SameLine(); if (ImGui::SmallButton(jsText("Reload","Recarregar"))) { runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; } ImGui::SameLine(); if (ImGui::SmallButton(jsText("Reset persistent storage","Redefinir armazenamento persistente"))) { script.PersistentStateJson="{}"; script.Properties.clear(); runtimeResetWorkspaceScript(script.Id); javascript.clearOutput(script.Id); ++script.ReloadCount; localChanged=true; } ImGui::SameLine(); if (ImGui::SmallButton(jsText("Remove","Remover"))) erase=i;
-                ImGui::SetNextItemWidth(160.0f); localChanged|=ImGui::DragFloat(jsText("Update Hz","Atualização Hz"),&script.UpdateHz,0.5f,0.5f,500.0f,"%.1f"); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); localChanged|=ImGui::DragFloat("Timeout",&script.TimeoutMs,0.1f,0.1f,100.0f,"%.1f ms"); ImGui::SameLine(); localChanged|=ImGui::Checkbox("Hot reload##script",&script.HotReload); ImGui::SetNextItemWidth(180.0f); localChanged|=ImGui::InputText(jsText("Group","Grupo"),script.Group,sizeof(script.Group)); ImGui::SameLine(); ImGui::SetNextItemWidth(80.0f); localChanged|=ImGui::InputInt(jsText("Order","Ordem"),&script.Order); localChanged|=drawScriptProperties(script);
+                ImGui::SetNextItemWidth(160.0f); localChanged|=ImGui::DragFloat(jsText("Update Hz","Atualização Hz"),&script.UpdateHz,0.5f,0.5f,500.0f,"%.1f"); ImGui::SameLine(); ImGui::SetNextItemWidth(150.0f); localChanged|=ImGui::DragFloat("Timeout",&script.TimeoutMs,0.1f,0.1f,100.0f,"%.1f ms"); ImGui::SameLine(); localChanged|=ImGui::Checkbox("Hot reload##script",&script.HotReload); ImGui::SetNextItemWidth(180.0f); localChanged|=ImGui::InputText(jsText("Group","Grupo"),script.Group,sizeof(script.Group)); ImGui::SameLine(); ImGui::SetNextItemWidth(90.0f); localChanged|=ImGui::InputInt(jsText("Priority","Prioridade"),&script.Priority); ImGui::SameLine(); ImGui::SetNextItemWidth(80.0f); localChanged|=ImGui::InputInt(jsText("Order","Ordem"),&script.Order); localChanged|=drawScriptProperties(script);
                 if (ImGui::BeginTabBar("##JavaScriptRuntimeTabs"))
                 {
                     if (ImGui::BeginTabItem(jsText("Editor","Editor")))
@@ -158,7 +158,16 @@ namespace quartz::client::ui
                     }
                     if (ImGui::BeginTabItem(jsText("Console","Console")))
                     {
-                        static std::unordered_map<std::uint64_t,bool> autoScroll; auto [followIt,inserted]=autoScroll.try_emplace(script.Id,true); bool& follow=followIt->second; if (ImGui::SmallButton(jsText("Clear","Limpar"))) script.Console.clear(); ImGui::SameLine(); ImGui::Checkbox(jsText("Auto-scroll","Rolagem automática"),&follow); ImGui::SameLine(); if (ImGui::SmallButton(jsText("Copy all","Copiar tudo"))) { const std::string text=consoleText(script); ImGui::SetClipboardText(text.c_str()); } ImGui::SameLine(); ImGui::TextDisabled(jsText("%zu / 512 — selection/copy is enabled","%zu / 512 — seleção/cópia está habilitada"),script.Console.size()); const std::string text=consoleText(script); auto& consoleView=readOnlyView(script.Id,3,text,false); if (follow&&consoleView.Editor.GetLineCount()) consoleView.Editor.ScrollToLine(consoleView.Editor.GetLineCount()-1,TextEditor::Scroll::alignBottom); consoleView.Editor.Render("##jsConsole",ImVec2(0.0f,260.0f),ImGuiChildFlags_Borders); ImGui::EndTabItem();
+                        static std::unordered_map<std::uint64_t,bool> autoScroll; auto [followIt,inserted]=autoScroll.try_emplace(script.Id,true); bool& follow=followIt->second; if (ImGui::SmallButton(jsText("Clear","Limpar"))) { script.Console.clear(); script.LastLog.clear(); } ImGui::SameLine(); ImGui::Checkbox(jsText("Auto-scroll","Rolagem automática"),&follow); ImGui::SameLine(); if (ImGui::SmallButton(jsText("Copy all","Copiar tudo"))) { const std::string text=consoleText(script); ImGui::SetClipboardText(text.c_str()); } ImGui::SameLine(); ImGui::TextDisabled(jsText("%zu / 512 — selection/copy is enabled","%zu / 512 — seleção/cópia está habilitada"),script.Console.size()); const std::string text=consoleText(script);
+                        if (text.empty())
+                        {
+                            ImGui::BeginChild("##jsConsoleEmpty",ImVec2(0.0f,260.0f),ImGuiChildFlags_Borders); ImGui::TextDisabled("%s",jsText("Console is empty","Console vazio")); ImGui::EndChild();
+                        }
+                        else
+                        {
+                            auto& consoleView=readOnlyView(script.Id,3,text,false); if (follow&&consoleView.Editor.GetLineCount()) consoleView.Editor.ScrollToLine(consoleView.Editor.GetLineCount()-1,TextEditor::Scroll::alignBottom); consoleView.Editor.Render("##jsConsole",ImVec2(0.0f,260.0f),ImGuiChildFlags_Borders);
+                        }
+                        ImGui::EndTabItem();
                     }
                     ImGui::EndTabBar();
                 }
