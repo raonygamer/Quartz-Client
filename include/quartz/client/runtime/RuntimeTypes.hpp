@@ -361,6 +361,7 @@ namespace quartz::client
     {
         std::uint64_t Id = 0;
         bool Enabled = true;
+        int Priority = 0;
         int Order = 0;
         char Group[64]{};
         char Name[64] = "Script";
