@@ -62,6 +62,12 @@ namespace quartz::client
             return i;
         }
 
+        std::size_t skipSpaceBackward(const std::string& source, std::size_t i)
+        {
+            while (i && std::isspace(static_cast<unsigned char>(source[i - 1]))) --i;
+            return i;
+        }
+
         bool wordAt(const std::string& source, const std::vector<bool>& code, const std::size_t i, const std::string_view word)
         {
             if (i + word.size() > source.size()) return false;
@@ -99,6 +105,50 @@ namespace quartz::client
                 if (!parameter && (c == '=' || c == ',' || c == ';')) return i;
             }
             return limit;
+        }
+
+        bool moduleAlias(const std::string& source, const std::vector<bool>& code, const std::size_t at)
+        {
+            const std::size_t previous = skipSpaceBackward(source, at);
+            if (previous && source[previous - 1] == '.') return false;
+            std::size_t begin = at;
+            int brace = 0, bracket = 0, paren = 0;
+            while (begin)
+            {
+                --begin;
+                if (!code[begin]) continue;
+                const char c = source[begin];
+                if (c == '}') ++brace; else if (c == '{' && brace > 0) --brace;
+                else if (c == ']') ++bracket; else if (c == '[' && bracket > 0) --bracket;
+                else if (c == ')') ++paren; else if (c == '(' && paren > 0) --paren;
+                if (!brace && !bracket && !paren && c == ';') { ++begin; break; }
+            }
+            begin = skipSpace(source, begin);
+            if (!wordAt(source, code, begin, "import") && !wordAt(source, code, begin, "export")) return false;
+            for (std::size_t i = begin; i < at; ++i) if (code[i] && source[i] == '=') return false;
+            return true;
+        }
+
+        std::size_t assertionTypeEnd(const std::string& source, const std::vector<bool>& code, const std::size_t start)
+        {
+            int paren = 0, brace = 0, bracket = 0, angle = 0;
+            for (std::size_t i = start; i < source.size(); ++i)
+            {
+                if (!code[i]) continue;
+                const char c = source[i];
+                if (c == '(') { ++paren; continue; }
+                if (c == '{') { ++brace; continue; }
+                if (c == '[') { ++bracket; continue; }
+                if (c == '<') { ++angle; continue; }
+                if (c == ')' && paren > 0) { --paren; continue; }
+                if (c == '}' && brace > 0) { --brace; continue; }
+                if (c == ']' && bracket > 0) { --bracket; continue; }
+                if (c == '>' && angle > 0) { --angle; continue; }
+                if (paren || brace || bracket || angle) continue;
+                if (c == ';' || c == ',' || c == ')' || c == ']' || c == '}' || c == '.' || c == '=' || c == '+' || c == '-' || c == '*' || c == '/' || c == '%' || c == '^' || c == '!' || c == '~' || c == '?') return i;
+                if ((c == '&' && i + 1 < source.size() && source[i + 1] == '&') || (c == '|' && i + 1 < source.size() && source[i + 1] == '|')) return i;
+            }
+            return source.size();
         }
 
         void stripImportTypes(std::string& output, const std::vector<bool>& code)
@@ -209,6 +259,23 @@ namespace quartz::client
                 i = close;
             }
         }
+
+        void stripTypeAssertions(std::string& output, const std::vector<bool>& code)
+        {
+            for (std::size_t i = 0; i < output.size(); ++i)
+            {
+                const bool assertion = wordAt(output, code, i, "as");
+                const bool satisfies = wordAt(output, code, i, "satisfies");
+                if (!assertion && !satisfies) continue;
+                if (assertion && moduleAlias(output, code, i)) continue;
+                const std::size_t previous = skipSpaceBackward(output, i); if (previous && output[previous - 1] == '.') continue;
+                const std::size_t typeStart = skipSpace(output, i + (assertion ? 2 : 9));
+                if (typeStart >= output.size()) continue;
+                const std::size_t end = assertionTypeEnd(output, code, typeStart);
+                if (end <= typeStart) continue;
+                blank(output, i, end); i = end ? end - 1 : end;
+            }
+        }
     }
 
     bool runtimeTranspileTypeScript(const std::string_view source, std::string& output, std::string& error) noexcept
@@ -216,7 +283,7 @@ namespace quartz::client
         try
         {
             output.assign(source); const auto code = codeMask(source);
-            stripImportTypes(output, code); stripDeclarations(output, code); stripVariableTypes(output, code); stripFunctionTypes(output, code);
+            stripImportTypes(output, code); stripDeclarations(output, code); stripVariableTypes(output, code); stripFunctionTypes(output, code); stripTypeAssertions(output, code);
             for (std::size_t i = 0; i < output.size(); ++i)
                 if (wordAt(output, code, i, "enum") || wordAt(output, code, i, "namespace")) { error = "TypeScript enum/namespace syntax is not supported by Quartz's embedded type eraser yet"; return false; }
             error.clear(); return true;
@@ -499,6 +566,11 @@ export const Runtime = Object.freeze({
     setMaterial: (id, component, value) => api.runtime.material(id, component, value),
     setBrightness: value => api.runtime.brightness(value), setFramebufferEnabled: enabled => api.runtime.sendFramebuffer(enabled), setBaseColorMode: mode => api.runtime.baseColorMode(mode),
     clearShader: () => api.runtime.clear("shader"), clear: () => api.runtime.clear("all")
+});
+
+export const ShaderMutex = Object.freeze({
+    lock: () => api.shaderMutex.lock(), unlock: () => api.shaderMutex.unlock(),
+    get locked() { return api.shaderMutex.locked(); }, get owned() { return api.shaderMutex.owned(); }
 });
 
 export const Disassembly = Object.freeze({ decode: (process, targetAddress, count) => api.disassembly.decode(process.pid, targetAddress, count) });
