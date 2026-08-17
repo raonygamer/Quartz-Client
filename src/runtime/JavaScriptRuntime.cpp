@@ -68,6 +68,7 @@ namespace quartz::client
         if (index >= _scripts.size()) return;
         const std::uint64_t id = _scripts[index].Id;
         runtimeResetWorkspaceScript(id, "removed");
+        if (_shaderMutexOwner == id) _shaderMutexOwner = 0;
         _scriptOutputs.erase(id);
         _scripts.erase(_scripts.begin() + static_cast<std::ptrdiff_t>(index));
         for (auto& profile : runtime.profiles()) std::erase(profile.ScriptIds, id);
@@ -100,31 +101,55 @@ namespace quartz::client
         return it == _scripts.end() ? nullptr : &*it;
     }
 
+    bool JavaScriptRuntime::lockShaderMutex(const std::uint64_t scriptId) noexcept
+    {
+        if (scriptId == 0 || _shaderMutexOwner == scriptId) return scriptId != 0;
+        const RuntimeScript* requester = find(scriptId); if (!requester || !requester->Enabled) return false;
+        if (_shaderMutexOwner != 0)
+        {
+            const RuntimeScript* owner = find(_shaderMutexOwner);
+            if (owner && owner->Enabled && requester->Priority <= owner->Priority) return false;
+        }
+        _shaderMutexOwner = scriptId; rebuildOutput(); return true;
+    }
+
+    bool JavaScriptRuntime::unlockShaderMutex(const std::uint64_t scriptId) noexcept
+    {
+        if (scriptId == 0 || _shaderMutexOwner != scriptId) return false;
+        _shaderMutexOwner = 0; rebuildOutput(); return true;
+    }
+
     void JavaScriptRuntime::clearOutput(const std::uint64_t scriptId) noexcept
     {
-        if (_scriptOutputs.erase(scriptId) != 0) rebuildOutput();
+        const bool released = _shaderMutexOwner == scriptId; if (released) _shaderMutexOwner = 0;
+        if (_scriptOutputs.erase(scriptId) != 0 || released) rebuildOutput();
     }
 
     void JavaScriptRuntime::clearOutputs() noexcept
     {
         _scriptOutputs.clear();
+        _shaderMutexOwner = 0;
         _output = {};
     }
 
     void JavaScriptRuntime::rebuildOutput() noexcept
     {
+        if (_shaderMutexOwner != 0) { const RuntimeScript* owner = find(_shaderMutexOwner); if (!owner || !owner->Enabled) _shaderMutexOwner = 0; }
         RuntimeControlOutput combined{};
         std::vector<const RuntimeScript*> order;
         order.reserve(_scripts.size());
         for (const auto& script : _scripts) if (script.Enabled) order.push_back(&script);
-        std::ranges::stable_sort(order, [](const RuntimeScript* a, const RuntimeScript* b) { if (a->Order != b->Order) return a->Order < b->Order; return a->Id < b->Id; });
+        std::ranges::stable_sort(order, [](const RuntimeScript* a, const RuntimeScript* b) { if (a->Priority != b->Priority) return a->Priority < b->Priority; if (a->Order != b->Order) return a->Order < b->Order; return a->Id < b->Id; });
         for (const RuntimeScript* script : order)
         {
             const auto it = _scriptOutputs.find(script->Id);
             if (it == _scriptOutputs.end()) continue;
             const auto& source = it->second;
-            if (source.ShaderId) { combined.ShaderId = source.ShaderId; combined.ShaderPresetIndex.reset(); combined.ShaderTransitionSeconds = source.ShaderTransitionSeconds; }
-            if (source.ShaderPresetIndex) { combined.ShaderPresetIndex = source.ShaderPresetIndex; combined.ShaderId.reset(); combined.ShaderTransitionSeconds = source.ShaderTransitionSeconds; }
+            if (_shaderMutexOwner == 0 || _shaderMutexOwner == script->Id)
+            {
+                if (source.ShaderId) { combined.ShaderId = source.ShaderId; combined.ShaderPresetIndex.reset(); combined.ShaderTransitionSeconds = source.ShaderTransitionSeconds; }
+                if (source.ShaderPresetIndex) { combined.ShaderPresetIndex = source.ShaderPresetIndex; combined.ShaderId.reset(); combined.ShaderTransitionSeconds = source.ShaderTransitionSeconds; }
+            }
             if (source.GlobalBrightness) combined.GlobalBrightness = source.GlobalBrightness;
             if (source.SendFramebuffer) combined.SendFramebuffer = source.SendFramebuffer;
             if (source.BaseColorMode) combined.BaseColorMode = source.BaseColorMode;
@@ -139,10 +164,10 @@ namespace quartz::client
         const auto temporary = std::filesystem::path(_path.string() + ".tmp");
         std::ofstream file(temporary, std::ios::trunc);
         if (!file) return false;
-        file << "# Quartz script runtime v2\n";
+        file << "# Quartz script runtime v3\n";
         file << "J\t" << _settings.ExternalHotReload << '\t' << _settings.ReloadHotkeyCtrl << '\t' << _settings.ReloadHotkeyAlt << '\t' << _settings.ReloadHotkeyShift << '\t' << _settings.ReloadHotkeyKey << '\n';
         for (const auto& script : _scripts)
-            file << "S\t" << script.Enabled << '\t' << script.Id << '\t' << runtimeEscape(script.Name) << '\t' << script.External << '\t' << runtimeEscape(script.Path) << '\t' << script.HotReload << '\t' << script.UpdateHz << '\t' << script.TimeoutMs << '\t' << script.Order << '\t' << runtimeEscape(script.Group) << '\t' << runtimeEscape(script.PersistentStateJson) << '\t' << runtimeEscape(script.Source) << '\n';
+            file << "S\t" << script.Enabled << '\t' << script.Id << '\t' << runtimeEscape(script.Name) << '\t' << script.External << '\t' << runtimeEscape(script.Path) << '\t' << script.HotReload << '\t' << script.UpdateHz << '\t' << script.TimeoutMs << '\t' << script.Order << '\t' << runtimeEscape(script.Group) << '\t' << runtimeEscape(script.PersistentStateJson) << '\t' << runtimeEscape(script.Source) << "\t__priority=" << script.Priority << '\n';
         file.close();
         if (!file) return false;
         std::filesystem::rename(temporary, _path, ec);
@@ -187,11 +212,14 @@ namespace quartz::client
                 parseNumber(fields[7], script.TimeoutMs);
                 parseNumber(fields[8], script.Order);
                 copyField(script.Group, runtimeUnescape(fields[9]));
-                const bool oldLayout = fields.size() > 12;
+                const bool hasPriority = !fields.empty() && fields.back().starts_with("__priority=");
+                const std::size_t layoutFieldCount = fields.size() - (hasPriority ? 1 : 0);
+                const bool oldLayout = layoutFieldCount > 12;
                 const std::size_t storageIndex = oldLayout ? 11 : 10;
                 const std::size_t sourceIndex = oldLayout ? 12 : 11;
                 if (fields.size() > storageIndex) script.PersistentStateJson = runtimeUnescape(fields[storageIndex]);
                 if (fields.size() > sourceIndex) script.Source = runtimeUnescape(fields[sourceIndex]);
+                if (hasPriority) parseNumber(fields.back().substr(11), script.Priority);
                 script.UpdateHz = std::clamp(script.UpdateHz, 0.5f, 500.0f);
                 script.TimeoutMs = std::clamp(script.TimeoutMs, 0.1f, 100.0f);
                 if (script.PersistentStateJson.empty()) script.PersistentStateJson = "{}";
@@ -220,7 +248,7 @@ namespace quartz::client
             const bool enabled = std::find(profile->ScriptIds.begin(), profile->ScriptIds.end(), script.Id) != profile->ScriptIds.end();
             if (script.Enabled == enabled) continue;
             script.Enabled = enabled;
-            if (!enabled) { runtimeResetWorkspaceScript(script.Id); _scriptOutputs.erase(script.Id); }
+            if (!enabled) { runtimeResetWorkspaceScript(script.Id); if (_shaderMutexOwner == script.Id) _shaderMutexOwner = 0; _scriptOutputs.erase(script.Id); }
             changed = true;
         }
         if (changed) { rebuildOutput(); ++_revision; }
