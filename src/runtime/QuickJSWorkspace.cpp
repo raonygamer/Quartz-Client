@@ -73,6 +73,9 @@ namespace quartz::client
             bool PreviousCaps = false;
             bool PreviousScroll = false;
             std::string PreviousShader;
+            bool MediaInitialized = false;
+            bool PreviousMediaPlaying = false;
+            std::string PreviousMediaTitle;
             std::unordered_map<pid_t, std::string> Processes;
             bool ProcessesInitialized = false;
             double NextProcessPoll = 0.0;
@@ -448,6 +451,41 @@ namespace quartz::client
                 }
                 instance.PreviousShader = signal.CurrentShaderId;
             }
+            if (!instance.MediaInitialized)
+            {
+                instance.PreviousMediaPlaying = signal.MediaPlaying;
+                instance.PreviousMediaTitle = signal.MediaTitle;
+                instance.MediaInitialized = true;
+            }
+            else
+            {
+                if (instance.PreviousMediaPlaying != signal.MediaPlaying)
+                {
+                    if (wantsEvent(instance, "media.playback_changed"))
+                    {
+                        JSValue event = makeEvent(instance.Context, "media.playback_changed", signal.Time);
+                        JS_SetPropertyStr(instance.Context, event, "previous", JS_NewBool(instance.Context, instance.PreviousMediaPlaying));
+                        JS_SetPropertyStr(instance.Context, event, "playing", JS_NewBool(instance.Context, signal.MediaPlaying));
+                        JS_SetPropertyStr(instance.Context, event, "title", JS_NewString(instance.Context, signal.MediaTitle.c_str()));
+                        if (!dispatchEvent(instance, "media.playback_changed", event, error)) { JS_FreeValue(instance.Context, event); return false; }
+                        JS_FreeValue(instance.Context, event);
+                    }
+                    instance.PreviousMediaPlaying = signal.MediaPlaying;
+                }
+                if (instance.PreviousMediaTitle != signal.MediaTitle)
+                {
+                    if (wantsEvent(instance, "media.track_changed"))
+                    {
+                        JSValue event = makeEvent(instance.Context, "media.track_changed", signal.Time);
+                        JS_SetPropertyStr(instance.Context, event, "previous", JS_NewString(instance.Context, instance.PreviousMediaTitle.c_str()));
+                        JS_SetPropertyStr(instance.Context, event, "title", JS_NewString(instance.Context, signal.MediaTitle.c_str()));
+                        JS_SetPropertyStr(instance.Context, event, "playing", JS_NewBool(instance.Context, signal.MediaPlaying));
+                        if (!dispatchEvent(instance, "media.track_changed", event, error)) { JS_FreeValue(instance.Context, event); return false; }
+                        JS_FreeValue(instance.Context, event);
+                    }
+                    instance.PreviousMediaTitle = signal.MediaTitle;
+                }
+            }
             if (!instance.KeysInitialized)
             {
                 instance.PreviousKeys = signal.Keys.Down;
@@ -690,7 +728,7 @@ namespace quartz::client
     const RuntimeControlOutput& runtimeEvaluateWorkspaceScripts(JavaScriptRuntime& javascript, const RuntimeSignalContext& context, ShaderFramebuffer& shader, const EvdevKeyboard& keyboard)
     {
         auto& runtime = workspace(); std::vector<RuntimeScript*> order; order.reserve(javascript.scripts().size()); for (auto& script : javascript.scripts()) order.push_back(&script);
-        std::ranges::stable_sort(order, [](const RuntimeScript* a, const RuntimeScript* b) { if (a->Order != b->Order) return a->Order < b->Order; return a->Id < b->Id; });
+        std::ranges::stable_sort(order, [](const RuntimeScript* a, const RuntimeScript* b) { if (a->Priority != b->Priority) return a->Priority > b->Priority; if (a->Order != b->Order) return a->Order < b->Order; return a->Id < b->Id; });
         for (RuntimeScript* script : order)
         {
             if (!script->Enabled)
