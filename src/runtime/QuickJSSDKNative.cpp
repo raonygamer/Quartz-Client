@@ -177,6 +177,7 @@ namespace quartz::client
                     std::string name; if (stringProperty(ctx, argv[0], "name", name) && !name.empty()) { std::snprintf(script.Name, sizeof(script.Name), "%s", name.c_str()); changed = true; }
                     double value = 0.0; if (numberProperty(ctx, argv[0], "updateRate", value)) { script.UpdateHz = std::clamp(static_cast<float>(value), 0.5f, 500.0f); changed = true; }
                     if (numberProperty(ctx, argv[0], "timeout", value)) { script.TimeoutMs = std::clamp(static_cast<float>(value), 0.1f, 100.0f); changed = true; }
+                    if (numberProperty(ctx, argv[0], "priority", value)) { value = std::clamp(std::round(value), static_cast<double>(std::numeric_limits<int>::min()), static_cast<double>(std::numeric_limits<int>::max())); script.Priority = static_cast<int>(value); changed = true; }
                 }
                 script.DefaultsApplied = true;
             }
@@ -188,13 +189,13 @@ namespace quartz::client
 
         JSValue runtimeShader(JSContext* ctx, JSValueConst, const int argc, JSValueConst* argv)
         {
-            auto* context = state(ctx); if (!context || !context->Output || argc < 1) return JS_FALSE; std::string id; if (!toString(ctx, argv[0], id)) return JS_EXCEPTION; context->Output->ShaderId = id; context->Output->ShaderPresetIndex.reset();
+            auto* context = state(ctx); if (!context || !context->Output || argc < 1) return JS_FALSE; if (context->JavaScript && context->Script && !context->JavaScript->canWriteShader(context->Script->Id)) return JS_FALSE; std::string id; if (!toString(ctx, argv[0], id)) return JS_EXCEPTION; context->Output->ShaderId = id; context->Output->ShaderPresetIndex.reset();
             if (argc > 1 && !JS_IsUndefined(argv[1])) { double seconds = 0.0; if (JS_ToFloat64(ctx, &seconds, argv[1]) < 0) return JS_EXCEPTION; context->Output->ShaderTransitionSeconds = static_cast<float>(std::max(seconds, 0.0)); } return JS_TRUE;
         }
 
         JSValue runtimeShaderPreset(JSContext* ctx, JSValueConst, const int argc, JSValueConst* argv)
         {
-            auto* context = state(ctx); if (!context || !context->Output || argc < 1) return JS_FALSE; std::int32_t index = 0; if (JS_ToInt32(ctx, &index, argv[0]) < 0) return JS_EXCEPTION; context->Output->ShaderPresetIndex = index; context->Output->ShaderId.reset();
+            auto* context = state(ctx); if (!context || !context->Output || argc < 1) return JS_FALSE; if (context->JavaScript && context->Script && !context->JavaScript->canWriteShader(context->Script->Id)) return JS_FALSE; std::int32_t index = 0; if (JS_ToInt32(ctx, &index, argv[0]) < 0) return JS_EXCEPTION; context->Output->ShaderPresetIndex = index; context->Output->ShaderId.reset();
             if (argc > 1 && !JS_IsUndefined(argv[1])) { double seconds = 0.0; if (JS_ToFloat64(ctx, &seconds, argv[1]) < 0) return JS_EXCEPTION; context->Output->ShaderTransitionSeconds = static_cast<float>(std::max(seconds, 0.0)); } return JS_TRUE;
         }
 
@@ -215,6 +216,11 @@ namespace quartz::client
             else if (target == "basecolor" || target == "basecolormode") context->Output->BaseColorMode.reset();
             else return JS_FALSE; return JS_TRUE;
         }
+
+        JSValue shaderMutexLock(JSContext* ctx, JSValueConst, int, JSValueConst*) { auto* context = state(ctx); return JS_NewBool(ctx, context && context->JavaScript && context->Script && context->JavaScript->lockShaderMutex(context->Script->Id)); }
+        JSValue shaderMutexUnlock(JSContext* ctx, JSValueConst, int, JSValueConst*) { auto* context = state(ctx); return JS_NewBool(ctx, context && context->JavaScript && context->Script && context->JavaScript->unlockShaderMutex(context->Script->Id)); }
+        JSValue shaderMutexLocked(JSContext* ctx, JSValueConst, int, JSValueConst*) { auto* context = state(ctx); return JS_NewBool(ctx, context && context->JavaScript && context->JavaScript->shaderMutexLocked()); }
+        JSValue shaderMutexOwned(JSContext* ctx, JSValueConst, int, JSValueConst*) { auto* context = state(ctx); return JS_NewBool(ctx, context && context->JavaScript && context->Script && context->JavaScript->ownsShaderMutex(context->Script->Id)); }
     }
 
     void runtimeInstallQuickJSSDKNativeApi(JSContext* ctx, JSValueConst api)
@@ -224,6 +230,10 @@ namespace quartz::client
         JS_SetPropertyStr(ctx, runtime, "brightness", JS_NewCFunction(ctx, runtimeBrightness, "brightness", 1)); JS_SetPropertyStr(ctx, runtime, "sendFramebuffer", JS_NewCFunction(ctx, runtimeSend, "sendFramebuffer", 1)); JS_SetPropertyStr(ctx, runtime, "baseColorMode", JS_NewCFunction(ctx, runtimeBaseMode, "baseColorMode", 1));
         JS_SetPropertyStr(ctx, runtime, "material", JS_NewCFunction(ctx, runtimeMaterial, "material", 3)); JS_SetPropertyStr(ctx, runtime, "currentShader", JS_NewCFunction(ctx, runtimeCurrentShader, "currentShader", 0)); JS_SetPropertyStr(ctx, runtime, "previousShader", JS_NewCFunction(ctx, runtimePreviousShader, "previousShader", 0)); JS_SetPropertyStr(ctx, runtime, "clear", JS_NewCFunction(ctx, runtimeClear, "clear", 1));
         JS_SetPropertyStr(ctx, api, "runtime", runtime);
+
+        JSValue shaderMutex = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, shaderMutex, "lock", JS_NewCFunction(ctx, shaderMutexLock, "lock", 0)); JS_SetPropertyStr(ctx, shaderMutex, "unlock", JS_NewCFunction(ctx, shaderMutexUnlock, "unlock", 0));
+        JS_SetPropertyStr(ctx, shaderMutex, "locked", JS_NewCFunction(ctx, shaderMutexLocked, "locked", 0)); JS_SetPropertyStr(ctx, shaderMutex, "owned", JS_NewCFunction(ctx, shaderMutexOwned, "owned", 0)); JS_SetPropertyStr(ctx, api, "shaderMutex", shaderMutex);
 
         JSValue sdk = JS_NewObject(ctx); JSValue storage = JS_GetPropertyStr(ctx, api, "storage"); JS_DefinePropertyValueStr(ctx, sdk, "__storage", storage, 0);
         JS_SetPropertyStr(ctx, sdk, "propertyRegister", JS_NewCFunction(ctx, jsPropertyRegister, "propertyRegister", 3)); JS_SetPropertyStr(ctx, sdk, "propertyGet", JS_NewCFunction(ctx, jsPropertyGet, "propertyGet", 1)); JS_SetPropertyStr(ctx, sdk, "propertySet", JS_NewCFunction(ctx, jsPropertySet, "propertySet", 2)); JS_SetPropertyStr(ctx, sdk, "propertyReset", JS_NewCFunction(ctx, jsPropertyReset, "propertyReset", 1));
