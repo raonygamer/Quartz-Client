@@ -223,6 +223,8 @@ declare module "@quartz/client" {
         name?: string;
         updateRate?: number;
         timeout?: number;
+        /** Higher values execute before lower-priority scripts and have stronger shader arbitration priority. */
+        priority?: number;
     }
 
     export interface ScriptAPI {
@@ -258,7 +260,9 @@ declare module "@quartz/client" {
     export interface RuntimeAPI {
         currentShader(): string | undefined;
         previousShader(): string | undefined;
+        /** Returns false when another script currently owns ShaderMutex. */
         setShader(id: string, transitionSeconds?: number): boolean;
+        /** Returns false when another script currently owns ShaderMutex. */
         setShaderPreset(index: number, transitionSeconds?: number): boolean;
         setMaterial(id: string, component: number, value: number): boolean;
         setBrightness(value: number): boolean;
@@ -269,6 +273,19 @@ declare module "@quartz/client" {
     }
 
     export const Runtime: RuntimeAPI;
+
+    export interface ShaderMutexAPI {
+        /** Claims shader switching for this script. A higher-priority script may preempt a lower-priority owner. */
+        lock(): boolean;
+        /** Releases the shader mutex when this script owns it. */
+        unlock(): boolean;
+        /** True when any script currently owns the shader mutex. */
+        readonly locked: boolean;
+        /** True when this script currently owns the shader mutex. */
+        readonly owned: boolean;
+    }
+
+    export const ShaderMutex: ShaderMutexAPI;
 
     export interface Instruction {
         readonly address: Address;
@@ -305,7 +322,27 @@ declare module "@quartz/client" {
         readonly [key: string]: unknown;
     }
 
+    export interface MediaPlaybackChangedEvent extends GlobalEvent {
+        readonly type: "media.playback_changed";
+        readonly previous: boolean;
+        readonly playing: boolean;
+        readonly title: string;
+    }
+
+    export interface MediaTrackChangedEvent extends GlobalEvent {
+        readonly type: "media.track_changed";
+        readonly previous: string;
+        readonly title: string;
+        readonly playing: boolean;
+    }
+
+    export interface QuartzEventMap {
+        "media.playback_changed": MediaPlaybackChangedEvent;
+        "media.track_changed": MediaTrackChangedEvent;
+    }
+
     export interface EventsAPI {
+        on<K extends keyof QuartzEventMap>(type: K, callback: (event: QuartzEventMap[K]) => void): Subscription;
         on(type: string, callback: (event: GlobalEvent) => void): Subscription;
         emit(type: string, data?: unknown): void;
     }
