@@ -345,6 +345,8 @@ namespace quartz::client
 
         JSValue jsCapsLock(JSContext* ctx, JSValueConst, int, JSValueConst*) { const auto* state = scriptContext(ctx); return JS_NewBool(ctx, state && state->SignalContext && state->SignalContext->Keys.CapsLockActive); }
         JSValue jsScrollLock(JSContext* ctx, JSValueConst, int, JSValueConst*) { const auto* state = scriptContext(ctx); return JS_NewBool(ctx, state && state->SignalContext && state->SignalContext->Keys.ScrollLockActive); }
+        JSValue jsAudioRms(JSContext* ctx, JSValueConst, int, JSValueConst*) { const auto* state = scriptContext(ctx); return JS_NewFloat64(ctx, state && state->SignalContext ? state->SignalContext->Audio.Rms : 0.0f); }
+        JSValue jsAudioPeak(JSContext* ctx, JSValueConst, int, JSValueConst*) { const auto* state = scriptContext(ctx); return JS_NewFloat64(ctx, state && state->SignalContext ? state->SignalContext->Audio.Peak : 0.0f); }
 
         JSValue registerSnapshot(JSContext* ctx, const user_regs_struct& regs)
         {
@@ -408,6 +410,11 @@ namespace quartz::client
         JS_SetPropertyStr(ctx, input, "capsLock", JS_NewCFunction(ctx, jsCapsLock, "capsLock", 0));
         JS_SetPropertyStr(ctx, input, "scrollLock", JS_NewCFunction(ctx, jsScrollLock, "scrollLock", 0));
         JS_SetPropertyStr(ctx, api, "input", input);
+
+        JSValue audio = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, audio, "rms", JS_NewCFunction(ctx, jsAudioRms, "rms", 0));
+        JS_SetPropertyStr(ctx, audio, "peak", JS_NewCFunction(ctx, jsAudioPeak, "peak", 0));
+        JS_SetPropertyStr(ctx, api, "audio", audio);
 
     }
 }

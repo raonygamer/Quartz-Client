@@ -578,6 +578,9 @@ export const Memory = Object.freeze({
     readBytes(process, targetAddress, length) { return Uint8Array.from(api.memory.readBytes(process.pid, targetAddress, length)); },
     writeBytes(process, targetAddress, bytes) { api.memory.writeBytes(process.pid, targetAddress, typeof bytes === "string" ? bytes : Array.from(bytes)); }
 });
+export const Audio = Object.freeze({
+    get rms() { return api.audio.rms(); }, get peak() { return api.audio.peak(); }
+});
 export const Keyboard = Object.freeze({
     keyDown: key => api.input.keyDown(key), shortcut: (key, modifiers) => api.input.shortcut(key, modifiers),
     get capsLock() { return api.input.capsLock(); }, get scrollLock() { return api.input.scrollLock(); }

@@ -307,6 +307,15 @@ declare module "@quartz/client" {
 
     export const Memory: MemoryAPI;
 
+    export interface AudioAPI {
+        /** Current root mean square audio level. */
+        readonly rms: number;
+        /** Current peak absolute audio level. */
+        readonly peak: number;
+    }
+
+    export const Audio: AudioAPI;
+
     export interface KeyboardAPI {
         keyDown(key: InputKey): boolean;
         shortcut(key: InputKey, modifiers?: { ctrl?: boolean; alt?: boolean; shift?: boolean }): boolean;
