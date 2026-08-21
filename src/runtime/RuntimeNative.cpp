@@ -3,6 +3,50 @@
 
 namespace quartz::client
 {
+    namespace
+    {
+        bool readRuntimeProcFile(const std::filesystem::path& path, std::string& output) noexcept
+        {
+            output.clear();
+            int descriptor;
+            do
+            {
+                descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+            }
+            while (descriptor < 0 && errno == EINTR);
+            if (descriptor < 0) return false;
+
+            std::array<char, 4096> buffer{};
+            bool success = true;
+            for (;;)
+            {
+                const ssize_t count = ::read(descriptor, buffer.data(), buffer.size());
+                if (count > 0)
+                {
+                    try
+                    {
+                        output.append(buffer.data(), static_cast<std::size_t>(count));
+                    }
+                    catch (...)
+                    {
+                        success = false;
+                        break;
+                    }
+                }
+                else if (count == 0)
+                    break;
+                else if (errno != EINTR)
+                {
+                    success = false;
+                    break;
+                }
+            }
+            ::close(descriptor);
+            if (!success) output.clear();
+            return success;
+        }
+    }
+
     std::string runtimeLower(std::string_view value)
     {
         std::string result(value);
@@ -60,23 +104,19 @@ namespace quartz::client
 
             RuntimeProcessInfo process;
             process.Pid = static_cast<pid_t>(pid);
-            std::ifstream comm(entry.path() / "comm");
-            std::getline(comm, process.Name);
+            readRuntimeProcFile(entry.path() / "comm", process.Name);
+            if (const std::size_t newline = process.Name.find('\n'); newline != std::string::npos) process.Name.resize(newline);
             std::array<char, 4096> exe{};
             const ssize_t count = ::readlink((entry.path() / "exe").c_str(), exe.data(), exe.size() - 1);
             if (count > 0) process.Exe.assign(exe.data(), static_cast<std::size_t>(count));
 
-            std::ifstream cmdline(entry.path() / "cmdline", std::ios::binary);
-            if (cmdline)
+            std::string raw;
+            if (readRuntimeProcFile(entry.path() / "cmdline", raw) && !raw.empty())
             {
-                std::string raw((std::istreambuf_iterator<char>(cmdline)), std::istreambuf_iterator<char>());
-                if (!raw.empty())
-                {
-                    const std::size_t firstEnd = raw.find('\0');
-                    process.Title = raw.substr(0, firstEnd == std::string::npos ? raw.size() : firstEnd);
-                    for (char& c : raw) if (c == '\0') c = ' ';
-                    process.CommandLine = trim(std::move(raw));
-                }
+                const std::size_t firstEnd = raw.find('\0');
+                process.Title = raw.substr(0, firstEnd == std::string::npos ? raw.size() : firstEnd);
+                for (char& c : raw) if (c == '\0') c = ' ';
+                process.CommandLine = trim(std::move(raw));
             }
             if (process.Title.empty()) process.Title = process.Name;
             if (process.CommandLine.empty()) process.CommandLine = !process.Exe.empty() ? process.Exe : process.Name;
