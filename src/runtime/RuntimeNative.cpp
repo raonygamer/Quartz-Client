@@ -1,8 +1,10 @@
 #include "quartz/client/Model.hpp"
 #include "quartz/client/native/SignatureScanner.hpp"
+#include "quartz/client/native/NativeDisassembly.hpp"
 
 namespace quartz::client
 {
+#ifndef _WIN32
     namespace
     {
         bool readRuntimeProcFile(const std::filesystem::path& path, std::string& output) noexcept
@@ -47,6 +49,8 @@ namespace quartz::client
         }
     }
 
+#endif
+
     std::string runtimeLower(std::string_view value)
     {
         std::string result(value);
@@ -89,6 +93,7 @@ namespace quartz::client
         return "Process name (exact)";
     }
 
+#ifndef _WIN32
     std::vector<RuntimeProcessInfo> enumerateRuntimeProcesses()
     {
         std::vector<RuntimeProcessInfo> processes;
@@ -131,6 +136,8 @@ namespace quartz::client
         });
         return processes;
     }
+
+#endif
 
     std::string runtimeProcessDisplayTitle(const RuntimeProcessInfo& process)
     {
@@ -210,12 +217,15 @@ namespace quartz::client
         return best;
     }
 
+#ifndef _WIN32
     bool runtimeProcessIsAlive(const pid_t pid) noexcept
     {
         if (pid <= 0) return false;
         errno = 0;
         return ::kill(pid, 0) == 0 || errno != ESRCH;
     }
+
+#endif
 
     double runtimeSteadySeconds() noexcept
     {
@@ -238,6 +248,7 @@ namespace quartz::client
         return true;
     }
 
+#ifndef _WIN32
     std::vector<RuntimeProcessModule> enumerateRuntimeModules(const pid_t pid)
     {
         std::vector<RuntimeProcessModule> modules;
@@ -316,6 +327,8 @@ namespace quartz::client
         }
         return regions;
     }
+
+#endif
 
     int runtimeHexNibble(const char c) noexcept
     {
@@ -440,15 +453,20 @@ namespace quartz::client
         return true;
     }
 
-    bool readProcessMemoryBlock(const pid_t pid, const std::uintptr_t address, std::span<std::uint8_t> buffer, std::string& error)
+#ifndef _WIN32
+    std::size_t readProcessMemoryPartial(pid_t pid, std::uintptr_t address, std::span<std::uint8_t> buffer, std::string& error)
     {
-        if (buffer.empty()) return true;
-        iovec local{buffer.data(), buffer.size()};
-        iovec remote{reinterpret_cast<void*>(address), buffer.size()};
-        errno = 0;
-        const ssize_t count = ::process_vm_readv(pid, &local, 1, &remote, 1, 0);
-        if (count == static_cast<ssize_t>(buffer.size())) return true;
-        error = count < 0 ? std::string(std::strerror(errno)) : "short read (" + std::to_string(count) + "/" + std::to_string(buffer.size()) + ")";
+        iovec local{buffer.data(), buffer.size()}, remote{reinterpret_cast<void*>(address), buffer.size()};
+        const auto count = ::process_vm_readv(pid, &local, 1, &remote, 1, 0);
+        if (count < 0) { error = std::strerror(errno); return 0; }
+        error.clear(); return static_cast<std::size_t>(count);
+    }
+#endif
+    bool readProcessMemoryBlock(pid_t pid, std::uintptr_t address, std::span<std::uint8_t> buffer, std::string& error)
+    {
+        const auto count = readProcessMemoryPartial(pid, address, buffer, error);
+        if (count == buffer.size()) { error.clear(); return true; }
+        if (error.empty()) error = "short read (" + std::to_string(count) + "/" + std::to_string(buffer.size()) + ")";
         return false;
     }
 
@@ -458,7 +476,7 @@ namespace quartz::client
         return Names[std::clamp(static_cast<int>(reg), 0, static_cast<int>(std::size(Names)) - 1)];
     }
 
-    std::uint64_t runtimeX64RegisterValue(const user_regs_struct& regs, const RuntimeX64Register reg) noexcept
+    std::uint64_t runtimeX64RegisterValue(const NativeRegisters& regs, const RuntimeX64Register reg) noexcept
     {
         switch (reg)
         {
@@ -481,6 +499,7 @@ namespace quartz::client
         }
         return 0;
     }
+#ifndef _WIN32
     std::vector<pid_t> enumerateRuntimeThreads(const pid_t pid)
     {
         std::vector<pid_t> result;
@@ -825,7 +844,7 @@ namespace quartz::client
                     {
                         ++trapCount;
                         std::uint64_t dr6 = 0;
-                        user_regs_struct regs{};
+                        NativeRegisters regs{};
                         const bool haveDr6 = runtimePtracePeekUser(thread.Tid, Dr6Offset, dr6);
                         const bool haveRegs = ::ptrace(PTRACE_GETREGS, thread.Tid, nullptr, &regs) == 0;
                         if (haveRegs) lastTrapRip = regs.rip;
@@ -880,6 +899,8 @@ namespace quartz::client
         });
         binding.SignatureRegisterCapture = std::move(state);
     }
+
+#endif
 
     bool readRuntimeRegisterDisplacement(const RuntimeBinding& binding, const pid_t pid, const std::uintptr_t instruction, std::intptr_t& displacement, std::string& error)
     {
@@ -1080,6 +1101,18 @@ namespace quartz::client
         return true;
     }
 
+    bool readRuntimePointer(pid_t pid, std::uintptr_t address, std::uintptr_t& value, std::string& error)
+    {
+        if (runtimeProcessX86Mode(pid) == RuntimeX86Mode::X86)
+        {
+            std::uint32_t pointer = 0;
+            if (!readProcessMemoryValue(pid, address, pointer, error)) return false;
+            value = pointer;
+            return true;
+        }
+        return readProcessMemoryValue(pid, address, value, error);
+    }
+
     std::optional<std::uintptr_t> resolveRuntimeAddress(const RuntimeBinding& binding, const pid_t pid, std::string& error, const std::optional<std::uintptr_t> baseOverride)
     {
         std::string expression = trim(binding.Address);
@@ -1128,7 +1161,7 @@ namespace quartz::client
         for (std::size_t i = 1; i < terms.size(); ++i)
         {
             std::uintptr_t pointer = 0;
-            if (!readProcessMemoryValue(pid, address, pointer, error)) { error = "pointer read failed at 0x" + [&]{ std::ostringstream s; s << std::hex << address; return s.str(); }() + ": " + error; return std::nullopt; }
+            if (!readRuntimePointer(pid, address, pointer, error)) { error = "pointer read failed at 0x" + [&]{ std::ostringstream s; s << std::hex << address; return s.str(); }() + ": " + error; return std::nullopt; }
             std::intptr_t offset = 0;
             if (!parseRuntimeInteger(terms[i], offset)) { error = "invalid pointer offset: " + terms[i]; return std::nullopt; }
             address = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(pointer) + offset);
@@ -1144,7 +1177,7 @@ namespace quartz::client
         else if (binding.SignatureResolve == SignatureResultMode::PointerAtOffset)
         {
             const std::uintptr_t pointerAddress = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(match) + binding.SignatureResultOffset);
-            if (!readProcessMemoryValue(pid, pointerAddress, resolved, error)) { binding.SignatureStatus = "signature matched, pointer resolve failed: " + error; return std::nullopt; }
+            if (!readRuntimePointer(pid, pointerAddress, resolved, error)) { binding.SignatureStatus = "signature matched, pointer resolve failed: " + error; return std::nullopt; }
         }
         else if (binding.SignatureResolve == SignatureResultMode::RipRelative32)
         {

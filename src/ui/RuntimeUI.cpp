@@ -300,7 +300,7 @@ namespace quartz::client
                 ImGui::Text("Input device: %s", keyboardInput.deviceName().c_str());
             ImGui::TextWrapped("Input: %s", keyboardInput.status().c_str());
             ImGui::Text("App CPU: %.2f%%", appCpuUsage);
-            ImGui::Text("evdev: Caps %.0f   Scroll %.0f", capsLockActive ? 1.0f : 0.0f, scrollLockActive ? 1.0f : 0.0f);
+            ImGui::Text("Keyboard: Caps %.0f   Scroll %.0f", capsLockActive ? 1.0f : 0.0f, scrollLockActive ? 1.0f : 0.0f);
             ImGui::TextDisabled("Shader: uCapsLock %.0f   uScrollLock %.0f", settings.ShaderKeyStateUniforms && capsLockActive ? 1.0f : 0.0f, settings.ShaderKeyStateUniforms && scrollLockActive ? 1.0f : 0.0f);
 
             if (!hasPerformance || performance.CoreClock == 0)
@@ -1265,7 +1265,7 @@ namespace quartz::client
                     ImGui::Unindent(18.0f);
                     ImGui::SetNextItemWidth(180.0f);
                     changed |= ImGui::DragFloat("Capture timeout", &binding.SignatureCaptureTimeoutSeconds, 0.1f, 0.1f, 120.0f, "%.1f s");
-                    ImGui::TextDisabled("A temporary hardware execution breakpoint captures the selected register when the matched instruction executes. The breakpoint is removed immediately after capture; normal reads then use process_vm_readv().");
+                    ImGui::TextDisabled("A temporary hardware execution breakpoint captures the selected register when the matched instruction executes. The breakpoint is removed immediately after capture; normal reads then use the native process-memory API.");
                 }
                 ImGui::SetNextItemWidth(180.0f);
                 changed |= ImGui::DragFloat("Retry interval", &binding.SignatureRetrySeconds, 0.05f, 0.1f, 60.0f, "%.2f s");
@@ -1309,7 +1309,7 @@ namespace quartz::client
                 static constexpr const char* Types[] = {"u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "float", "double", "bool"};
                 int valueType = static_cast<int>(binding.ValueType);
                 if (ImGui::Combo("Value type", &valueType, Types, static_cast<int>(std::size(Types)))) { binding.ValueType = static_cast<ProcessValueType>(valueType); changed = true; }
-                ImGui::TextDisabled("Read-only through process_vm_readv(); ptrace_scope/permissions still apply.");
+                ImGui::TextDisabled("Read-only through the native process-memory API; operating-system access permissions apply.");
             }
             else
             {
@@ -1598,6 +1598,7 @@ namespace quartz::client
         return changed;
     }
 
+#ifndef _WIN32
     bool runtimeWriteProcessMemory(const pid_t pid, const std::uintptr_t address, const std::span<const std::uint8_t> bytes, std::string& error)
     {
         if (bytes.empty()) { error = "nothing to write"; return false; }
@@ -1612,6 +1613,8 @@ namespace quartz::client
         const std::string memError = written < 0 ? std::string(std::strerror(savedErrno)) : "short write (" + std::to_string(written) + "/" + std::to_string(bytes.size()) + ")";
         error = "process_vm_writev: " + vmError + "; /proc/pid/mem: " + memError; return false;
     }
+
+#endif
 
     bool runtimeParseHexBytes(const std::string_view text, std::vector<std::uint8_t>& bytes, std::string& error)
     {
@@ -1733,7 +1736,7 @@ namespace quartz::client
                         {
                             if (!field.Enabled || runtimeObjectFieldIsFiller(field.Type)) continue; const auto offset = runtimeObjectFieldOffset(*descriptor, field.Id); const auto addressValue = pointer->Address + offset; ImGui::PushID(static_cast<int>(field.Id & 0x7fffffffULL)); ImGui::TableNextRow();
                             ImGui::TableNextColumn(); ImGui::TextUnformatted(field.Name); ImGui::TableNextColumn(); ImGui::Text("+0x%zX", offset); ImGui::TableNextColumn(); ImGui::Text("0x%llX", static_cast<unsigned long long>(addressValue)); ImGui::TableNextColumn(); ImGui::TextUnformatted(runtimeObjectFieldTypeName(field.Type)); ImGui::TableNextColumn();
-                            const std::size_t size = std::min<std::size_t>(runtimeObjectFieldSize(field), 32); std::array<std::uint8_t, 32> raw{}; std::string error; const bool rawOk = readProcessMemoryBlock(pointer->ProcessId, addressValue, std::span<std::uint8_t>(raw).first(size), error); if (rawOk) ImGui::TextUnformatted(runtimeFormatHexBytes(std::span<const std::uint8_t>(raw).first(size)).c_str()); else ImGui::TextDisabled("%s", error.c_str());
+                            const std::size_t size = std::min<std::size_t>(runtimeObjectFieldSize(field, descriptor->PointerBytes), 32); std::array<std::uint8_t, 32> raw{}; std::string error; const bool rawOk = readProcessMemoryBlock(pointer->ProcessId, addressValue, std::span<std::uint8_t>(raw).first(size), error); if (rawOk) ImGui::TextUnformatted(runtimeFormatHexBytes(std::span<const std::uint8_t>(raw).first(size)).c_str()); else ImGui::TextDisabled("%s", error.c_str());
                             ImGui::TableNextColumn();
                             const bool pointerLike = field.Type == RuntimeObjectFieldType::Pointer || field.Type == RuntimeObjectFieldType::CStringPointer || field.Type == RuntimeObjectFieldType::WStringPointer;
                             if (pointerLike) { std::uintptr_t target = 0; if (readProcessMemoryValue(pointer->ProcessId, addressValue, target, error)) { ImGui::Text("0x%llX", static_cast<unsigned long long>(target)); if (target != 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Dereferenced pointer target"); } else ImGui::TextDisabled("%s", error.c_str()); }
@@ -1790,6 +1793,9 @@ namespace quartz::client
             if (false) changed |= drawRuntimeBindingReferenceCombo(engine, "Base address binding", object.BaseBindingId);
             int packing = static_cast<int>(object.Packing); ImGui::SetNextItemWidth(150.0f);
             if (ImGui::Combo("Packing", &packing, "Natural\0Pack 1\0Pack 2\0Pack 4\0Pack 8\0Pack 16\0")) { object.Packing = static_cast<RuntimeObjectPacking>(packing); changed = true; }
+            int pointerWidth = object.PointerBytes == 4 ? 0 : 1;
+            ImGui::SameLine(); ImGui::SetNextItemWidth(110.0f);
+            if (ImGui::Combo("Pointers", &pointerWidth, "32-bit\0" "64-bit\0")) { object.PointerBytes = pointerWidth == 0 ? 4 : 8; changed = true; }
             std::size_t objectSize = 0; runtimeObjectFieldOffset(object, 0, &objectSize);
             ImGui::SameLine(); ImGui::TextDisabled("Model size: %zu B | pointer instances: %zu", objectSize, static_cast<std::size_t>(std::count_if(engine.pointers().begin(), engine.pointers().end(), [&](const RuntimeObjectPointer& p) { return p.DescriptorId == object.Id; })));
 
@@ -1852,7 +1858,7 @@ namespace quartz::client
                         changed |= ImGui::InputInt("##customSize", &field.CustomFillerBytes);
                         field.CustomFillerBytes = std::max(field.CustomFillerBytes, 1);
                     }
-                    else ImGui::Text("%zu", runtimeObjectFieldSize(field));
+                    else ImGui::Text("%zu", runtimeObjectFieldSize(field, object.PointerBytes));
                     ImGui::TableNextColumn();
                     if (field.Type == RuntimeObjectFieldType::CStringPointer || field.Type == RuntimeObjectFieldType::WStringPointer) { ImGui::SetNextItemWidth(-1.0f); changed |= ImGui::InputInt("##stringMax", &field.StringMaxLength); field.StringMaxLength = std::clamp(field.StringMaxLength, 1, 4096); }
                     else if (field.Type == RuntimeObjectFieldType::FixedCString || field.Type == RuntimeObjectFieldType::FixedWString) { ImGui::SetNextItemWidth(-1.0f); changed |= ImGui::InputInt("##elements", &field.FixedElementCount); field.FixedElementCount = std::clamp(field.FixedElementCount, 1, 4096); }
@@ -1919,7 +1925,7 @@ namespace quartz::client
             for (const auto& key : Keys) { const bool selected = key.Key == profile.HotkeyKey; if (ImGui::Selectable(key.Name, selected)) { profile.HotkeyKey = key.Key; changed = true; } if (selected) ImGui::SetItemDefaultFocus(); }
             ImGui::EndCombo();
         }
-        ImGui::TextDisabled("Uses the Quartz evdev stream globally when available, so the window does not need focus. GLFW is the fallback.");
+        ImGui::TextDisabled("Uses the Quartz keyboard stream globally when available, so the window does not need focus. GLFW is the fallback.");
         return changed;
     }
 
@@ -1959,7 +1965,7 @@ namespace quartz::client
     void drawRuntimeProfiles(RuntimeBindingEngine& engine, JavaScriptRuntime& javascript)
     {
         ImGui::TextUnformatted("Profiles"); ImGui::SameLine(); if (ImGui::Button("+ Add profile")) engine.addProfile();
-        ImGui::SameLine(); ImGui::TextDisabled("Profiles can still group deprecated graph nodes and explicitly select first-class JavaScript scripts. Hotkeys use evdev globally when available.");
+        ImGui::SameLine(); ImGui::TextDisabled("Profiles can still group deprecated graph nodes and explicitly select first-class JavaScript scripts. Hotkeys use native keyboard input globally when available.");
         if (!engine.profiles().empty())
         {
             const RuntimeBindingProfile* active = engine.findProfile(engine.activeProfileId());
@@ -2148,7 +2154,7 @@ namespace quartz::client
     {
         const float held = std::accumulate(keys.Down.begin(), keys.Down.end(), 0.0f);
         ImGui::SeparatorText("Global keyboard input");
-        ImGui::Text("evdev: %s", keyboard.connected() ? "connected" : "disconnected");
+        ImGui::Text("Keyboard: %s", keyboard.connected() ? "connected" : "disconnected");
         ImGui::TextWrapped("%s", keyboard.status().c_str());
         ImGui::Text("Held mapped keys: %.0f   total presses: %llu   longest press: %.3f s   Caps %s   Scroll %s", held, static_cast<unsigned long long>(analytics.TotalPresses), analytics.LongestPress, keys.CapsLockActive ? "ON" : "off", keys.ScrollLockActive ? "ON" : "off");
 
@@ -2249,6 +2255,11 @@ namespace quartz::client
         ImGui::SeparatorText("Audio level / normalization");
         ImGui::Text("Capture: %s", audio.source().c_str());
         ImGui::Text("RMS %.5f   peak %.5f", level.Rms, level.Peak);
+        ImGui::SliderFloat("Attack", &settings.AttackSpeed, 0.1f, 100.0f, "%.1f /s", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+        defaultButton("AttackSpeed", settings.AttackSpeed, VisualizerSettings{}.AttackSpeed);
+        ImGui::SliderFloat("Release", &settings.ReleaseSpeed, 0.1f, 100.0f, "%.1f /s", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+        defaultButton("ReleaseSpeed", settings.ReleaseSpeed, VisualizerSettings{}.ReleaseSpeed);
+        ImGui::TextDisabled("Attack follows rising levels; release follows falling levels. Higher values respond faster.");
         ImGui::PlotLines("RMS history", rmsHistory.data(), static_cast<int>(rmsHistory.size()), 0, nullptr, 0.0f, std::max(0.25f, *std::max_element(peakHistory.begin(), peakHistory.end())), ImVec2(-1.0f, 100.0f));
         ImGui::PlotLines("Peak history", peakHistory.data(), static_cast<int>(peakHistory.size()), 0, nullptr, 0.0f, std::max(0.25f, *std::max_element(peakHistory.begin(), peakHistory.end())), ImVec2(-1.0f, 70.0f));
 

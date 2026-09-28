@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.23)
 
 project(QuartzClient
     VERSION 0.1.0
-    LANGUAGES C CXX ASM
+    LANGUAGES C CXX
 )
 
 set(CMAKE_CXX_STANDARD 20)
@@ -36,11 +36,17 @@ add_library(quickjs STATIC
         vendor/quickjs/libunicode.c
         vendor/quickjs/cutils.c
 )
-target_include_directories(quickjs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/vendor/quickjs)
+# QuickJS's VERSION file shadows the standard <version> header on Windows.
+# Export only its public header through a clean include directory.
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/quickjs")
+configure_file(vendor/quickjs/quickjs.h generated/quickjs/quickjs.h COPYONLY)
+target_include_directories(quickjs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor/quickjs)
+target_include_directories(quickjs PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated/quickjs")
 target_compile_definitions(quickjs PRIVATE _GNU_SOURCE CONFIG_VERSION=\"2026-06-04\")
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(quickjs PRIVATE -fwrapv)
 endif()
+
 if(UNIX)
     target_link_libraries(quickjs PUBLIC m)
 endif()
@@ -53,52 +59,20 @@ file(GLOB_RECURSE QUARTZ_CLIENT_HEADERS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp"
 )
 
-set(QUARTZ_THEME_ASSETS_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/QuartzThemeAssets.S")
+# Embed resources portably; ELF assembler directives do not work with Windows COFF.
+set(QUARTZ_THEME_ASSETS_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/QuartzThemeAssets.cpp")
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
-file(GENERATE OUTPUT "${QUARTZ_THEME_ASSETS_SOURCE}" CONTENT
-".section .rodata.quartz_theme_deviluke,\"a\",@progbits
-.balign 16
-.global quartz_theme_deviluke_start
-.global quartz_theme_deviluke_end
-.hidden quartz_theme_deviluke_start
-.hidden quartz_theme_deviluke_end
-quartz_theme_deviluke_start:
-.incbin \"${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/deviluke.png\"
-quartz_theme_deviluke_end:
-
-.section .rodata.quartz_theme_kurosaki,\"a\",@progbits
-.balign 16
-.global quartz_theme_kurosaki_start
-.global quartz_theme_kurosaki_end
-.hidden quartz_theme_kurosaki_start
-.hidden quartz_theme_kurosaki_end
-quartz_theme_kurosaki_start:
-.incbin \"${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/kurosaki.png\"
-quartz_theme_kurosaki_end:
-
-.section .rodata.quartz_theme_yami,\"a\",@progbits
-.balign 16
-.global quartz_theme_yami_start
-.global quartz_theme_yami_end
-.hidden quartz_theme_yami_start
-.hidden quartz_theme_yami_end
-quartz_theme_yami_start:
-.incbin \"${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/yami.png\"
-quartz_theme_yami_end:
-
-.section .rodata.quartz_theme_kirisaki,\"a\",@progbits
-.balign 16
-.global quartz_theme_kirisaki_start
-.global quartz_theme_kirisaki_end
-.hidden quartz_theme_kirisaki_start
-.hidden quartz_theme_kirisaki_end
-quartz_theme_kirisaki_start:
-.incbin \"${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/kirisaki.png\"
-quartz_theme_kirisaki_end:
-
-.section .note.GNU-stack,\"\",@progbits
-")
-set_source_files_properties("${QUARTZ_THEME_ASSETS_SOURCE}" PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/deviluke.png;${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/kurosaki.png;${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/yami.png;${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/kirisaki.png")
+file(WRITE "${QUARTZ_THEME_ASSETS_SOURCE}.tmp" "extern \"C\" {\n")
+foreach(theme deviluke kurosaki yami kirisaki)
+    set(asset "${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/silhouettes/${theme}.png")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${asset}")
+    file(READ "${asset}" data HEX)
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," data "${data}")
+    file(APPEND "${QUARTZ_THEME_ASSETS_SOURCE}.tmp" "extern const unsigned char quartz_theme_${theme}_start[] = {${data}};\nconst unsigned char* quartz_theme_${theme}_end = quartz_theme_${theme}_start + sizeof(quartz_theme_${theme}_start);\n")
+endforeach()
+file(APPEND "${QUARTZ_THEME_ASSETS_SOURCE}.tmp" "}\n")
+configure_file("${QUARTZ_THEME_ASSETS_SOURCE}.tmp" "${QUARTZ_THEME_ASSETS_SOURCE}" COPYONLY)
+file(REMOVE "${QUARTZ_THEME_ASSETS_SOURCE}.tmp")
 
 # Keep a tiny, checked patch layer over the vendored editor instead of carrying a fork.
 # 1) Completion selection only scrolls on keyboard navigation, so the wheel can freely browse the popup.
@@ -137,7 +111,9 @@ if(QUARTZ_EDITOR_CLICK_MEMBER_POS EQUAL -1)
     message(FATAL_ERROR "ImGuiColorTextEdit mouse-click member patch no longer matches the vendored header")
 endif()
 string(REPLACE "${QUARTZ_EDITOR_CLICK_MEMBER_OLD}" "${QUARTZ_EDITOR_CLICK_MEMBER_NEW}" QUARTZ_TEXT_EDITOR_HEADER_CONTENT "${QUARTZ_TEXT_EDITOR_HEADER_CONTENT}")
-file(WRITE "${QUARTZ_TEXT_EDITOR_HEADER_SOURCE}" "${QUARTZ_TEXT_EDITOR_HEADER_CONTENT}")
+file(WRITE "${QUARTZ_TEXT_EDITOR_HEADER_SOURCE}.tmp" "${QUARTZ_TEXT_EDITOR_HEADER_CONTENT}")
+configure_file("${QUARTZ_TEXT_EDITOR_HEADER_SOURCE}.tmp" "${QUARTZ_TEXT_EDITOR_HEADER_SOURCE}" COPYONLY)
+file(REMOVE "${QUARTZ_TEXT_EDITOR_HEADER_SOURCE}.tmp")
 
 set(QUARTZ_TEXT_EDITOR_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/TextEditor.cpp")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ImGuiColorTextEdit/TextEditor.cpp" QUARTZ_TEXT_EDITOR_CONTENT)
@@ -232,9 +208,12 @@ if(QUARTZ_HOVER_POPUP_POS EQUAL -1)
     message(FATAL_ERROR "ImGuiColorTextEdit hover popup patch no longer matches the vendored source")
 endif()
 string(REPLACE "${QUARTZ_HOVER_POPUP_OLD}" "${QUARTZ_HOVER_POPUP_NEW}" QUARTZ_TEXT_EDITOR_CONTENT "${QUARTZ_TEXT_EDITOR_CONTENT}")
-file(WRITE "${QUARTZ_TEXT_EDITOR_SOURCE}" "${QUARTZ_TEXT_EDITOR_CONTENT}")
+file(WRITE "${QUARTZ_TEXT_EDITOR_SOURCE}.tmp" "${QUARTZ_TEXT_EDITOR_CONTENT}")
+configure_file("${QUARTZ_TEXT_EDITOR_SOURCE}.tmp" "${QUARTZ_TEXT_EDITOR_SOURCE}" COPYONLY)
+file(REMOVE "${QUARTZ_TEXT_EDITOR_SOURCE}.tmp")
 
-add_executable(QuartzClient
+list(REMOVE_ITEM QUARTZ_CLIENT_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/Main.cpp")
+add_library(QuartzClientCore STATIC
         ${QUARTZ_CLIENT_SOURCES}
         ${QUARTZ_THEME_ASSETS_SOURCE}
         vendor/ImGuiColorTextEdit/TextDiff.cpp
@@ -248,11 +227,14 @@ add_executable(QuartzClient
         ${QUARTZ_CLIENT_HEADERS}
 )
 
+add_executable(QuartzClient src/Main.cpp)
+target_link_libraries(QuartzClient PRIVATE QuartzClientCore)
+
 set_target_properties(QuartzClient PROPERTIES
     OUTPUT_NAME quartz
 )
 
-target_include_directories(QuartzClient PRIVATE
+target_include_directories(QuartzClientCore PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_BINARY_DIR}/generated
@@ -261,7 +243,7 @@ target_include_directories(QuartzClient PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui/backends
 )
 
-target_link_libraries(QuartzClient PRIVATE
+target_link_libraries(QuartzClientCore PUBLIC
         QuartzProtocol
         glad
         glfw
@@ -271,4 +253,65 @@ target_link_libraries(QuartzClient PRIVATE
         quickjs
 )
 
-target_compile_features(QuartzClient PRIVATE cxx_std_20)
+target_compile_features(QuartzClientCore PUBLIC cxx_std_20)
+
+if(WIN32)
+    if(NOT MINGW OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+        message(FATAL_ERROR "Windows builds require the MSYS2 UCRT64 x64 GCC toolchain (QuickJS uses GNU C).")
+    endif()
+    target_compile_definitions(QuartzClientCore PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+    target_link_libraries(QuartzClientCore PUBLIC ole32 uuid psapi shell32 shcore runtimeobject comdlg32)
+    target_link_libraries(quickjs PUBLIC pthread)
+endif()
+
+if(WIN32)
+    enable_language(RC)
+    target_sources(QuartzClient PRIVATE resources/windows/quartz.rc)
+    target_include_directories(QuartzClient PRIVATE resources/windows)
+    set_target_properties(QuartzClient PROPERTIES WIN32_EXECUTABLE TRUE)
+    add_executable(quartz-winusb-setup tools/windows/InstallWinUsb.cpp)
+    target_link_options(quartz-winusb-setup PRIVATE -municode -static)
+    target_link_libraries(quartz-winusb-setup PRIVATE setupapi advapi32)
+    install(TARGETS QuartzClient quartz-winusb-setup RUNTIME DESTINATION .)
+    get_filename_component(QUARTZ_WINDOWS_TOOLCHAIN_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    configure_file(cmake/WindowsPackage.cmake.in generated/WindowsPackage.cmake @ONLY)
+    install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/generated/WindowsPackage.cmake")
+    install(FILES docs/WINDOWS.md DESTINATION .)
+    install(FILES scripts/rms-shader-switch.js scripts/README.md scripts/install-windows-startup.ps1 DESTINATION scripts)
+    install(FILES shaders/rainbow-wave.frag shaders/README.md DESTINATION shaders)
+    install(FILES LICENSE DESTINATION licenses RENAME Quartz.txt)
+    foreach(dependency
+            "protocol/LICENSE" "vendor/quickjs/LICENSE" "vendor/libhat/LICENSE"
+            "vendor/zydis/LICENSE" "vendor/zydis/dependencies/zycore/LICENSE"
+            "vendor/ImGuiColorTextEdit/LICENSE" "vendor/imgui/LICENSE.txt"
+            "vendor/glfw/LICENSE.md" "vendor/libusb/libusb/COPYING")
+        get_filename_component(directory "${dependency}" DIRECTORY)
+        install(FILES "${dependency}" DESTINATION "licenses/${directory}")
+    endforeach()
+endif()
+
+option(QUARTZ_BUILD_TESTS "Build Windows platform integration tests" OFF)
+if(QUARTZ_BUILD_TESTS AND WIN32)
+    enable_testing()
+    add_executable(quartz-windows-fixture tests/windows_fixture.c)
+    add_executable(quartz-windows-tests tests/windows_integration.cpp)
+    add_executable(quartz-rms-script-tests tests/rms_shader_switch.cpp)
+    target_link_libraries(quartz-rms-script-tests PRIVATE QuartzClientCore)
+    target_link_libraries(quartz-windows-tests PRIVATE QuartzClientCore winmm)
+    target_sources(quartz-windows-tests PRIVATE resources/windows/quartz.rc)
+    target_include_directories(quartz-windows-tests PRIVATE resources/windows)
+    find_program(QUARTZ_X86_CC NAMES i686-w64-mingw32-gcc gcc HINTS "${QUARTZ_WINDOWS_TOOLCHAIN_BIN}/../../mingw32/bin" NO_DEFAULT_PATH)
+    if(QUARTZ_X86_CC)
+        set(fixture32 "${CMAKE_CURRENT_BINARY_DIR}/quartz-windows-fixture32.exe")
+        get_filename_component(QUARTZ_X86_BIN "${QUARTZ_X86_CC}" DIRECTORY)
+        add_custom_command(OUTPUT "${fixture32}"
+            COMMAND "${CMAKE_COMMAND}" -E env "PATH=${QUARTZ_X86_BIN};$ENV{PATH}"
+                "${QUARTZ_X86_CC}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/windows_fixture.c" -O0 -static -o "${fixture32}"
+            DEPENDS tests/windows_fixture.c VERBATIM)
+        add_custom_target(quartz-windows-fixture32 ALL DEPENDS "${fixture32}")
+    endif()
+    add_test(NAME windows-integration COMMAND quartz-windows-tests $<TARGET_FILE:quartz-windows-fixture> ${fixture32})
+    set_tests_properties(windows-integration PROPERTIES TIMEOUT 120)
+    add_test(NAME rms-shader-switch COMMAND quartz-rms-script-tests "${CMAKE_CURRENT_SOURCE_DIR}/scripts/rms-shader-switch.js")
+    set_tests_properties(rms-shader-switch PROPERTIES TIMEOUT 30)
+endif()

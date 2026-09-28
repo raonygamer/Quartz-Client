@@ -1,7 +1,9 @@
 #include "quartz/client/native/NativeDisassembly.hpp"
 #include "quartz/client/Functions.hpp"
 #include "quartz/client/Model.hpp"
+#ifndef _WIN32
 #include <elf.h>
+#endif
 #include <charconv>
 #include <fstream>
 #include <iomanip>
@@ -42,6 +44,9 @@ namespace quartz::client
 
         std::vector<RuntimeProcessModule> enumerateMappedProcessModules(const pid_t pid)
         {
+#ifdef _WIN32
+            return enumerateRuntimeModules(pid);
+#else
             std::vector<RuntimeProcessModule> modules;
             std::ifstream maps("/proc/" + std::to_string(pid) + "/maps");
             if (!maps) return modules;
@@ -68,6 +73,7 @@ namespace quartz::client
                 return a.Path<b.Path;
             });
             return modules;
+#endif
         }
 
         std::shared_ptr<const std::vector<RuntimeProcessModule>> cachedProcessModules(const pid_t pid, const double now)
@@ -109,9 +115,15 @@ namespace quartz::client
             if (const auto it = MetadataCache.find(pid); it != MetadataCache.end() && now - it->second.ModeUpdated < ModeCacheSeconds) { LocalMetadata.ModePid = pid; LocalMetadata.Mode = it->second.Mode; LocalMetadata.ModeUpdated = it->second.ModeUpdated; return LocalMetadata.Mode; }
         }
         RuntimeX86Mode mode = RuntimeX86Mode::X64;
+#ifdef _WIN32
+        win::Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid)));
+        BOOL wow = FALSE;
+        if (process && IsWow64Process(process.get(), &wow) && wow) mode = RuntimeX86Mode::X86;
+#else
         std::ifstream file("/proc/" + std::to_string(pid) + "/exe", std::ios::binary);
         std::array<unsigned char, EI_NIDENT> ident{};
         if (file.read(reinterpret_cast<char*>(ident.data()), static_cast<std::streamsize>(ident.size())) && ident[EI_MAG0] == ELFMAG0 && ident[EI_MAG1] == ELFMAG1 && ident[EI_MAG2] == ELFMAG2 && ident[EI_MAG3] == ELFMAG3) mode = ident[EI_CLASS] == ELFCLASS32 ? RuntimeX86Mode::X86 : RuntimeX86Mode::X64;
+#endif
         { std::lock_guard lock(MetadataMutex); auto& cached = MetadataCache[pid]; cached.Mode = mode; cached.ModeUpdated = now; }
         LocalMetadata.ModePid = pid; LocalMetadata.Mode = mode; LocalMetadata.ModeUpdated = now; return mode;
     }
@@ -202,6 +214,7 @@ namespace quartz::client
         return runtimeDecodeProcessInstructionText(runtimeProcessX86Mode(pid), bytes, address, text, length);
     }
 
+#ifndef _WIN32
     bool runtimeAssembleInstructionText(const RuntimeX86Mode mode, const std::uintptr_t address, const std::string_view source, std::vector<std::uint8_t>& bytes, std::string& error)
     {
         bytes.clear(); error.clear(); if (source.empty()) { error = "assembly source is empty"; return false; }
@@ -222,4 +235,6 @@ namespace quartz::client
         std::ifstream file(binaryPath, std::ios::binary); bytes.resize(static_cast<std::size_t>(size)); if (!file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) { bytes.clear(); error = "could not read assembled bytes"; removeAssemblerFiles(base); return false; }
         removeAssemblerFiles(base); return true;
     }
+#endif
+
 }

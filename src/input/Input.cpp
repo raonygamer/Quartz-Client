@@ -55,6 +55,14 @@ namespace quartz::client
 
     std::filesystem::path settingsPath()
     {
+#ifdef _WIN32
+        if (const wchar_t* config = _wgetenv(L"QUARTZ_CONFIG_HOME"); config && *config)
+            return std::filesystem::path(config) / "visualizer.ini";
+        if (const wchar_t* appData = _wgetenv(L"APPDATA"); appData && *appData)
+            return std::filesystem::path(appData) / "Quartz" / "visualizer.ini";
+#endif
+        if (const char* config = std::getenv("QUARTZ_CONFIG_HOME"); config && *config)
+            return std::filesystem::path(config) / "visualizer.ini";
         if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg)
             return std::filesystem::path(xdg) / "quartz" / "visualizer.ini";
         if (const char* home = std::getenv("HOME"); home && *home)

@@ -1,5 +1,6 @@
 #pragma once
 #include "quartz/client/Functions.hpp"
+#include "quartz/client/platform/WindowsMedia.hpp"
 
 namespace quartz::client
 {
@@ -318,6 +319,23 @@ namespace quartz::client
             _mediaTitle = std::move(title);
         }
 
+#ifdef _WIN32
+        void refresh()
+        {
+            const auto media = windowsMediaSnapshot(_running);
+            _playing.store(media.Playing);
+            if (!media.Playing || media.Artwork.empty())
+            {
+                _targetColor.store(-1); _lastMediaKey.clear();
+                setStatus(media.Status, media.Title); return;
+            }
+            const auto dominant = dominantColor(media.Artwork);
+            if (!dominant) { _targetColor.store(-1); setStatus("Artwork decode failed", media.Title); return; }
+            const auto color = enhanceColor(*dominant);
+            _targetColor.store((std::int32_t(color.R) << 16) | (std::int32_t(color.G) << 8) | color.B);
+            setStatus("Artwork color active (" + media.Player + ")", media.Title);
+        }
+#else
         void refresh()
         {
             const auto discovery = currentMedia();
@@ -367,6 +385,7 @@ namespace quartz::client
 #endif
         }
 
+#endif
         void run()
         {
             while (_running.load(std::memory_order_acquire))

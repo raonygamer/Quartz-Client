@@ -8,9 +8,9 @@ This is a **personal project built for my own hardware and workflow**. It is pub
 
 ## Current status
 
-Quartz Client is written in modern **C++20** and primarily developed on **Linux**. The UI is built with **Dear ImGui** and OpenGL, device communication uses raw **libusb**, native disassembly uses **Zydis**, signature scanning uses **libhat**, and scripting is powered by embedded **QuickJS**.
+Quartz Client is written in modern **C++20** and runs natively on **Linux** and **Windows 10/11 x64**. The UI is built with **Dear ImGui** and OpenGL, device communication uses raw **libusb**, native disassembly uses **Zydis**, signature scanning uses **libhat**, and scripting is powered by embedded **QuickJS**.
 
-Several reverse-engineering features intentionally use Linux facilities such as `/proc`, `process_vm_readv`, `process_vm_writev`, `ptrace`, hardware debug registers and evdev.
+Linux uses `/proc`, process-memory APIs, `ptrace` and evdev. Windows uses native process-memory/debugging APIs, Raw Input, WASAPI and Windows media sessions. See [Windows setup, driver installation, build and tests](docs/WINDOWS.md).
 
 ## Device, RGB and diagnostics
 
@@ -21,10 +21,13 @@ Several reverse-engineering features intentionally use Linux facilities such as 
 - Supersampled render targets with configurable downsampling
 - Runtime shader uniforms sourced from keyboard and host state
 - Audio spectrum visualization and audio-reactive effects
-- MPRIS player/artwork integration
+- Player/artwork integration through MPRIS on Linux and Windows media sessions
 - Device, USB and QRPC diagnostics
 - Firmware performance telemetry and matrix timing probes
 - Live keyboard preview
+
+Example extras: [configurable Rainbow wave shader](shaders/README.md) and
+[RMS shader switching script](scripts/README.md).
 - English and Brazilian Portuguese UI
 - Theme-aware presentation, configurable rounding and background opacity
 

@@ -1,0 +1,33 @@
+# Keep the portable build self-contained, including the assembler used by RE.
+set(toolchain "@QUARTZ_WINDOWS_TOOLCHAIN_BIN@")
+set(destination "${CMAKE_INSTALL_PREFIX}")
+set(assemblers)
+foreach(tool as ld nm objcopy)
+    set(exe "${toolchain}/${tool}.exe")
+    if(NOT EXISTS "${exe}")
+        message(FATAL_ERROR "Missing assembler tool: ${exe}")
+    endif()
+    list(APPEND assemblers "${exe}")
+    file(INSTALL "${exe}" DESTINATION "${destination}/tools")
+endforeach()
+file(GET_RUNTIME_DEPENDENCIES
+    EXECUTABLES "${destination}/quartz.exe" ${assemblers}
+    RESOLVED_DEPENDENCIES_VAR libraries
+    UNRESOLVED_DEPENDENCIES_VAR missing
+    DIRECTORIES "${toolchain}"
+    PRE_EXCLUDE_REGEXES "[Aa][Pp][Ii]-[Mm][Ss]-.*" "[Ee][Xx][Tt]-[Mm][Ss]-.*"
+    POST_EXCLUDE_REGEXES ".*[/\\][Ww][Ii][Nn][Dd][Oo][Ww][Ss][/\\].*")
+if(missing)
+    message(FATAL_ERROR "Unresolved Windows runtime libraries: ${missing}")
+endif()
+foreach(library IN LISTS libraries)
+    file(INSTALL "${library}" DESTINATION "${destination}")
+    # Child assembler processes search their own application directory for DLLs.
+    file(INSTALL "${library}" DESTINATION "${destination}/tools")
+endforeach()
+file(GLOB licenseDirs "${toolchain}/../share/licenses/*")
+foreach(directory IN LISTS licenseDirs)
+    if(IS_DIRECTORY "${directory}")
+        file(INSTALL "${directory}" DESTINATION "${destination}/licenses/toolchain" TYPE DIRECTORY)
+    endif()
+endforeach()

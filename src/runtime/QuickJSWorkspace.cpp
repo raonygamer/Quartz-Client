@@ -411,7 +411,7 @@ namespace quartz::client
             JS_FreeValue(instance.Context, result); instance.ModuleLoaded = true; ++script.CompileCount; return true;
         }
 
-        JSValue registerObject(JSContext* ctx, const user_regs_struct& regs)
+        JSValue registerObject(JSContext* ctx, const NativeRegisters& regs)
         {
             JSValue object = JS_NewObject(ctx);
 #define QUARTZ_REG(name) JS_SetPropertyStr(ctx, object, #name, JS_NewBigUint64(ctx, static_cast<std::uint64_t>(regs.name)))

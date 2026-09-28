@@ -1,3 +1,4 @@
+#ifndef _WIN32
 #include "quartz/client/native/ExecutionProbe.hpp"
 #include "quartz/client/Model.hpp"
 
@@ -152,7 +153,7 @@ namespace quartz::client
                     const int signal = WSTOPSIG(status); bool ours = false;
                     if (signal == SIGTRAP && thread.Armed)
                     {
-                        std::uint64_t dr6 = 0; user_regs_struct regs{}; const bool haveDr6 = runtimePtracePeekUser(thread.Tid, Dr6Offset, dr6), haveRegs = ::ptrace(PTRACE_GETREGS, thread.Tid, nullptr, &regs) == 0;
+                        std::uint64_t dr6 = 0; NativeRegisters regs{}; const bool haveDr6 = runtimePtracePeekUser(thread.Tid, Dr6Offset, dr6), haveRegs = ::ptrace(PTRACE_GETREGS, thread.Tid, nullptr, &regs) == 0;
                         ours = haveDr6 && (dr6 & 1ULL) != 0 && haveRegs && static_cast<std::uintptr_t>(regs.rip) == address;
                         if (ours)
                         {
@@ -178,3 +179,5 @@ namespace quartz::client
         _state = std::move(state); error.clear(); return true;
     }
 }
+
+#endif

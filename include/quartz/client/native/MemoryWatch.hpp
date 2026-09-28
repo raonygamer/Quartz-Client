@@ -14,7 +14,7 @@ namespace quartz::client
         std::uintptr_t InstructionAddress = 0;
         std::uint64_t Count = 0;
         std::string Instruction;
-        user_regs_struct Registers{};
+        NativeRegisters Registers{};
         bool HasRegisters = false;
     };
 

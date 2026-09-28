@@ -3,6 +3,9 @@
 #include "quartz/client/ui/PageManager.hpp"
 #include "quartz/client/ui/I18n.hpp"
 #include "quartz/client/shader/ShaderWorkspace.hpp"
+#ifdef _WIN32
+#include <commdlg.h>
+#endif
 
 namespace quartz::client::ui
 {
@@ -10,11 +13,23 @@ namespace quartz::client::ui
     {
         std::optional<std::filesystem::path> pickShaderFile()
         {
+#ifdef _WIN32
+            std::array<wchar_t, 32768> filename{};
+            OPENFILENAMEW dialog{};
+            dialog.lStructSize = sizeof(dialog);
+            dialog.lpstrFilter = L"GLSL shaders\0*.frag;*.vert;*.glsl\0All files\0*.*\0\0";
+            dialog.lpstrFile = filename.data();
+            dialog.nMaxFile = static_cast<DWORD>(filename.size());
+            dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+            if (!GetOpenFileNameW(&dialog)) return std::nullopt;
+            return std::filesystem::path(filename.data());
+#else
             std::string result;
             if (commandExists("kdialog")) result = trim(bytesToString(readCommand("kdialog --getopenfilename . '*.frag *.vert *.glsl|GLSL shaders'")));
             else if (commandExists("zenity")) result = trim(bytesToString(readCommand("zenity --file-selection --file-filter='GLSL shaders | *.frag *.vert *.glsl'")));
             if (result.empty()) return std::nullopt;
             return std::filesystem::path(result);
+#endif
         }
 
         void setPath(std::array<char, ShaderPathCapacity>& buffer, const std::filesystem::path& path) { std::snprintf(buffer.data(), buffer.size(), "%s", path.string().c_str()); }

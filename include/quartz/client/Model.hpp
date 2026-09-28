@@ -124,13 +124,7 @@ namespace quartz::client
     template<typename T>
     bool readProcessMemoryValue(const pid_t pid, const std::uintptr_t address, T& value, std::string& error)
     {
-        iovec local{&value, sizeof(T)};
-        iovec remote{reinterpret_cast<void*>(address), sizeof(T)};
-        errno = 0;
-        const ssize_t count = ::process_vm_readv(pid, &local, 1, &remote, 1, 0);
-        if (count == static_cast<ssize_t>(sizeof(T))) return true;
-        error = count < 0 ? std::string(std::strerror(errno)) : "short read (" + std::to_string(count) + "/" + std::to_string(sizeof(T)) + ")";
-        return false;
+        return readProcessMemoryBlock(pid, address, {reinterpret_cast<std::uint8_t*>(&value), sizeof(T)}, error);
     }
 
     template<typename T>

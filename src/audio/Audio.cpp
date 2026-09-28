@@ -1,3 +1,4 @@
+#ifndef _WIN32
 #include "quartz/client/Model.hpp"
 
 namespace quartz::client
@@ -78,3 +79,5 @@ namespace quartz::client
 
 
 }
+
+#endif

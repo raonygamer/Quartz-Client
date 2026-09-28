@@ -184,9 +184,9 @@ namespace quartz::client
         ImGui::SameLine();
         ImGui::Checkbox("Key-state uniforms", &settings.ShaderKeyStateUniforms);
         ImGui::SameLine();
-        ImGui::TextDisabled("evdev -> uCapsLock %.0f   uScrollLock %.0f", settings.ShaderKeyStateUniforms && capsLockActive ? 1.0f : 0.0f, settings.ShaderKeyStateUniforms && scrollLockActive ? 1.0f : 0.0f);
+        ImGui::TextDisabled("Keyboard -> uCapsLock %.0f   uScrollLock %.0f", settings.ShaderKeyStateUniforms && capsLockActive ? 1.0f : 0.0f, settings.ShaderKeyStateUniforms && scrollLockActive ? 1.0f : 0.0f);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Reactive presets also receive uKeyState[112] and uKeyEvents[16]. Key capture comes from Linux evdev and works while Quartz is unfocused.");
+            ImGui::SetTooltip("Reactive presets also receive uKeyState[112] and uKeyEvents[16]. Key capture comes from the native keyboard backend and works while Quartz is unfocused.");
         if (shaderMutexLocked)
         {
             const std::string owner = javascript.shaderMutexOwnerDisplayName();

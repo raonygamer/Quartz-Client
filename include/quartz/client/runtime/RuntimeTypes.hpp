@@ -276,6 +276,7 @@ namespace quartz::client
         int Order = 0;
         char Group[64]{};
         RuntimeObjectPacking Packing = RuntimeObjectPacking::Natural;
+        int PointerBytes = sizeof(std::uintptr_t);
         std::vector<RuntimeObjectField> Fields;
         std::size_t Size = 0; // derived model size only; runtime addresses live in RuntimeObjectPointer
     };

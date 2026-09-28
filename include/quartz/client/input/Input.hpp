@@ -28,6 +28,36 @@ namespace quartz::client
         bool ScrollLockActive = false;
     };
 
+#ifdef _WIN32
+    class EvdevKeyboard
+    {
+    public:
+        ~EvdevKeyboard() { stop(); }
+        void start(double glfwTime);
+        void stop() noexcept;
+        ReactiveKeyState snapshot() const { std::lock_guard lock(_mutex); return _state; }
+        bool connected() const { std::lock_guard lock(_mutex); return _connected; }
+        std::string deviceName() const { std::lock_guard lock(_mutex); return _deviceName; }
+        std::string status() const { std::lock_guard lock(_mutex); return _status; }
+        bool consumeRestoreRequest() noexcept { return _restoreRequested.exchange(false); }
+        bool shortcutDown(std::uint16_t key, bool ctrl, bool alt, bool shift) const;
+    private:
+        void run();
+        void scanDevices();
+        void handleKey(const RAWKEYBOARD& key);
+        static LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
+        mutable std::mutex _mutex;
+        std::atomic<bool> _running{false}, _restoreRequested{false};
+        std::thread _thread;
+        std::set<HANDLE> _devices;
+        std::array<bool, KEY_MAX + 1> _keyDown{};
+        ReactiveKeyState _state{};
+        bool _connected = false;
+        std::string _deviceName, _status = "keyboard input not started";
+        double _glfwBaseTime = 0;
+        std::chrono::steady_clock::time_point _steadyBaseTime{};
+    };
+#else
     class EvdevKeyboard
     {
     public:
@@ -365,5 +395,7 @@ namespace quartz::client
         double _glfwBaseTime = 0.0;
         std::chrono::steady_clock::time_point _steadyBaseTime{};
     };
+
+#endif
 
 }

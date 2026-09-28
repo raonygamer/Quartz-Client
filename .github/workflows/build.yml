@@ -24,3 +24,31 @@ jobs:
 
       - name: Build
         run: cmake --build build -j2
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-i686-gcc
+      - name: Configure
+        run: cmake -S . -B build/windows -G Ninja -DCMAKE_BUILD_TYPE=Debug -DQUARTZ_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build/windows -j2
+      - name: Test x64 and x86 process tooling
+        run: ctest --test-dir build/windows --output-on-failure
+      - name: Check portable packaging
+        run: cmake --install build/windows --prefix build/Quartz-Windows-x64

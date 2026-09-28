@@ -1642,7 +1642,7 @@ void main()
     float ring = pow(0.5 + 0.5 * cos(radius * 22.0 - uTime * 3.0), 10.0);
     vec3 color = hsv2rgb(vec3(fract(angle / 6.2831 + uTime * 0.03), 0.9, clamp(spokes * 0.8 + ring * 0.6, 0.0, 1.0)));
     FragColor = vec4(applyIndicators(color, row, column), 1.0);)GLSL")});
-        presets.push_back({"Neon triangle", makeGeneratedShader(R"GLSL(    vec2 q = rotate2d(p, uTime * 0.5);
+        presets.push_back({"Neon triangle", makeGeneratedShader(R"GLSL(    vec2 q = rotate2d(uTime * 0.5) * p;
     float d = sdEquilateralTriangle(q, 0.58);
     float glow = exp(-abs(d) * 28.0) + exp(-abs(d + 0.12) * 35.0) * 0.5;
     vec3 color = hsv2rgb(vec3(fract(0.78 + d * 0.5 + uTime * 0.04), 0.9, clamp(glow, 0.0, 1.0)));
@@ -1675,9 +1675,9 @@ void main()
     FragColor = vec4(applyIndicators(color, row, column), 1.0);)GLSL")});
         presets.push_back({"Audio equalizer dots", makeGeneratedShader(R"GLSL(    float band = clamp(uBands[column], 0.0, 1.0);
     float targetY = band;
-    float dot = exp(-abs(uv.y - targetY) * 32.0);
+    float dotIntensity = exp(-abs(uv.y - targetY) * 32.0);
     float trail = smoothstep(targetY, 0.0, uv.y) * 0.16;
-    vec3 color = hsv2rgb(vec3(fract(float(column) / 20.0 + uTime * 0.03), 0.9, clamp(dot + trail, 0.0, 1.0)));
+    vec3 color = hsv2rgb(vec3(fract(float(column) / 20.0 + uTime * 0.03), 0.9, clamp(dotIntensity + trail, 0.0, 1.0)));
     FragColor = vec4(applyIndicators(color, row, column), 1.0);)GLSL")});
         presets.push_back({"Audio radial flower", makeGeneratedShader(R"GLSL(    float angle = atan(p.y, p.x);
     int bandIndex = clamp(int(floor((angle / 6.2831 + 0.5) * 16.0)), 0, 15);

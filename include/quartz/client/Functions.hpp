@@ -98,9 +98,12 @@ namespace quartz::client
     bool runtimeDecodeInstructionText(const std::span<const std::uint8_t> bytes, const std::uintptr_t address, std::string& text, std::size_t& length);
     bool runtimeDecodeInstructionText(const std::span<const std::uint8_t>, const std::uintptr_t, std::string&, std::size_t&);
     bool runtimeOpcodePatternMatches(const std::span<const std::uint8_t> bytes, const std::uintptr_t address, const std::vector<std::string>& patterns, std::size_t& matchedLength);
+    std::size_t readProcessMemoryPartial(pid_t pid, std::uintptr_t address, std::span<std::uint8_t> buffer, std::string& error);
     bool readProcessMemoryBlock(const pid_t pid, const std::uintptr_t address, std::span<std::uint8_t> buffer, std::string& error);
+    bool readRuntimePointer(pid_t pid, std::uintptr_t address, std::uintptr_t& value, std::string& error);
+    std::optional<std::uintptr_t> resolveRuntimeSignatureMatch(RuntimeBinding& binding, pid_t pid, std::uintptr_t match, std::string& error);
     const char* runtimeX64RegisterName(const RuntimeX64Register reg) noexcept;
-    std::uint64_t runtimeX64RegisterValue(const user_regs_struct& regs, const RuntimeX64Register reg) noexcept;
+    std::uint64_t runtimeX64RegisterValue(const NativeRegisters& regs, const RuntimeX64Register reg) noexcept;
     std::vector<pid_t> enumerateRuntimeThreads(const pid_t pid);
     bool runtimePtracePeekUser(const pid_t tid, const std::size_t offset, std::uint64_t& value) noexcept;
     bool runtimePtracePokeUser(const pid_t tid, const std::size_t offset, const std::uint64_t value) noexcept;
@@ -135,8 +138,8 @@ namespace quartz::client
     const char* runtimeActionValueModeName(const RuntimeActionValueMode mode) noexcept;
     const char* runtimeActionWhenName(const RuntimeActionWhen when) noexcept;
     bool runtimeObjectFieldIsFiller(const RuntimeObjectFieldType type) noexcept;
-    std::size_t runtimeObjectFieldSize(const RuntimeObjectField& field) noexcept;
-    std::size_t runtimeObjectNaturalAlignment(const RuntimeObjectField& field) noexcept;
+    std::size_t runtimeObjectFieldSize(const RuntimeObjectField& field, std::size_t pointerBytes = sizeof(std::uintptr_t)) noexcept;
+    std::size_t runtimeObjectNaturalAlignment(const RuntimeObjectField& field, std::size_t pointerBytes = sizeof(std::uintptr_t)) noexcept;
     std::size_t runtimeObjectPackingBytes(const RuntimeObjectPacking packing) noexcept;
     std::size_t runtimeObjectAlignmentBytes(const RuntimeObjectAlignment alignment) noexcept;
     std::size_t runtimeAlignUp(const std::size_t value, const std::size_t alignment) noexcept;

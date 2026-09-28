@@ -19,10 +19,23 @@ namespace quartz::client
         if (!_context && !initialize()) return false;
         if (_handle) disconnect();
 
-        _handle = libusb_open_device_with_vid_pid(_context, _config.Vendor, _config.Product);
+        // Keep the open error: the convenience helper discards driver/access
+        // errors and makes an attached Windows device look disconnected.
+        libusb_device** devices = nullptr;
+        const auto count = libusb_get_device_list(_context, &devices);
+        int openError = count < 0 ? static_cast<int>(count) : LIBUSB_ERROR_NO_DEVICE;
+        for (ssize_t index = 0; index < count; ++index)
+        {
+            libusb_device_descriptor candidate{};
+            if (libusb_get_device_descriptor(devices[index], &candidate) != LIBUSB_SUCCESS ||
+                candidate.idVendor != _config.Vendor || candidate.idProduct != _config.Product) continue;
+            openError = libusb_open(devices[index], &_handle);
+            if (openError == LIBUSB_SUCCESS) break;
+        }
+        if (devices) libusb_free_device_list(devices, 1);
         if (!_handle)
         {
-            _lastError.store(LIBUSB_ERROR_NO_DEVICE, std::memory_order_release);
+            _lastError.store(openError, std::memory_order_release);
             return false;
         }
 

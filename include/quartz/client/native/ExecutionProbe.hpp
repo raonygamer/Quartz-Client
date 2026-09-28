@@ -10,7 +10,7 @@ namespace quartz::client
         pid_t Pid = 0;
         pid_t Tid = 0;
         std::uintptr_t Address = 0;
-        user_regs_struct Registers{};
+        NativeRegisters Registers{};
         bool HasRegisters = false;
     };
 

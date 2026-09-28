@@ -652,7 +652,7 @@ namespace quartz::client
             for (const auto& object : _objects)
             {
                 file << "O\t" << object.Enabled << '\t' << object.Id << '\t' << runtimeEscape(object.Name) << '\t' << runtimeEscape(object.Description) << '\t'
-                     << object.BaseBindingId << '\t' << object.ProcessBindingId << '\t' << object.BaseOffset << '\t' << static_cast<int>(object.Packing) << '\t' << object.Order << '\t' << runtimeEscape(object.Group) << '\n';
+                     << object.BaseBindingId << '\t' << object.ProcessBindingId << '\t' << object.BaseOffset << '\t' << static_cast<int>(object.Packing) << '\t' << object.Order << '\t' << runtimeEscape(object.Group) << '\t' << object.PointerBytes << '\n';
                 for (const auto& field : object.Fields)
                     file << "F\t" << object.Id << '\t' << field.Id << '\t' << field.Enabled << '\t' << runtimeEscape(field.Name) << '\t' << static_cast<int>(field.Type) << '\t'
                          << static_cast<int>(field.Alignment) << '\t' << field.ManualOffset << '\t' << field.Offset << '\t' << field.CustomFillerBytes << '\t' << field.StringMaxLength << '\t' << field.FixedElementCount << '\n';
@@ -928,6 +928,8 @@ namespace quartz::client
                     object.Packing = static_cast<RuntimeObjectPacking>(std::clamp(packing, 0, static_cast<int>(RuntimeObjectPacking::Pack16)));
                     if (fields.size() > 8) parseNumber(fields[8], object.Order);
                     if (fields.size() > 9) copyField(object.Group, runtimeUnescape(fields[9]));
+                    if (fields.size() > 10) parseNumber(fields[10], object.PointerBytes);
+                    object.PointerBytes = object.PointerBytes == 4 ? 4 : 8;
                     if (object.Id == 0) object.Id = _nextObjectId++;
                     else _nextObjectId = std::max(_nextObjectId, object.Id + 1);
                     _objects.emplace_back(std::move(object));
@@ -1571,8 +1573,7 @@ namespace quartz::client
         {
             result.clear(); if (address == 0) { error = "null string pointer"; return false; }
             const std::size_t cap = std::clamp<std::size_t>(maxLength, 1, 4096); std::vector<std::uint8_t> bytes(cap);
-            iovec local{bytes.data(), bytes.size()}; iovec remote{reinterpret_cast<void*>(address), bytes.size()}; errno = 0;
-            const ssize_t count = ::process_vm_readv(pid, &local, 1, &remote, 1, 0); if (count <= 0) { error = std::strerror(errno); return false; }
+            const auto count = readProcessMemoryPartial(pid, address, bytes, error); if (!count) return false;
             const auto end = std::find(bytes.begin(), bytes.begin() + count, 0); result.assign(reinterpret_cast<const char*>(bytes.data()), static_cast<std::size_t>(end - bytes.begin())); error.clear(); return true;
         }
 
@@ -1580,15 +1581,21 @@ namespace quartz::client
         {
             result.clear(); if (address == 0) { error = "null wide string pointer"; return false; }
             const std::size_t cap = std::clamp<std::size_t>(maxLength, 1, 2048); std::vector<wchar_t> chars(cap);
-            iovec local{chars.data(), chars.size() * sizeof(wchar_t)}; iovec remote{reinterpret_cast<void*>(address), chars.size() * sizeof(wchar_t)}; errno = 0;
-            const ssize_t count = ::process_vm_readv(pid, &local, 1, &remote, 1, 0); if (count <= 0) { error = std::strerror(errno); return false; }
+            const auto count = readProcessMemoryPartial(pid, address, {reinterpret_cast<std::uint8_t*>(chars.data()), chars.size() * sizeof(wchar_t)}, error); if (!count) return false;
             const std::size_t available = static_cast<std::size_t>(count) / sizeof(wchar_t);
             for (std::size_t i = 0; i < available && chars[i] != 0; ++i)
             {
-                const std::uint32_t cp = static_cast<std::uint32_t>(chars[i]);
+                std::uint32_t cp = static_cast<std::uint32_t>(chars[i]);
+                if constexpr (sizeof(wchar_t) == 2)
+                {
+                    if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < available && chars[i + 1] >= 0xDC00 && chars[i + 1] <= 0xDFFF)
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (chars[++i] - 0xDC00);
+                    else if (cp >= 0xD800 && cp <= 0xDFFF) cp = 0xFFFD;
+                }
                 if (cp < 0x80) result.push_back(static_cast<char>(cp));
                 else if (cp < 0x800) { result.push_back(static_cast<char>(0xC0 | (cp >> 6))); result.push_back(static_cast<char>(0x80 | (cp & 0x3F))); }
                 else if (cp < 0x10000) { result.push_back(static_cast<char>(0xE0 | (cp >> 12))); result.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F))); result.push_back(static_cast<char>(0x80 | (cp & 0x3F))); }
+                else if (cp <= 0x10FFFF) { result.push_back(static_cast<char>(0xF0 | (cp >> 18))); result.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F))); result.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F))); result.push_back(static_cast<char>(0x80 | (cp & 0x3F))); }
                 else { result.push_back('?'); }
             }
             error.clear(); return true;
@@ -1626,11 +1633,11 @@ namespace quartz::client
             case RuntimeObjectFieldType::Float: QUARTZ_READ_OBJECT(float); break;
             case RuntimeObjectFieldType::Double: { double value{}; if (!readProcessMemoryValue(pointer->ProcessId, address, value, error)) { binding.HasAddress = false; binding.Error = std::move(error); return false; } output = static_cast<float>(value); break; }
             case RuntimeObjectFieldType::Bool: { std::uint8_t value{}; if (!readProcessMemoryValue(pointer->ProcessId, address, value, error)) { binding.HasAddress = false; binding.Error = std::move(error); return false; } output = value ? 1.0f : 0.0f; break; }
-            case RuntimeObjectFieldType::Pointer: { std::uintptr_t value{}; if (!readProcessMemoryValue(pointer->ProcessId, address, value, error)) { binding.HasAddress = false; binding.Error = std::move(error); return false; } binding.AddressValue = value; binding.HasAddress = value != 0; output = value ? 1.0f : 0.0f; binding.AddressProvenance.push_back("dereference -> " + runtimeHexAddress(value)); break; }
+            case RuntimeObjectFieldType::Pointer: { std::uintptr_t value{}; if (!readRuntimePointer(pointer->ProcessId, address, value, error)) { binding.HasAddress = false; binding.Error = std::move(error); return false; } binding.AddressValue = value; binding.HasAddress = value != 0; output = value ? 1.0f : 0.0f; binding.AddressProvenance.push_back("dereference -> " + runtimeHexAddress(value)); break; }
             case RuntimeObjectFieldType::CStringPointer:
             case RuntimeObjectFieldType::WStringPointer:
             {
-                std::uintptr_t value{}; if (!readProcessMemoryValue(pointer->ProcessId, address, value, error)) { binding.HasAddress = false; binding.Error = std::move(error); return false; }
+                std::uintptr_t value{}; if (!readRuntimePointer(pointer->ProcessId, address, value, error)) { binding.HasAddress = false; binding.Error = std::move(error); return false; }
                 binding.AddressValue = value; binding.HasAddress = value != 0; binding.AddressProvenance.push_back("string pointer -> " + runtimeHexAddress(value));
                 const bool ok = field->Type == RuntimeObjectFieldType::CStringPointer ? readRuntimeCString(pointer->ProcessId, value, field->StringMaxLength, binding.StringValue, error) : readRuntimeWString(pointer->ProcessId, value, field->StringMaxLength, binding.StringValue, error);
                 if (!ok) { binding.Error = error; return false; } binding.HasString = true; output = static_cast<float>(binding.StringValue.size()); break;

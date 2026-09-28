@@ -11,13 +11,13 @@
 extern "C"
 {
     extern const unsigned char quartz_theme_deviluke_start[];
-    extern const unsigned char quartz_theme_deviluke_end[];
+    extern const unsigned char* quartz_theme_deviluke_end;
     extern const unsigned char quartz_theme_kurosaki_start[];
-    extern const unsigned char quartz_theme_kurosaki_end[];
+    extern const unsigned char* quartz_theme_kurosaki_end;
     extern const unsigned char quartz_theme_yami_start[];
-    extern const unsigned char quartz_theme_yami_end[];
+    extern const unsigned char* quartz_theme_yami_end;
     extern const unsigned char quartz_theme_kirisaki_start[];
-    extern const unsigned char quartz_theme_kirisaki_end[];
+    extern const unsigned char* quartz_theme_kirisaki_end;
 }
 
 namespace quartz::client::ui

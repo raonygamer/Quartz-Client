@@ -1,5 +1,6 @@
 #pragma once
 #include "quartz/client/Functions.hpp"
+#include <condition_variable>
 #include "quartz/client/settings/VisualizerSettings.hpp"
 
 namespace quartz::client
@@ -20,6 +21,10 @@ namespace quartz::client
 
         ~AudioSpectrum() { stop(); }
 
+#ifdef _WIN32
+        bool start(const std::string& source);
+        void stop();
+#else
         bool start(const std::string& source)
         {
             stop();
@@ -77,9 +82,10 @@ namespace quartz::client
             }
         }
 
+#endif
         bool isRunning() const noexcept { return _running.load(std::memory_order_acquire); }
         const std::string& source() const noexcept { return _source; }
-        const std::string& error() const noexcept { return _error; }
+        std::string error() const { std::lock_guard lock(_errorMutex); return _error; }
 
         AudioLevelSnapshot levelSnapshot()
         {
@@ -174,6 +180,12 @@ namespace quartz::client
             }
         }
 
+#ifdef _WIN32
+        void readLoop();
+        std::mutex _startMutex;
+        std::condition_variable _startCondition;
+        bool _startFinished = false;
+#else
         void readLoop()
         {
             std::array<std::byte, 8192 + BytesPerFrame> buffer{};
@@ -208,15 +220,19 @@ namespace quartz::client
             _running.store(false, std::memory_order_release);
         }
 
+#endif
         std::array<float, FFTSize> _samples{};
         std::mutex _sampleMutex;
         std::thread _thread;
         std::atomic_bool _running = false;
+#ifndef _WIN32
         pid_t _pid = -1;
         int _readFd = -1;
+#endif
         int _writePosition = 0;
         int _sampleCount = 0;
         std::string _source;
+        mutable std::mutex _errorMutex;
         std::string _error;
     };
 

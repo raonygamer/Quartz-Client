@@ -52,7 +52,11 @@
 #include <vector>
 
 #include <fcntl.h>
-#include <linux/input.h>
+#include "quartz/client/platform/KeyCodes.hpp"
+#include <sys/types.h>
+#ifdef _WIN32
+#include "quartz/client/platform/Windows.hpp"
+#else
 #include <csignal>
 #include <sys/ioctl.h>
 #include <sys/ptrace.h>
@@ -61,6 +65,8 @@
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <unistd.h>
+namespace quartz::client { using NativeRegisters = user_regs_struct; }
+#endif
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>

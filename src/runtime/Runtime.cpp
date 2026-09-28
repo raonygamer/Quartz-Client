@@ -233,7 +233,7 @@ namespace quartz::client
         return type >= RuntimeObjectFieldType::Filler1 && type <= RuntimeObjectFieldType::FillerCustom;
     }
 
-    std::size_t runtimeObjectFieldSize(const RuntimeObjectField& field) noexcept
+    std::size_t runtimeObjectFieldSize(const RuntimeObjectField& field, std::size_t pointerBytes) noexcept
     {
         switch (field.Type)
         {
@@ -254,7 +254,7 @@ namespace quartz::client
         case RuntimeObjectFieldType::Filler8: return 8;
         case RuntimeObjectFieldType::Pointer:
         case RuntimeObjectFieldType::CStringPointer:
-        case RuntimeObjectFieldType::WStringPointer: return sizeof(std::uintptr_t);
+        case RuntimeObjectFieldType::WStringPointer: return pointerBytes == 4 ? 4 : 8;
         case RuntimeObjectFieldType::FixedCString: return static_cast<std::size_t>(std::max(field.FixedElementCount, 1));
         case RuntimeObjectFieldType::FixedWString: return static_cast<std::size_t>(std::max(field.FixedElementCount, 1)) * sizeof(wchar_t);
         case RuntimeObjectFieldType::Filler16: return 16;
@@ -264,7 +264,7 @@ namespace quartz::client
         return 1;
     }
 
-    std::size_t runtimeObjectNaturalAlignment(const RuntimeObjectField& field) noexcept
+    std::size_t runtimeObjectNaturalAlignment(const RuntimeObjectField& field, std::size_t pointerBytes) noexcept
     {
         if (runtimeObjectFieldIsFiller(field.Type)) return 1;
         switch (field.Type)
@@ -275,7 +275,7 @@ namespace quartz::client
         case RuntimeObjectFieldType::Float: return alignof(float);
         case RuntimeObjectFieldType::U64: case RuntimeObjectFieldType::I64: return alignof(std::uint64_t);
         case RuntimeObjectFieldType::Double: return alignof(double);
-        case RuntimeObjectFieldType::Pointer: case RuntimeObjectFieldType::CStringPointer: case RuntimeObjectFieldType::WStringPointer: return alignof(std::uintptr_t);
+        case RuntimeObjectFieldType::Pointer: case RuntimeObjectFieldType::CStringPointer: case RuntimeObjectFieldType::WStringPointer: return pointerBytes == 4 ? 4 : 8;
         case RuntimeObjectFieldType::FixedWString: return alignof(wchar_t);
         default: return 1;
         }
@@ -325,7 +325,7 @@ namespace quartz::client
         for (const auto& field : object.Fields)
         {
             if (!field.Enabled) continue;
-            const std::size_t natural = runtimeObjectNaturalAlignment(field);
+            const std::size_t natural = runtimeObjectNaturalAlignment(field, object.PointerBytes);
             const std::size_t overrideAlignment = runtimeObjectAlignmentBytes(field.Alignment);
             std::size_t alignment = overrideAlignment ? overrideAlignment : natural;
             if (pack) alignment = std::min(alignment, pack);
@@ -333,7 +333,7 @@ namespace quartz::client
             maxAlignment = std::max(maxAlignment, alignment);
             const std::size_t offset = field.ManualOffset ? static_cast<std::size_t>(std::max(field.Offset, 0)) : runtimeAlignUp(cursor, alignment);
             if (field.Id == fieldId) { wanted = offset; found = true; }
-            cursor = std::max(cursor, offset + runtimeObjectFieldSize(field));
+            cursor = std::max(cursor, offset + runtimeObjectFieldSize(field, object.PointerBytes));
         }
         const std::size_t finalAlignment = pack ? std::min(maxAlignment, pack) : maxAlignment;
         if (objectSize) *objectSize = runtimeAlignUp(cursor, std::max<std::size_t>(finalAlignment, 1));

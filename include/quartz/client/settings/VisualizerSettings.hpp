@@ -42,8 +42,8 @@ namespace quartz::client
         float WaveSpeed = 0.40f;
         float FeatherRows = 2.5f;
         float Saturation = 2.0f;
-        float AttackSpeed = 3.5f;
-        float ReleaseSpeed = 40.5f;
+        float AttackSpeed = 40.0f;
+        float ReleaseSpeed = 40.0f;
         float BassActivationThreshold = 0.65f;
         float BassMaxBoost = 1.68f;
         float ColorTransitionSpeed = 1.5f;
@@ -60,7 +60,11 @@ namespace quartz::client
         std::array<float, 3> ShaderCapsLockColor{0.10f, 0.80f, 1.00f};
         std::array<float, 3> ShaderScrollLockColor{1.00f, 0.20f, 0.55f};
         std::array<float, Columns> ColumnGain{0.55f, 0.58f, 0.56f, 0.72f, 0.78f, 0.72f, 0.81f, 0.74f, 0.77f, 0.84f, 0.84f, 0.86f, 0.99f, 0.99f, 0.99f, 0.92f};
-        char AudioSource[128] = "easyeffects_sink.monitor";
+#ifdef _WIN32
+        char AudioSource[512] = "default";
+#else
+        char AudioSource[512] = "easyeffects_sink.monitor";
+#endif
         int BaseColorMode = 0;
         int ShaderDownsampleMode = 0;
         int ShaderPresetIndex = 1;

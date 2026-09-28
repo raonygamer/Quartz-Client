@@ -348,7 +348,7 @@ namespace quartz::client
         JSValue jsAudioRms(JSContext* ctx, JSValueConst, int, JSValueConst*) { const auto* state = scriptContext(ctx); return JS_NewFloat64(ctx, state && state->SignalContext ? state->SignalContext->Audio.Rms : 0.0f); }
         JSValue jsAudioPeak(JSContext* ctx, JSValueConst, int, JSValueConst*) { const auto* state = scriptContext(ctx); return JS_NewFloat64(ctx, state && state->SignalContext ? state->SignalContext->Audio.Peak : 0.0f); }
 
-        JSValue registerSnapshot(JSContext* ctx, const user_regs_struct& regs)
+        JSValue registerSnapshot(JSContext* ctx, const NativeRegisters& regs)
         {
             JSValue object = JS_NewObject(ctx);
 #define QUARTZ_REG(name) JS_SetPropertyStr(ctx, object, #name, JS_NewBigUint64(ctx, static_cast<std::uint64_t>(regs.name)))
