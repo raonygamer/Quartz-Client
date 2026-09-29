@@ -119,15 +119,6 @@ namespace quartz::client
     }
 
     template<typename T>
-    bool readProcessMemoryValue(pid_t pid, std::uintptr_t address, T& value, std::string& error);
-
-    template<typename T>
-    bool readProcessMemoryValue(const pid_t pid, const std::uintptr_t address, T& value, std::string& error)
-    {
-        return readProcessMemoryBlock(pid, address, {reinterpret_cast<std::uint8_t*>(&value), sizeof(T)}, error);
-    }
-
-    template<typename T>
     void runtimeSortUiNodes(std::vector<T*>& nodes)
     {
         std::ranges::sort(nodes, [](const T* a, const T* b) { if (a->Order != b->Order) return a->Order < b->Order; return a->Id < b->Id; });

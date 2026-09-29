@@ -6,9 +6,6 @@ namespace quartz::client
     template<typename T>
     bool parseNumber(std::string_view value, T& result);
 
-    template<typename T>
-    bool readProcessMemoryValue(pid_t pid, std::uintptr_t address, T& value, std::string& error);
-
     std::string makeGeneratedShader(const std::string_view body);
     std::string shaderPresetId(const std::string_view name);
     void parameterizeShaderPreset(ShaderPreset& preset);
@@ -100,6 +97,13 @@ namespace quartz::client
     bool runtimeOpcodePatternMatches(const std::span<const std::uint8_t> bytes, const std::uintptr_t address, const std::vector<std::string>& patterns, std::size_t& matchedLength);
     std::size_t readProcessMemoryPartial(pid_t pid, std::uintptr_t address, std::span<std::uint8_t> buffer, std::string& error);
     bool readProcessMemoryBlock(const pid_t pid, const std::uintptr_t address, std::span<std::uint8_t> buffer, std::string& error);
+
+    template<typename T>
+    bool readProcessMemoryValue(const pid_t pid, const std::uintptr_t address, T& value, std::string& error)
+    {
+        return readProcessMemoryBlock(pid, address, {reinterpret_cast<std::uint8_t*>(&value), sizeof(T)}, error);
+    }
+
     bool readRuntimePointer(pid_t pid, std::uintptr_t address, std::uintptr_t& value, std::string& error);
     std::optional<std::uintptr_t> resolveRuntimeSignatureMatch(RuntimeBinding& binding, pid_t pid, std::uintptr_t match, std::string& error);
     const char* runtimeX64RegisterName(const RuntimeX64Register reg) noexcept;
